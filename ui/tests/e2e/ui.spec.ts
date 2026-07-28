@@ -342,8 +342,13 @@ async function waitForSettledRender(page: Page) {
 async function openXrayDashboard(page: Page) {
   const program = page.locator('.program-item[data-program-id="xray-primary"]');
   const navigationToggle = page.locator('.mobile-nav-toggle');
-  if (!(await program.isVisible()) && await navigationToggle.isVisible()) {
-    await navigationToggle.click();
+  if (!(await program.isVisible())) {
+    await expect(navigationToggle).toBeVisible();
+    if ((await navigationToggle.getAttribute('aria-expanded')) !== 'true') {
+      await navigationToggle.click();
+    }
+    await expect(navigationToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(program).toBeVisible();
   }
   await program.click();
   await expect(page.getByRole('heading', { name: 'Primary Xray routing fabric' })).toBeVisible();
