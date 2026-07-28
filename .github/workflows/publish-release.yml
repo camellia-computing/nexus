@@ -184,6 +184,7 @@ jobs:
     if: ${{ always() && needs.metadata.result == 'success' && needs.authorize.result == 'success' && (needs.authorize.outputs.release-draft == 'false' || needs.packages.result == 'success') }}
     needs: [metadata, authorize, packages]
     runs-on: ubuntu-24.04
+    environment: release
     timeout-minutes: 30
     permissions:
       actions: read
