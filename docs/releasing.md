@@ -168,7 +168,7 @@ Expected raw assets are nine platform packages, `RELEASE-METADATA.json` and `SHA
 
 ## GitHub Free operating model
 
-The design intentionally uses GitHub Free capabilities: Actions, GitHub App installation tokens, GitHub Releases, repository variables/secrets and public Sigstore transparency. It does not pretend that protected tags, private artifact attestations or environment required reviewers are available enforcement boundaries.
+The design intentionally uses capabilities available to the current public repository on GitHub Free: Actions, GitHub App installation tokens, GitHub Releases, repository variables/secrets, repository-level branch and tag rulesets, protected environments and public Sigstore transparency. The `release` environment requires a non-self team approval and accepts only the configured release refs; the tag ruleset prevents an existing `v*` tag from being moved or deleted. If repository visibility or the hosting plan changes, releases must stop until these hosted controls are revalidated. Private artifact attestations are not treated as an available boundary.
 
 GitHub Release remains a trusted primary source when the exact managed tag/commit, App-authored draft, checksum, workflow identity and Cosign bundle all verify. Keyless signing publishes workflow identity and artifact digests to public transparency services even for a private repository; approve that disclosure or operate a compatible Sigstore deployment.
 
@@ -180,6 +180,9 @@ Every release-capable repository must satisfy this contract:
 | Merge method | Squash merging enabled; merge commits, rebase merging and native auto-merge disabled; the Release App executes only an approved SHA-guarded merge | Verified before product gates and again before release authorization |
 | Squash metadata | Commit title is the pull-request title; commit message is blank | Verified before product gates and again before release authorization |
 | Branch lifecycle | Head branches are deleted automatically after merge | Repository policy |
+| Main branch | Pull request, exact-head code-owner approval, current required gate, linear history, successful CodeQL policy, resolved review threads, and no deletion or force push | Active repository branch ruleset |
+| Release tags | Existing `v*` tags cannot be updated or deleted; published immutable Releases additionally lock their associated tags and assets | Active repository tag ruleset plus Release immutability |
+| Release environment | Team approval with self-review prevention; only the configured `main` and `v*` release refs may deploy | GitHub environment protection |
 | Action integrity | GitHub Actions enabled; repository SHA-pinning policy enabled; every external action uses a full 40-character commit SHA and every container action uses a `sha256` digest | Repository policy plus `scripts/check-version-policy.sh` |
 | Workflow token | Default `GITHUB_TOKEN` permission is read-only; Actions cannot create or approve pull requests; each workflow declares its minimum job permissions | Repository policy plus committed workflow definitions |
 | Publication gate | The newest non-skipped focused workflow attempt succeeds for the exact final Release PR head, which has a current `write`/`admin` human approval and no active authorized change request | Workflow-enforced publication authorization |
