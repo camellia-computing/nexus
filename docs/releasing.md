@@ -85,6 +85,12 @@ The manager initializes a new proposal as a draft PR, writes its lifecycle label
 | Managed release tag | Managed Release/PR proof, one formal package per platform, signatures and readback | Product tests already bound to the release parent; package builds still compile the release commit |
 | Already-published rerun | Remote asset/checksum/Cosign readback and pending-label cleanup | Platform rebuilds and signing-secret access |
 
+Until the release GitHub App is deliberately configured, an ordinary `main`
+push still runs the complete source-validation workflow but skips the policy
+and release-manager jobs. Setting either release App variable activates strict
+configuration checks; publication remains fail-closed until both variables and
+the private-key secret are valid.
+
 Frontend installation/build inside each platform package is not redundant: each Tauri build needs its platform-local CLI dependencies and embedded frontend output. Rust lint/test and Playwright suites are not repeated in package jobs.
 
 ## Release PR merge policy
