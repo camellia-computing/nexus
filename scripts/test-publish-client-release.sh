@@ -72,18 +72,30 @@ for name in "${linux_signing_assets[@]}"; do
   printf 'OpenPGP fixture:%s\n' "$name" > "$remote/$name"
 done
 jq -n --arg fingerprint "$linux_signing_fingerprint" '{
-  schemaVersion: 2,
+  schemaVersion: 3,
   product: "Camellia Nexus",
   version: "1.2.3",
-  commit: "release-sha",
+  commit: "dddddddddddddddddddddddddddddddddddddddd",
   builds: [
-    {schemaVersion: 2, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "release-sha", platform: "linux", architecture: "x64", nativeSigning: "not-applicable", artifactSigning: {scheme: "openpgp-detached", fingerprint: $fingerprint}},
-    {schemaVersion: 2, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "release-sha", platform: "macos", architecture: "arm64", nativeSigning: "unsigned", artifactSigning: {scheme: "none"}},
-    {schemaVersion: 2, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "release-sha", platform: "macos", architecture: "x64", nativeSigning: "unsigned", artifactSigning: {scheme: "none"}},
-    {schemaVersion: 2, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "release-sha", platform: "windows", architecture: "x64", nativeSigning: "unsigned", artifactSigning: {scheme: "none"}}
+    {schemaVersion: 3, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "dddddddddddddddddddddddddddddddddddddddd", platform: "linux", architecture: "x64", nativeSigning: "not-applicable", distributionTrust: "not-applicable", identity: null, artifactSigning: {scheme: "openpgp-detached", trust: "platform-key", fingerprint: $fingerprint}, delivery: "installable"},
+    {schemaVersion: 3, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "dddddddddddddddddddddddddddddddddddddddd", platform: "macos", architecture: "arm64", nativeSigning: "unsigned", distributionTrust: "none", identity: null, artifactSigning: {scheme: "none", trust: "none"}, delivery: "installable"},
+    {schemaVersion: 3, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "dddddddddddddddddddddddddddddddddddddddd", platform: "macos", architecture: "x64", nativeSigning: "unsigned", distributionTrust: "none", identity: null, artifactSigning: {scheme: "none", trust: "none"}, delivery: "installable"},
+    {schemaVersion: 3, product: "Camellia Nexus", version: "1.2.3", buildId: "1.2.3", commit: "dddddddddddddddddddddddddddddddddddddddd", platform: "windows", architecture: "x64", nativeSigning: "unsigned", distributionTrust: "none", identity: null, artifactSigning: {scheme: "none", trust: "none"}, delivery: "installable"}
   ]
 }' > "$remote/RELEASE-METADATA.json"
-(cd "$remote" && sha256sum camellia-nexus-* RELEASE-METADATA.json > SHA256SUMS)
+PYTHONPATH=scripts python3 - "$remote/RELEASE-METADATA.json" "$remote/NATIVE-SIGNING.md" <<'PY'
+from pathlib import Path
+import sys
+
+import client_release_metadata
+
+release = client_release_metadata.load_json(Path(sys.argv[1]))
+Path(sys.argv[2]).write_text(
+    client_release_metadata.render_report(release),
+    encoding="utf-8",
+)
+PY
+(cd "$remote" && sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS)
 for subject in "$remote"/*; do
   printf 'mock bundle for %s\n' "$(basename "$subject")" > "$subject.sigstore.json"
 done
@@ -100,11 +112,11 @@ gh() {
       id: 42,
       draft: false,
       immutable: true,
-      target_commitish: "release-sha",
+      target_commitish: "dddddddddddddddddddddddddddddddddddddddd",
       tag_name: "v1.2.3",
       name: "Camellia Nexus 1.2.3",
       author: {login: "release-bot"},
-      body: "<!-- release-pr:17 -->\n<!-- release-commit:release-sha -->",
+      body: "<!-- release-pr:17 -->\n<!-- release-commit:dddddddddddddddddddddddddddddddddddddddd -->",
       assets: $assets
     }]]'
   elif [[ "$1" == api && "$2" == -H && "$4" =~ ^repos/test/repository/releases/assets/([1-9][0-9]*)$ ]]; then
@@ -146,7 +158,7 @@ run_verification() {
   RELEASE_ID=42 \
   RELEASE_POLICY_TOKEN=policy-token \
   RELEASE_PR_NUMBER=17 \
-  RELEASE_SHA=release-sha \
+  RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
   RELEASE_SIGNING_IDENTITY=https://github.com/test/repository/.github/workflows/publish-release.yml@refs/tags/v1.2.3 \
   RELEASE_TAG=v1.2.3 \
   RUNNER_TEMP="$root/runner" \
@@ -156,6 +168,16 @@ run_verification() {
 }
 
 run_verification >/dev/null
+cp "$remote/NATIVE-SIGNING.md" "$root/native-signing-original"
+printf 'tampered report\n' >> "$remote/NATIVE-SIGNING.md"
+(cd "$remote" && sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS)
+if run_verification >/dev/null 2>&1; then
+  echo "Published release verification accepted a report that disagrees with metadata" >&2
+  exit 1
+fi
+cp "$root/native-signing-original" "$remote/NATIVE-SIGNING.md"
+(cd "$remote" && sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS)
+
 rm "$remote/SHA256SUMS.sigstore.json"
 if run_verification >/dev/null 2>&1; then
   echo "Published release verification accepted an incomplete asset set" >&2
@@ -193,11 +215,11 @@ gh() {
       id: 42,
       draft: true,
       immutable: false,
-      target_commitish: "release-sha",
+      target_commitish: "dddddddddddddddddddddddddddddddddddddddd",
       tag_name: "v1.2.3",
       name: "Camellia Nexus 1.2.3",
       author: {login: "release-bot"},
-      body: "<!-- release-pr:17 -->\n<!-- release-commit:release-sha -->",
+      body: "<!-- release-pr:17 -->\n<!-- release-commit:dddddddddddddddddddddddddddddddddddddddd -->",
       assets: $assets
     }]]'
   elif [[ "$1" == api && "$2" == -H && "$4" =~ ^repos/test/repository/releases/assets/([1-9][0-9]*)$ ]]; then
@@ -242,7 +264,7 @@ if ASSETS_DIRECTORY="$draft_local" \
   RELEASE_ID=42 \
   RELEASE_POLICY_TOKEN=policy-token \
   RELEASE_PR_NUMBER=17 \
-  RELEASE_SHA=release-sha \
+  RELEASE_SHA=dddddddddddddddddddddddddddddddddddddddd \
   RELEASE_SIGNING_IDENTITY=https://github.com/test/repository/.github/workflows/publish-release.yml@refs/heads/main \
   RELEASE_TAG=v1.2.3 \
   RUNNER_TEMP="$root/runner" \

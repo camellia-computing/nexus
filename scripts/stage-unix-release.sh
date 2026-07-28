@@ -6,6 +6,7 @@ set -euo pipefail
 : "${BUILD_ID:?BUILD_ID is required}"
 : "${PACKAGE_SHA:?PACKAGE_SHA is required}"
 : "${NATIVE_SIGNING:?NATIVE_SIGNING is required}"
+: "${DISTRIBUTION_TRUST:?DISTRIBUTION_TRUST is required}"
 : "${ARTIFACT_SIGNING:?ARTIFACT_SIGNING is required}"
 : "${PLATFORM:?PLATFORM is required}"
 : "${RUNNER_ARCH:?RUNNER_ARCH is required}"
@@ -36,6 +37,25 @@ case "$PLATFORM:$ARTIFACT_SIGNING" in
   linux:none|linux:openpgp-detached|macos:none) ;;
   *) echo "Invalid artifact signing state for $PLATFORM: $ARTIFACT_SIGNING" >&2; exit 1 ;;
 esac
+signing_identity="${SIGNING_IDENTITY:-}"
+case "$PLATFORM:$NATIVE_SIGNING:$DISTRIBUTION_TRUST" in
+  linux:not-applicable:not-applicable|macos:unsigned:none|macos:ad-hoc:none) ;;
+  macos:signed:private-trust|macos:signed:public-trust|macos:notarized:public-trust)
+    [[ -n "$signing_identity" && "$signing_identity" != *$'\n'* &&
+       "$signing_identity" != *$'\r'* ]] || {
+      echo "A signed macOS package requires one printable signing identity" >&2
+      exit 1
+    }
+    ;;
+  *) echo "Invalid distribution trust for $PLATFORM/$NATIVE_SIGNING: $DISTRIBUTION_TRUST" >&2; exit 1 ;;
+esac
+if [[ "$NATIVE_SIGNING" == unsigned || "$NATIVE_SIGNING" == ad-hoc ||
+      "$NATIVE_SIGNING" == not-applicable ]]; then
+  [[ -z "$signing_identity" ]] || {
+    echo "$NATIVE_SIGNING packages may not claim a signing identity" >&2
+    exit 1
+  }
+fi
 
 name="camellia-nexus-$BUILD_ID-$PLATFORM-$ARCH"
 bundle=target/release/bundle
@@ -119,7 +139,7 @@ for artifact in "${expected[@]}"; do
     exit 1
   }
 done
-artifact_signing_json='{"scheme":"none"}'
+artifact_signing_json='{"scheme":"none","trust":"none"}'
 if [[ "$PLATFORM:$ARTIFACT_SIGNING" == linux:openpgp-detached ]]; then
   signing_key="dist-artifacts/$name.signing-key.asc"
   artifacts_to_sign=()
@@ -131,7 +151,7 @@ if [[ "$PLATFORM:$ARTIFACT_SIGNING" == linux:openpgp-detached ]]; then
   fingerprint="${LINUX_GPG_FINGERPRINT//[[:space:]]/}"
   fingerprint="${fingerprint^^}"
   artifact_signing_json="$(jq -cn --arg fingerprint "$fingerprint" \
-    '{scheme:"openpgp-detached", fingerprint:$fingerprint}')"
+    '{scheme:"openpgp-detached", trust:"platform-key", fingerprint:$fingerprint}')"
 fi
 staged_count="$(find dist-artifacts -maxdepth 1 -type f -name "$name.*" | wc -l | tr -d ' ')"
 [[ "$staged_count" == "${#expected[@]}" ]] || {
@@ -146,12 +166,15 @@ jq -n \
   --arg architecture "$ARCH" \
   --arg buildId "$BUILD_ID" \
   --arg commit "$PACKAGE_SHA" \
+  --arg delivery "installable" \
+  --arg distributionTrust "$DISTRIBUTION_TRUST" \
+  --arg identity "$signing_identity" \
   --arg nativeSigning "$NATIVE_SIGNING" \
   --argjson artifactSigning "$artifact_signing_json" \
   --arg platform "$PLATFORM" \
   --arg version "$APP_VERSION" \
   '{
-    schemaVersion: 2,
+    schemaVersion: 3,
     product: "Camellia Nexus",
     version: $version,
     buildId: $buildId,
@@ -159,5 +182,8 @@ jq -n \
     platform: $platform,
     architecture: $architecture,
     nativeSigning: $nativeSigning,
-    artifactSigning: $artifactSigning
+    distributionTrust: $distributionTrust,
+    identity: (if $identity == "" then null else $identity end),
+    artifactSigning: $artifactSigning,
+    delivery: $delivery
   }' > "build-metadata/$PLATFORM-$ARCH.json"

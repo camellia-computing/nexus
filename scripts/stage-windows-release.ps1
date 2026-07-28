@@ -24,6 +24,15 @@ param(
   [ValidateSet('unsigned', 'signed')]
   [string]$NativeSigning = 'unsigned',
 
+  [ValidateSet('none', 'private-trust', 'public-trust')]
+  [string]$DistributionTrust = 'none',
+
+  [ValidatePattern('^$|^[0-9A-Fa-f]{40}$')]
+  [string]$ExpectedSigningThumbprint = '',
+
+  [ValidatePattern('^$|^[0-9A-Fa-f]{64}$')]
+  [string]$ExpectedSigningSha256 = '',
+
   [string]$SigningPfxPath = $env:CAMELLIA_NEXUS_SIGN_PFX,
   [Security.SecureString]$SigningPfxPassword,
   [string]$RunnerArchitecture = $env:RUNNER_ARCH,
@@ -34,6 +43,22 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$expectedThumbprint = $ExpectedSigningThumbprint.ToUpperInvariant()
+$expectedSha256 = $ExpectedSigningSha256.ToUpperInvariant()
+if ($ExpectedSigningThumbprint -cne $expectedThumbprint -or
+    $ExpectedSigningSha256 -cne $expectedSha256) {
+  throw 'Reviewed Windows certificate identities must use canonical uppercase hexadecimal'
+}
+if ($NativeSigning -eq 'unsigned') {
+  if ($DistributionTrust -ne 'none' -or $expectedThumbprint -or $expectedSha256) {
+    throw 'Unsigned Windows packages require distribution trust none and no signing identity'
+  }
+}
+elseif ($DistributionTrust -notin @('private-trust', 'public-trust') -or
+        -not $expectedThumbprint -or -not $expectedSha256) {
+  throw 'Signed Windows packages require private-trust/public-trust and both reviewed certificate fingerprints'
+}
 
 $expectedRunnerArchitecture = switch ($Architecture) {
   'x64' { 'X64' }
@@ -70,6 +95,7 @@ Copy-Item -LiteralPath $msiPackages[0].FullName -Destination $stagedMsi -Force
 if ($NativeSigning -eq 'signed' -and $env:OS -ne 'Windows_NT') {
   throw 'Signed Windows release staging requires a Windows host'
 }
+$signingIdentity = $null
 if ($NativeSigning -eq 'signed') {
   . (Join-Path $PSScriptRoot 'windows-authenticode.ps1')
   if ([string]::IsNullOrWhiteSpace($SigningPfxPath)) {
@@ -87,7 +113,17 @@ if ($NativeSigning -eq 'signed') {
     $verificationContext = Get-WindowsPfxVerificationContext `
       -PfxPath $SigningPfxPath `
       -Password $verificationPassword `
-      -TrustEmbeddedRoot
+      -TrustEmbeddedRoot:($DistributionTrust -eq 'private-trust')
+    $signingIdentity = $verificationContext.Thumbprint.ToUpperInvariant()
+    if ($signingIdentity -ne $expectedThumbprint) {
+      throw "The signing PFX identity does not match the reviewed certificate thumbprint: expected $expectedThumbprint, found $signingIdentity"
+    }
+    $signingSha256 = $verificationContext.SignerCertificate.GetCertHashString(
+      [Security.Cryptography.HashAlgorithmName]::SHA256
+    ).ToUpperInvariant()
+    if ($signingSha256 -ne $expectedSha256) {
+      throw "The signing PFX identity does not match the reviewed certificate SHA-256 fingerprint: expected $expectedSha256, found $signingSha256"
+    }
     $signTool = Find-WindowsSignTool
     foreach ($signedFile in @($executable, $broker, $stagedMsi)) {
       Assert-WindowsSignature `
@@ -125,7 +161,7 @@ foreach ($stagedFile in @($stagedPortable, $stagedMsi)) {
 
 New-Item -ItemType Directory -Path $MetadataDirectory -Force | Out-Null
 $metadata = [ordered]@{
-  schemaVersion = 2
+  schemaVersion = 3
   product = 'Camellia Nexus'
   version = $Version
   buildId = $BuildId
@@ -133,7 +169,13 @@ $metadata = [ordered]@{
   platform = $Platform
   architecture = $Architecture
   nativeSigning = $NativeSigning
-  artifactSigning = [ordered]@{ scheme = 'none' }
+  distributionTrust = $DistributionTrust
+  identity = $signingIdentity
+  artifactSigning = [ordered]@{
+    scheme = 'none'
+    trust = 'none'
+  }
+  delivery = 'installable'
 }
 $metadataPath = Join-Path $MetadataDirectory "$Platform-$Architecture.json"
 $metadata | ConvertTo-Json | Set-Content -LiteralPath $metadataPath -Encoding utf8NoBOM

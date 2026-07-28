@@ -8,10 +8,13 @@ This document defines the supported local and GitHub Actions signing modes for C
 | --- | --- | --- | --- |
 | Unsigned | No Apple values | Tauri builds with `--no-sign` | Internal testing; users must approve the app manually |
 | Ad hoc | `APPLE_SIGNING_IDENTITY=-` only | Structurally signed, no publisher identity or notarization | Local/controlled Apple Silicon testing |
-| Certificate | Complete certificate group | Signed with the configured identity | Free Apple development certificate or controlled private-CA distribution |
-| Notarized | Complete certificate and App Store Connect API groups | Signed, notarized and stapled | Public distribution outside the App Store |
+| Private trust | Complete certificate group with `private-trust` | Signed with the configured identity | Free Apple development certificate or controlled private-CA distribution |
+| Public trust | Complete certificate group with `public-trust` | Signed with a publicly trusted identity | Public distribution when notarization is temporarily unavailable |
+| Notarized | Public-trust certificate and complete App Store Connect API groups | Signed, notarized and stapled | Public distribution outside the App Store |
 
 The workflow rejects every partial group. Candidate builds never inherit signing secrets. `RELEASE-METADATA.json` records `unsigned`, `ad-hoc`, `signed`, or `notarized` for each macOS architecture.
+It also records the explicit trust mode and signing identity; `NATIVE-SIGNING.md` is regenerated
+from the same validated metadata.
 
 `scripts/resolve-macos-signing.sh` is the shared validator used by Actions and regression tests. Keep new signing modes in that resolver instead of duplicating secret-group decisions in workflow YAML.
 
@@ -19,9 +22,10 @@ An Apple Developer free membership can create development identities for testing
 
 ## GitHub Actions configuration
 
-Certificate signing requires all three values:
+Certificate signing requires all four values:
 
 - variable `APPLE_SIGNING_IDENTITY`: the exact identity shown by `security find-identity -v -p codesigning`;
+- variable `APPLE_SIGNING_TRUST_MODE`: exactly `private-trust` or `public-trust`;
 - secret `APPLE_CERTIFICATE`: one-line base64 of the exported `.p12`;
 - secret `APPLE_CERTIFICATE_PASSWORD`: the `.p12` export password.
 
@@ -36,6 +40,7 @@ Example configuration without embedding any repository or account name:
 ```bash
 openssl base64 -A -in camellia-nexus-codesign.p12 -out certificate-base64.txt
 gh variable set APPLE_SIGNING_IDENTITY --body 'Developer ID Application: Example Organization (TEAMID)'
+gh variable set APPLE_SIGNING_TRUST_MODE --body 'public-trust'
 gh secret set APPLE_CERTIFICATE < certificate-base64.txt
 gh secret set APPLE_CERTIFICATE_PASSWORD
 
@@ -51,6 +56,8 @@ gh variable set APPLE_SIGNING_IDENTITY --body '-'
 ```
 
 Remove the variable again to return to unsigned releases. Do not leave certificate, password, identity or notarization values partially configured.
+Ad-hoc mode must not retain `APPLE_SIGNING_TRUST_MODE`. Notarization is accepted only with
+`public-trust`; a private or free development identity remains a signed but non-notarized build.
 
 ## Free Apple development certificate
 
@@ -150,7 +157,10 @@ Structural `codesign --verify` success for a private or ad-hoc identity does not
 ## Rotation and incident handling
 
 - Keep the root/private key and App Store Connect key out of source control, logs, artifacts and command arguments.
-- Rotate an expiring or exposed certificate/key as one atomic configuration group.
+- Publish the current non-secret identity, validity period and trust classification in the
+  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/signing/identities.json).
+- Rotate an expiring or exposed certificate/key, identity and trust mode as one atomic
+  configuration group.
 - Revoke compromised Apple credentials before replacing repository values.
 - A release whose native signing status is unexpected must remain a draft; do not relabel metadata or add a signature after publication.
 

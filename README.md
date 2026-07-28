@@ -109,7 +109,7 @@ $password = Read-Host "PFX password" -AsSecureString
 ./scripts/ci-local.ps1 -Mode DesktopBuild -Sign -PfxPath ".\codesign.pfx" -PfxPassword $password
 ```
 
-签名配置与免费/自建开发 CA 指南见 [Windows code signing](docs/windows-code-signing.md)、[macOS code signing](docs/macos-code-signing.md) 与 [Linux artifact signing](docs/linux-artifact-signing.md)。
+签名配置与免费/自建开发 CA 指南见 [Windows code signing](docs/windows-code-signing.md)、[macOS code signing](docs/macos-code-signing.md) 与 [Linux artifact signing](docs/linux-artifact-signing.md)。跨仓库的 [CI/CD 基线](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md) 和 [签名身份登记册](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json) 是自动审计与证书同步的组织级真源；仓库只保存公开身份，绝不保存私钥材料。
 
 ### 授权服务配置
 
@@ -247,7 +247,7 @@ $password = Read-Host "PFX password" -AsSecureString
 ./scripts/ci-local.ps1 -Mode DesktopBuild -Sign -PfxPath ".\codesign.pfx" -PfxPassword $password
 ```
 
-See [Windows code signing](docs/windows-code-signing.md), [macOS code signing](docs/macos-code-signing.md) and [Linux artifact signing](docs/linux-artifact-signing.md) for CI configuration and controlled/self-managed signing guidance.
+See [Windows code signing](docs/windows-code-signing.md), [macOS code signing](docs/macos-code-signing.md) and [Linux artifact signing](docs/linux-artifact-signing.md) for CI configuration and controlled/self-managed signing guidance. The organization-wide [CI/CD baseline](https://github.com/camellia-computing/.github/blob/main/docs/CI_CD_BASELINE.md) and [signing identity registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json) are the audited sources for cross-repository policy and public certificate metadata; private key material is never recorded there.
 
 ### License service configuration
 

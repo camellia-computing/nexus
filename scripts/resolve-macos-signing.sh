@@ -5,7 +5,12 @@ set -euo pipefail
 : "${SIGNING_TEMP_DIRECTORY:?SIGNING_TEMP_DIRECTORY is required}"
 [[ -d "$SIGNING_TEMP_DIRECTORY" ]] || { echo 'SIGNING_TEMP_DIRECTORY is not a directory' >&2; exit 2; }
 
-signing_values=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY)
+signing_values=(
+  APPLE_CERTIFICATE
+  APPLE_CERTIFICATE_PASSWORD
+  APPLE_SIGNING_IDENTITY
+  APPLE_SIGNING_TRUST_MODE
+)
 notary_values=(APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY)
 signing_count=0
 notary_count=0
@@ -24,24 +29,41 @@ if [[ "${APPLE_SIGNING_IDENTITY:-}" == - ]]; then
   {
     echo 'CAMELLIA_NEXUS_MACOS_SIGN=required'
     echo 'NATIVE_SIGNING=ad-hoc'
+    echo 'DISTRIBUTION_TRUST=none'
   } >> "$SIGNING_ENV_FILE"
   echo 'macOS ad-hoc signing enabled'
   exit 0
 fi
 
-[[ "$signing_count" == 0 || "$signing_count" == 3 ]] || {
-  echo 'APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD and APPLE_SIGNING_IDENTITY must be configured together' >&2
+[[ "$signing_count" == 0 || "$signing_count" == 4 ]] || {
+  echo 'APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY and APPLE_SIGNING_TRUST_MODE must be configured together' >&2
   exit 1
 }
 [[ "$notary_count" == 0 || "$notary_count" == 3 ]] || {
   echo 'APPLE_API_ISSUER, APPLE_API_KEY and APPLE_API_PRIVATE_KEY must be configured together' >&2
   exit 1
 }
-[[ "$notary_count" == 0 || "$signing_count" == 3 ]] || {
+[[ "$notary_count" == 0 || "$signing_count" == 4 ]] || {
   echo 'macOS notarization requires a complete signing configuration' >&2
   exit 1
 }
+if [[ "$signing_count" == 4 ]]; then
+  [[ "$APPLE_SIGNING_TRUST_MODE" == private-trust ||
+     "$APPLE_SIGNING_TRUST_MODE" == public-trust ]] || {
+    echo 'APPLE_SIGNING_TRUST_MODE must be private-trust or public-trust' >&2
+    exit 1
+  }
+  [[ "$APPLE_SIGNING_IDENTITY" != *$'\n'* &&
+     "$APPLE_SIGNING_IDENTITY" != *$'\r'* ]] || {
+    echo 'APPLE_SIGNING_IDENTITY must not contain line breaks' >&2
+    exit 1
+  }
+fi
 if [[ "$notary_count" == 3 ]]; then
+  [[ "$APPLE_SIGNING_TRUST_MODE" == public-trust ]] || {
+    echo 'macOS notarization requires APPLE_SIGNING_TRUST_MODE=public-trust' >&2
+    exit 1
+  }
   [[ "$APPLE_API_ISSUER" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
     echo 'APPLE_API_ISSUER must be a canonical UUID' >&2
     exit 1
@@ -60,12 +82,17 @@ if [[ "$signing_count" == 0 ]]; then
   {
     echo 'CAMELLIA_NEXUS_MACOS_SIGN=disabled'
     echo 'NATIVE_SIGNING=unsigned'
+    echo 'DISTRIBUTION_TRUST=none'
   } >> "$SIGNING_ENV_FILE"
   echo 'macOS package will be unsigned'
   exit 0
 fi
 
 echo 'CAMELLIA_NEXUS_MACOS_SIGN=required' >> "$SIGNING_ENV_FILE"
+{
+  echo "DISTRIBUTION_TRUST=$APPLE_SIGNING_TRUST_MODE"
+  echo "SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+} >> "$SIGNING_ENV_FILE"
 if [[ "$notary_count" == 3 ]]; then
   api_key_path="$SIGNING_TEMP_DIRECTORY/AuthKey_$APPLE_API_KEY.p8"
   umask 077

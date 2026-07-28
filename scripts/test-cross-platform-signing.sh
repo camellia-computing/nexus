@@ -10,12 +10,14 @@ env -i PATH="$PATH" SIGNING_ENV_FILE="$macos_env" SIGNING_TEMP_DIRECTORY="$test_
   bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'CAMELLIA_NEXUS_MACOS_SIGN=disabled' "$macos_env"
 grep -Fqx 'NATIVE_SIGNING=unsigned' "$macos_env"
+grep -Fqx 'DISTRIBUTION_TRUST=none' "$macos_env"
 
 : > "$macos_env"
 env -i PATH="$PATH" APPLE_SIGNING_IDENTITY=- SIGNING_ENV_FILE="$macos_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'CAMELLIA_NEXUS_MACOS_SIGN=required' "$macos_env"
 grep -Fqx 'NATIVE_SIGNING=ad-hoc' "$macos_env"
+grep -Fqx 'DISTRIBUTION_TRUST=none' "$macos_env"
 
 if env -i PATH="$PATH" APPLE_CERTIFICATE=partial SIGNING_ENV_FILE="$macos_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null 2>&1; then
@@ -90,6 +92,7 @@ printf 'deb\n' > "$stage_root/target/release/bundle/deb/Camellia Nexus.deb"
   LINUX_GPG_PRIVATE_KEY="$private_key" \
   LINUX_GPG_PASSPHRASE="$passphrase" \
   NATIVE_SIGNING=not-applicable \
+  DISTRIBUTION_TRUST=not-applicable \
   PACKAGE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   PLATFORM=linux \
   RUNNER_ARCH=X64 \
@@ -97,8 +100,13 @@ printf 'deb\n' > "$stage_root/target/release/bundle/deb/Camellia Nexus.deb"
 )
 [[ "$(find "$stage_root/dist-artifacts" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 7 ]]
 jq -e --arg fingerprint "$fingerprint" '
-  .schemaVersion == 2 and
-  .artifactSigning == {scheme:"openpgp-detached", fingerprint:$fingerprint}
+  .schemaVersion == 3 and
+  .distributionTrust == "not-applicable" and
+  .artifactSigning == {
+    scheme:"openpgp-detached",
+    trust:"platform-key",
+    fingerprint:$fingerprint
+  }
 ' "$stage_root/build-metadata/linux-x64.json" >/dev/null
 LINUX_GPG_FINGERPRINT="$fingerprint" \
 LINUX_GPG_PUBLIC_KEY="$stage_root/dist-artifacts/camellia-nexus-1.2.3-linux-x64.signing-key.asc" \

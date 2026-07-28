@@ -55,7 +55,10 @@ Resolved by running the ignored PostgreSQL suite against PostgreSQL 18: administ
 
 - Rust 1.97: workspace check, format, strict Clippy, and 203 ordinary client tests passed; the one ignored test is the intentionally isolated live broker fixture.
 - Client UI: locked pnpm install, Svelte/TypeScript check, utility tests, native-driver contract, production Vite build, 85 browser journeys, and six repeated stability journeys passed.
-- Client release automation: cross-platform signing, release-manager state, publication recovery, Unix staging, and Windows PowerShell 7.6 staging suites passed. Production packages fail closed unless `CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON` supplies the approved public entitlement trust set.
+- Client release automation: cross-platform signing, schema-3 signing identity/trust metadata,
+  deterministic signing-report, release-manager state, publication recovery, Unix staging, and
+  Windows PowerShell 7.6 staging suites passed. Production packages fail closed unless
+  `CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON` supplies the approved public entitlement trust set.
 - Server Rust: 178 ordinary library tests, 4 binary tests, and 17 public API flow tests passed; 10 PostgreSQL-only behavioral tests and the fresh migration/repository test also passed.
 - Server Admin UI: locked install, formatting, Svelte/TypeScript check, production build, 36 browser journeys, and two repeated stability journeys passed.
 - The final non-root OCI image passed a fresh PostgreSQL 18 migration plus real public, administration, worker, entitlement, Team, activation-code, billing-evidence, ClamAV, readiness, read-only-filesystem, and live-browser control-plane journeys.
@@ -78,7 +81,9 @@ The release owner must record all of the following for the exact release commit:
 2. Windows 11 native E2E and package acceptance pass with PowerShell 7.6+; macOS/Linux package tests pass on their owning runners.
 3. Production issuer, audience, redirect allow-list, minimum-version policy, TLS ingress, database, object storage, and all independent keyrings are reviewed without exposing secrets.
 4. A fresh migration and a timed backup restore pass against PostgreSQL 18; the measured result meets RPO ≤ 1 hour and RTO ≤ 4 hours.
-5. Artifact checksums, SBOM, provenance, optional native/private signatures, mandatory Sigstore identity, image scan, immutable digest, and registry/release readback agree.
+5. The organization signing registry, schema-3 release metadata, deterministic signing report,
+   artifact checksums, SBOM, provenance, optional native/private signatures, mandatory Sigstore
+   identity, image scan, immutable digest, and registry/release readback all agree.
 6. A human approves the protected `release` environment and the rollback owner confirms the previous digest and database recovery point.
 
 Failure of any gate is a no-go. An exception must name an owner, expiry, compensating control, and evidence; security, authorization, migration integrity, or signature/readback gates are not waivable.
