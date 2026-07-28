@@ -153,6 +153,14 @@ done < <(grep -hE 'git[[:space:]]*=' -- */Cargo.toml Cargo.toml 2>/dev/null || t
 policy=docs/dependency-management.md
 [[ -f "$policy" ]] || fail 'dependency policy documentation is missing'
 grep -q 'RUSTSEC-2024-0429' "$policy" || fail 'Rust advisory exception is undocumented'
+grep -Fq 'cargo audit --deny yanked --ignore RUSTSEC-2024-0429' .github/workflows/ci.yml ||
+  fail 'Cargo audit must deny yanked packages and ignore only the registered glib advisory'
+audit_ignore_count="$(
+  grep -RhoE -- '--ignore[[:space:]]+RUSTSEC-[0-9]{4}-[0-9]{4}' .github/workflows |
+    wc -l |
+    tr -d '[:space:]'
+)"
+[[ "$audit_ignore_count" == 1 ]] || fail 'exactly one registered Rust advisory ignore is permitted'
 grep -q 'pnpm 11' "$policy" || fail 'pnpm 11 update exception is undocumented'
 grep -q '@wdio/native-utils' "$policy" || fail 'WebdriverIO native-utils override is undocumented'
 grep -q 'GHSA-5c6j-r48x-rmvq' "$policy" || fail 'serialize-javascript security override is undocumented'
