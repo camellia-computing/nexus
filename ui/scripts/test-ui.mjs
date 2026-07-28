@@ -302,7 +302,8 @@ const structuralSchema = {
 const dependentCompletionSource = '{"mode": "rule", "|"}';
 const dependentCompletionPosition = dependentCompletionSource.indexOf('|');
 const dependentCompletion = completeJsonSchema(
-  dependentCompletionSource.replace('|', ''),
+  dependentCompletionSource.slice(0, dependentCompletionPosition)
+    + dependentCompletionSource.slice(dependentCompletionPosition + 1),
   dependentCompletionPosition,
   structuralSchema,
 );
@@ -807,6 +808,13 @@ assert.equal(compareCanonicalSemVer('2.0.0+build.7', '2.0.0+build.8'), 0);
 assert.equal(compareCanonicalSemVer('100000000000000000000.0.0', '99999999999999999999.0.0'), 1);
 assert.equal(compareCanonicalSemVer('02.0.0', '2.0.0'), null);
 assert.equal(compareCanonicalSemVer('2.0.0\n', '2.0.0'), null);
+assert.equal(compareCanonicalSemVer('2.0.0-01', '2.0.0-1'), null);
+assert.equal(compareCanonicalSemVer('2.0.0-alpha..1', '2.0.0-alpha.1'), null);
+assert.equal(compareCanonicalSemVer('2.0.0+build..1', '2.0.0'), null);
+assert.equal(
+  compareCanonicalSemVer(`0.0.0-0.${'--.'.repeat(10_000)}`, '0.0.0'),
+  null,
+);
 
 const currentActiveEntitlementState = {
   status: 'active',

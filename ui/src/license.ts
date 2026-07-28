@@ -42,8 +42,6 @@ interface ParsedSemVer {
   prerelease: string[];
 }
 
-const canonicalSemVerPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-
 export function compareCanonicalSemVer(left: string, right: string): -1 | 0 | 1 | null {
   const parsedLeft = parseCanonicalSemVer(left);
   const parsedRight = parseCanonicalSemVer(right);
@@ -275,12 +273,81 @@ export function licenseNoticeKey(event: LicenseStateChangedEvent) {
 }
 
 function parseCanonicalSemVer(value: string): ParsedSemVer | null {
-  const match = canonicalSemVerPattern.exec(value);
-  if (!match || match[0] !== value) return null;
+  if (!value) return null;
+
+  const buildSeparator = value.indexOf('+');
+  const versionWithoutBuild = buildSeparator === -1
+    ? value
+    : value.slice(0, buildSeparator);
+  if (
+    buildSeparator !== -1
+    && !isValidSemVerIdentifierList(value.slice(buildSeparator + 1), false)
+  ) {
+    return null;
+  }
+
+  const prereleaseSeparator = versionWithoutBuild.indexOf('-');
+  const coreValue = prereleaseSeparator === -1
+    ? versionWithoutBuild
+    : versionWithoutBuild.slice(0, prereleaseSeparator);
+  const prereleaseValue = prereleaseSeparator === -1
+    ? null
+    : versionWithoutBuild.slice(prereleaseSeparator + 1);
+  const core = coreValue.split('.');
+  if (
+    core.length !== 3
+    || !core.every(isCanonicalNumericIdentifier)
+    || (prereleaseValue !== null && !isValidSemVerIdentifierList(prereleaseValue, true))
+  ) {
+    return null;
+  }
+
   return {
-    core: [match[1], match[2], match[3]],
-    prerelease: match[4]?.split('.') ?? [],
+    core: [core[0], core[1], core[2]],
+    prerelease: prereleaseValue?.split('.') ?? [],
   };
+}
+
+function isCanonicalNumericIdentifier(identifier: string) {
+  return (
+    isAsciiDigits(identifier)
+    && (identifier.length === 1 || identifier[0] !== '0')
+  );
+}
+
+function isValidSemVerIdentifierList(value: string, rejectLeadingZeroNumbers: boolean) {
+  if (!value) return false;
+  return value.split('.').every((identifier) => {
+    if (!isAsciiAlphaNumericHyphen(identifier)) return false;
+    return !rejectLeadingZeroNumbers
+      || !isAsciiDigits(identifier)
+      || identifier.length === 1
+      || identifier[0] !== '0';
+  });
+}
+
+function isAsciiDigits(value: string) {
+  if (!value) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
+}
+
+function isAsciiAlphaNumericHyphen(value: string) {
+  if (!value) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const allowed = (
+      (code >= 48 && code <= 57)
+      || (code >= 65 && code <= 90)
+      || (code >= 97 && code <= 122)
+      || code === 45
+    );
+    if (!allowed) return false;
+  }
+  return true;
 }
 
 function compareNumericIdentifier(left: string, right: string): -1 | 0 | 1 {
