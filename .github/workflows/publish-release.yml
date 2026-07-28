@@ -1,0 +1,367 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing managed release tag to recover
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Context
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      control-sha: ${{ steps.resolve.outputs.control-sha }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      signing-identity: ${{ steps.resolve.outputs.signing-identity }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Version
+        id: resolve
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          TRIGGER_REF: ${{ github.ref }}
+          TRIGGER_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Release tag must be canonical stable SemVer: $tag" >&2
+            exit 1
+          }
+          identity="https://github.com/$WORKFLOW_REF"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$TRIGGER_REF" == refs/heads/main ]] || {
+              echo 'Release recovery must use the workflow on main' >&2
+              exit 1
+            }
+            git merge-base --is-ancestor "$WORKFLOW_SHA" origin/main || {
+              echo 'Release recovery workflow is not trusted by main' >&2
+              exit 1
+            }
+            expected_identity="https://github.com/$GITHUB_REPOSITORY/.github/workflows/publish-release.yml@refs/heads/main"
+          else
+            [[ "$GITHUB_REF_TYPE" == tag && "$TRIGGER_REF" == "refs/tags/$tag" ]] || {
+              echo 'Automatic publication must be triggered by the managed tag' >&2
+              exit 1
+            }
+            expected_identity="https://github.com/$GITHUB_REPOSITORY/.github/workflows/publish-release.yml@refs/tags/$tag"
+          fi
+          [[ "$identity" == "$expected_identity" ]] || {
+            echo 'Release workflow identity does not match its trusted trigger' >&2
+            exit 1
+          }
+          package_id="$(cargo pkgid --locked -p camellia-nexus)"
+          version="${package_id##*@}"
+          [[ "v$version" == "$tag" ]] || {
+            echo "Release tag $tag does not match committed version $version" >&2
+            exit 1
+          }
+          sha="$(git rev-list -n 1 "refs/tags/$tag")"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$sha" ]] || {
+            echo 'Release checkout does not match the tag target' >&2
+            exit 1
+          }
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch && "$TRIGGER_SHA" != "$sha" ]]; then
+            echo 'Release event SHA does not match the tag target' >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$sha" origin/main || {
+            echo "Release tag $tag is not on main" >&2
+            exit 1
+          }
+          {
+            echo "control-sha=$WORKFLOW_SHA"
+            echo "sha=$sha"
+            echo "signing-identity=$identity"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '## Release'
+            echo "- Version: \`$version\`"
+            echo "- Commit: \`$sha\`"
+            echo "- Control: \`$WORKFLOW_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  authorize:
+    name: Authorize
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      release-draft: ${{ steps.release.outputs.release-draft }}
+    steps:
+      - name: Policy token
+        id: policy-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-contents: write
+          permission-metadata: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.metadata.outputs.tag }}
+      - name: Control
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$GITHUB_WORKFLOW_SHA^{commit}"
+          git show "$GITHUB_WORKFLOW_SHA:scripts/manage-release.sh" > "$RUNNER_TEMP/manage-release.sh"
+          chmod 700 "$RUNNER_TEMP/manage-release.sh"
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Managed release
+        id: release
+        env:
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}
+          RELEASE_POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: bash "$RUNNER_TEMP/manage-release.sh" validate-publish
+
+  packages:
+    name: Packages
+    needs: [metadata, authorize]
+    if: ${{ needs.authorize.outputs.release-draft == 'true' }}
+    uses: ./.github/workflows/client-packages.yml
+    with:
+      build-id: ${{ needs.metadata.outputs.version }}
+      commit: ${{ needs.metadata.outputs.sha }}
+      control-commit: ${{ needs.metadata.outputs.control-sha }}
+      release: true
+      version: ${{ needs.metadata.outputs.version }}
+    secrets:
+      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
+      LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
+      CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON: ${{ secrets.CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON }}
+      WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+      WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+
+  release:
+    name: Publish
+    if: ${{ always() && needs.metadata.result == 'success' && needs.authorize.result == 'success' && (needs.authorize.outputs.release-draft == 'false' || needs.packages.result == 'success') }}
+    needs: [metadata, authorize, packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - name: Policy token
+        id: policy-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-contents: write
+          permission-metadata: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.metadata.outputs.tag }}
+      - name: Control
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$GITHUB_WORKFLOW_SHA^{commit}"
+          for script in manage-release.sh publish-client-release.sh linux-openpgp-verify.sh; do
+            git show "$GITHUB_WORKFLOW_SHA:scripts/$script" > "$RUNNER_TEMP/$script"
+            chmod 700 "$RUNNER_TEMP/$script"
+          done
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: ${{ needs.authorize.outputs.release-draft == 'true' }}
+        with:
+          pattern: camellia-nexus-${{ needs.metadata.outputs.version }}-*
+          path: release-inputs
+      - name: Assets
+        if: ${{ needs.authorize.outputs.release-draft == 'true' }}
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/expected-build-assets" <<EOF
+          camellia-nexus-$VERSION-linux-x64.AppImage
+          camellia-nexus-$VERSION-linux-x64.deb
+          camellia-nexus-$VERSION-linux-x64.tar.gz
+          camellia-nexus-$VERSION-macos-arm64.dmg
+          camellia-nexus-$VERSION-macos-arm64.tar.gz
+          camellia-nexus-$VERSION-macos-x64.dmg
+          camellia-nexus-$VERSION-macos-x64.tar.gz
+          camellia-nexus-$VERSION-windows-x64.msi
+          camellia-nexus-$VERSION-windows-x64-portable.zip
+          EOF
+          linux_metadata="$(find release-inputs -type f -path '*/build-metadata/linux-x64.json' -print -quit)"
+          [[ -n "$linux_metadata" ]] || { echo 'Linux build metadata is unavailable' >&2; exit 1; }
+          linux_artifact_signing="$(jq -r '.artifactSigning.scheme // empty' "$linux_metadata")"
+          if [[ "$linux_artifact_signing" == openpgp-detached ]]; then
+            cat >> "$RUNNER_TEMP/expected-build-assets" <<EOF
+          camellia-nexus-$VERSION-linux-x64.AppImage.asc
+          camellia-nexus-$VERSION-linux-x64.deb.asc
+          camellia-nexus-$VERSION-linux-x64.signing-key.asc
+          camellia-nexus-$VERSION-linux-x64.tar.gz.asc
+          EOF
+          elif [[ "$linux_artifact_signing" != none ]]; then
+            echo "Unsupported Linux artifact signing mode: $linux_artifact_signing" >&2
+            exit 1
+          fi
+          LC_ALL=C sort -o "$RUNNER_TEMP/expected-build-assets" "$RUNNER_TEMP/expected-build-assets"
+          find release-inputs -type f \( \
+            -name 'camellia-nexus-*.msi' -o \
+            -name 'camellia-nexus-*-portable.zip' -o \
+            -name 'camellia-nexus-*.tar.gz' -o \
+            -name 'camellia-nexus-*.AppImage' -o \
+            -name 'camellia-nexus-*.deb' -o \
+            -name 'camellia-nexus-*.dmg' -o \
+            -name 'camellia-nexus-*.asc' \
+          \) -print0 | sort -z > "$RUNNER_TEMP/build-assets"
+          mapfile -d '' build_assets < "$RUNNER_TEMP/build-assets"
+          for asset in "${build_assets[@]}"; do
+            basename "$asset"
+          done | LC_ALL=C sort > "$RUNNER_TEMP/input-build-assets"
+          diff -u "$RUNNER_TEMP/expected-build-assets" "$RUNNER_TEMP/input-build-assets"
+
+          mkdir release-assets
+          for asset in "${build_assets[@]}"; do
+            cp -- "$asset" release-assets/
+          done
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/actual-build-assets"
+          diff -u "$RUNNER_TEMP/expected-build-assets" "$RUNNER_TEMP/actual-build-assets"
+
+          find release-inputs -type f -path '*/build-metadata/*.json' -print0 | sort -z > "$RUNNER_TEMP/build-metadata"
+          mapfile -d '' metadata < "$RUNNER_TEMP/build-metadata"
+          [[ "${#metadata[@]}" == 4 ]] || {
+            echo "Expected four platform metadata files; found ${#metadata[@]}" >&2
+            exit 1
+          }
+          jq -s \
+            --arg commit "${{ needs.metadata.outputs.sha }}" \
+            --arg version "$VERSION" '
+              . as $builds |
+              if (
+                length == 4 and
+                (map(.platform + "-" + .architecture) | unique | length) == 4 and
+                all(.[];
+                  .schemaVersion == 2 and
+                  .product == "Camellia Nexus" and
+                  .version == $version and
+                  .buildId == $version and
+                  .commit == $commit and
+                  (
+                    (.platform == "linux" and .architecture == "x64" and .nativeSigning == "not-applicable" and
+                      (((.artifactSigning | keys | sort) == ["scheme"] and .artifactSigning.scheme == "none") or
+                       ((.artifactSigning | keys | sort) == ["fingerprint", "scheme"] and
+                         .artifactSigning.scheme == "openpgp-detached" and
+                         (.artifactSigning.fingerprint | test("^[0-9A-F]{40}$|^[0-9A-F]{64}$"))))) or
+                    (.platform == "windows" and .architecture == "x64" and (.nativeSigning == "unsigned" or .nativeSigning == "signed") and .artifactSigning == {scheme:"none"}) or
+                    (.platform == "macos" and (.architecture == "x64" or .architecture == "arm64") and
+                      (.nativeSigning == "unsigned" or .nativeSigning == "ad-hoc" or .nativeSigning == "signed" or .nativeSigning == "notarized") and
+                      .artifactSigning == {scheme:"none"})
+                  )
+                )
+              ) then {
+                schemaVersion: 2,
+                product: "Camellia Nexus",
+                version: $version,
+                commit: $commit,
+                builds: ($builds | sort_by(.platform, .architecture))
+              } else error("invalid package metadata") end
+            ' "${metadata[@]}" > release-assets/RELEASE-METADATA.json
+          if [[ "$linux_artifact_signing" == openpgp-detached ]]; then
+            fingerprint="$(jq -r '.artifactSigning.fingerprint' "$linux_metadata")"
+            LINUX_GPG_FINGERPRINT="$fingerprint" \
+            LINUX_GPG_PUBLIC_KEY="release-assets/camellia-nexus-$VERSION-linux-x64.signing-key.asc" \
+              bash "$RUNNER_TEMP/linux-openpgp-verify.sh" \
+                "release-assets/camellia-nexus-$VERSION-linux-x64.AppImage" \
+                "release-assets/camellia-nexus-$VERSION-linux-x64.deb" \
+                "release-assets/camellia-nexus-$VERSION-linux-x64.tar.gz"
+          fi
+          (cd release-assets && sha256sum camellia-nexus-* RELEASE-METADATA.json > SHA256SUMS)
+
+      - name: Reauthorize
+        id: reauthorize
+        env:
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}
+          RELEASE_POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: bash "$RUNNER_TEMP/manage-release.sh" validate-publish
+      - name: Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}
+          RELEASE_ID: ${{ steps.reauthorize.outputs.release-id }}
+          RELEASE_PR_NUMBER: ${{ steps.reauthorize.outputs.release-pr-number }}
+          RELEASE_POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          RELEASE_SIGNING_IDENTITY: ${{ needs.metadata.outputs.signing-identity }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          VERIFY_PUBLISHED_ONLY: ${{ needs.authorize.outputs.release-draft == 'false' }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: bash "$RUNNER_TEMP/publish-client-release.sh"
+      - name: Publication proof
+        env:
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}
+          RELEASE_POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: bash "$RUNNER_TEMP/manage-release.sh" complete-publish

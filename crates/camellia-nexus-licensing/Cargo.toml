@@ -1,0 +1,48 @@
+[package]
+name = "camellia-nexus-licensing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Server-authoritative licensing foundation for Camellia Nexus"
+rust-version.workspace = true
+publish = false
+
+[features]
+default = ["os-secure-store"]
+os-secure-store = []
+test-support = []
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+jsonwebtoken.workspace = true
+p256.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "5.1.0", features = ["rt-async-io-crypto-rust"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+  "Wdk_System_SystemInformation",
+  "Win32_Foundation",
+  "Win32_Security_Credentials",
+  "Win32_System_SystemInformation",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true

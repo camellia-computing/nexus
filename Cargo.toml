@@ -1,0 +1,43 @@
+[workspace]
+members = [
+  "crates/camellia-nexus-core",
+  "crates/camellia-nexus-licensing",
+  "crates/camellia-nexus-privilege-broker",
+  "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Camellia-Proprietary-1.0"
+authors = ["Camellia Computing"]
+description = "Cross-platform binary lifecycle manager"
+rust-version = "1.97"
+readme = "README.md"
+
+[workspace.dependencies]
+async-trait = "0.1.89"
+base64 = "0.22.1"
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["use_pem"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_yaml_ng = "0.10.0"
+semver = "1.0.28"
+sha2 = "0.11.0"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1.44"
+uuid = { version = "1.23.4", features = ["v4", "serde"] }
+url = { version = "2.5.7", features = ["serde"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
+libc = "0.2.186"
+tempfile = "3.27.0"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23.41", default-features = false, features = ["ring", "std", "tls12"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

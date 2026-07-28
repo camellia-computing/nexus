@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="tile" x1="64" y1="38" x2="458" y2="482" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00D7E8"/>
+      <stop offset="0.48" stop-color="#267BFF"/>
+      <stop offset="1" stop-color="#7756F6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(156 102) rotate(49) scale(375)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8FCFF" stop-opacity=".48"/>
+      <stop offset=".55" stop-color="#6BCEFF" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#190B77" stop-opacity=".28"/>
+    </radialGradient>
+    <linearGradient id="link" x1="126" y1="132" x2="390" y2="382" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E8FEFF"/>
+      <stop offset=".48" stop-color="#C8F5FF"/>
+      <stop offset="1" stop-color="#E7DDFF"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="13" stdDeviation="16" flood-color="#051A55" flood-opacity=".26"/>
+    </filter>
+  </defs>
+
+  <path d="M256 16C323 16 416 48 460 104c35 45 41 126 29 197-13 75-59 145-125 178-61 30-160 21-227-8C66 440 25 379 17 307 8 229 21 144 69 91 112 43 193 16 256 16Z" fill="url(#tile)"/>
+  <path d="M256 16C323 16 416 48 460 104c35 45 41 126 29 197-13 75-59 145-125 178-61 30-160 21-227-8C66 440 25 379 17 307 8 229 21 144 69 91 112 43 193 16 256 16Z" fill="url(#glow)"/>
+  <path d="M83 151C131 71 212 50 284 60" fill="none" stroke="#E8FEFF" stroke-width="8" stroke-linecap="round" opacity=".3"/>
+
+  <g filter="url(#shadow)">
+    <g fill="none" stroke="url(#link)" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M145 157 256 251l111-94" stroke-width="25" opacity=".9"/>
+      <path d="m145 157 111 204 111-204" stroke-width="21" opacity=".76"/>
+    </g>
+    <circle cx="145" cy="157" r="35" fill="#C9FBFF"/>
+    <circle cx="367" cy="157" r="35" fill="#D7E8FF"/>
+    <circle cx="256" cy="361" r="35" fill="#E7DEFF"/>
+    <circle cx="256" cy="251" r="62" fill="#F7FEFF"/>
+    <circle cx="256" cy="251" r="36" fill="url(#tile)"/>
+    <circle cx="256" cy="251" r="15" fill="#F4FEFF"/>
+  </g>
+</svg>

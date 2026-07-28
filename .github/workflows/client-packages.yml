@@ -1,0 +1,310 @@
+name: Packages
+
+on:
+  workflow_call:
+    inputs:
+      build-id:
+        required: true
+        type: string
+      commit:
+        required: true
+        type: string
+      control-commit:
+        required: false
+        type: string
+        default: ""
+      release:
+        required: true
+        type: boolean
+      version:
+        required: true
+        type: string
+    secrets:
+      APPLE_API_PRIVATE_KEY:
+        required: false
+      APPLE_CERTIFICATE:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      WINDOWS_CODESIGN_PFX_BASE64:
+        required: false
+      WINDOWS_CODESIGN_PFX_PASSWORD:
+        required: false
+      LINUX_GPG_PRIVATE_KEY:
+        required: false
+      LINUX_GPG_PASSPHRASE:
+        required: false
+      CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            platform: windows
+            arch: x64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+          - os: macos-15
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      APP_VERSION: ${{ inputs.version }}
+      BUILD_ID: ${{ inputs.build-id }}
+      PACKAGE_SHA: ${{ inputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - name: Checkout trusted Windows recovery control
+        if: ${{ runner.os == 'Windows' && inputs.control-commit != '' && inputs.control-commit != inputs.commit }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.control-commit }}
+          path: .release-control
+          sparse-checkout: |
+            scripts/ci-local.ps1
+            scripts/prepare-privilege-broker.mjs
+            scripts/test-windows-authenticode.ps1
+            scripts/windows-authenticode.ps1
+          sparse-checkout-cone-mode: false
+      - name: Install trusted Windows recovery control
+        if: ${{ runner.os == 'Windows' && inputs.control-commit != '' && inputs.control-commit != inputs.commit }}
+        env:
+          CONTROL_COMMIT: ${{ inputs.control-commit }}
+          PACKAGE_COMMIT: ${{ inputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CONTROL_COMMIT" =~ ^[0-9a-f]{40}$ && "$PACKAGE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'Recovery control and package commits must be full lowercase SHAs' >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "$PACKAGE_COMMIT" ]] || {
+            echo 'Package checkout does not match the authorized release commit' >&2
+            exit 1
+          }
+          control_root=.release-control
+          [[ "$(git -C "$control_root" rev-parse HEAD)" == "$CONTROL_COMMIT" ]] || {
+            echo 'Recovery checkout does not match the trusted workflow commit' >&2
+            exit 1
+          }
+          control_paths=(
+            scripts/ci-local.ps1
+            scripts/prepare-privilege-broker.mjs
+            scripts/test-windows-authenticode.ps1
+            scripts/windows-authenticode.ps1
+          )
+          for path in "${control_paths[@]}"; do
+            [[ -f "$control_root/$path" && ! -L "$control_root/$path" ]] || {
+              echo "Trusted recovery control is not a regular file: $path" >&2
+              exit 1
+            }
+            [[ "$(git -C "$control_root" cat-file -t "HEAD:$path")" == blob ]] || {
+              echo "Trusted recovery control is missing $path" >&2
+              exit 1
+            }
+            cp -- "$control_root/$path" "$path"
+            cmp -- "$control_root/$path" "$path"
+          done
+          [[ "$(git rev-parse HEAD)" == "$PACKAGE_COMMIT" ]] || {
+            echo 'Recovery control changed the package commit identity' >&2
+            exit 1
+          }
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            file \
+            gnupg \
+            libayatana-appindicator3-dev \
+            libwebkit2gtk-4.1-dev \
+            libfuse2t64 \
+            librsvg2-dev \
+            patchelf
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: package-${{ matrix.platform }}-${{ matrix.arch }}
+      - name: Toolchains
+        shell: bash
+        run: bash scripts/report-toolchains.sh
+      - name: Authenticode regression
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-windows-authenticode.ps1
+      - name: Frontend
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
+
+      - name: Production entitlement trust
+        if: inputs.release
+        env:
+          CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON: ${{ secrets.CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON" ]] || {
+            echo 'CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON is required for release packages' >&2
+            exit 1
+          }
+          node --input-type=module -e \
+            'import { writeFileSync } from "node:fs"; writeFileSync(process.argv[1], process.env.CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON, { mode: 0o600 });' \
+            src-tauri/entitlement-keys.json
+          node scripts/validate-entitlement-keys.mjs --production
+
+      - name: Windows signing
+        if: runner.os == 'Windows'
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+        shell: pwsh
+        run: |
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_PASSWORD)
+          if ($hasCertificate -xor $hasPassword) {
+            throw 'WINDOWS_CODESIGN_PFX_BASE64 and WINDOWS_CODESIGN_PFX_PASSWORD must be configured together'
+          }
+          if ($hasCertificate) {
+            $pfxPath = Join-Path $env:RUNNER_TEMP 'camellia-codesign.pfx'
+            $base64 = $env:WINDOWS_CODESIGN_PFX_BASE64 -replace '\s', ''
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
+            "CAMELLIA_NEXUS_SIGN_PFX=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+            'NATIVE_SIGNING=signed' | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host 'Windows Authenticode signing enabled'
+          }
+          else {
+            'NATIVE_SIGNING=unsigned' | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host 'Windows package will be unsigned'
+          }
+
+      - name: macOS signing
+        if: runner.os == 'macOS'
+        env:
+          APPLE_API_ISSUER: ${{ inputs.release && vars.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ inputs.release && vars.APPLE_API_KEY || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ inputs.release && secrets.APPLE_API_PRIVATE_KEY || '' }}
+          APPLE_CERTIFICATE: ${{ inputs.release && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.release && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.release && vars.APPLE_SIGNING_IDENTITY || '' }}
+        shell: bash
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
+            bash scripts/resolve-macos-signing.sh
+
+      - name: Linux signing
+        if: runner.os == 'Linux'
+        env:
+          LINUX_GPG_FINGERPRINT: ${{ inputs.release && vars.LINUX_GPG_FINGERPRINT || '' }}
+          LINUX_GPG_PRIVATE_KEY: ${{ inputs.release && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
+          LINUX_GPG_PASSPHRASE: ${{ inputs.release && secrets.LINUX_GPG_PASSPHRASE || '' }}
+        shell: bash
+        run: |
+          SIGNING_ENV_FILE="$GITHUB_ENV" bash scripts/resolve-linux-signing.sh
+
+      - name: Windows package
+        if: runner.os == 'Windows'
+        env:
+          CAMELLIA_NEXUS_SIGN_PASSWORD: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          CAMELLIA_NEXUS_TAURI_BUNDLES: msi
+          CAMELLIA_NEXUS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        shell: pwsh
+        run: |
+          $parameters = @{
+            Mode = 'DesktopPackage'
+            SkipQuality = $true
+          }
+          if ($env:NATIVE_SIGNING -eq 'signed') {
+            $parameters.Sign = $true
+            $parameters.TrustEmbeddedRoot = $true
+          }
+          ./scripts/ci-local.ps1 @parameters
+      - name: Linux package
+        if: runner.os == 'Linux'
+        env:
+          CAMELLIA_NEXUS_TAURI_BUNDLES: appimage,deb
+          NATIVE_SIGNING: not-applicable
+        run: bash scripts/ci-local.sh --desktop-package --skip-quality
+      - name: macOS package
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ inputs.release && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.release && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ inputs.release && vars.APPLE_SIGNING_IDENTITY || '' }}
+          CAMELLIA_NEXUS_TAURI_BUNDLES: app,dmg
+        run: bash scripts/ci-local.sh --desktop-package --skip-quality
+
+      - name: Stage Windows
+        if: runner.os == 'Windows'
+        env:
+          ARCHITECTURE: ${{ matrix.arch }}
+          CAMELLIA_NEXUS_SIGN_PASSWORD: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+        shell: pwsh
+        run: |
+          ./scripts/stage-windows-release.ps1 `
+            -BuildId $env:BUILD_ID `
+            -Architecture $env:ARCHITECTURE `
+            -Version $env:APP_VERSION `
+            -Commit $env:PACKAGE_SHA `
+            -NativeSigning $env:NATIVE_SIGNING
+      - name: Stage Unix
+        if: runner.os != 'Windows'
+        env:
+          ARTIFACT_SIGNING: ${{ runner.os == 'Linux' && env.ARTIFACT_SIGNING || 'none' }}
+          ARCH: ${{ matrix.arch }}
+          LINUX_GPG_FINGERPRINT: ${{ inputs.release && vars.LINUX_GPG_FINGERPRINT || '' }}
+          LINUX_GPG_PRIVATE_KEY: ${{ inputs.release && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
+          LINUX_GPG_PASSPHRASE: ${{ inputs.release && secrets.LINUX_GPG_PASSPHRASE || '' }}
+          NATIVE_SIGNING: ${{ runner.os == 'Linux' && 'not-applicable' || env.NATIVE_SIGNING }}
+          PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/stage-unix-release.sh
+
+      - name: Remove Windows signing material
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:CAMELLIA_NEXUS_SIGN_PFX) {
+            Remove-Item -LiteralPath $env:CAMELLIA_NEXUS_SIGN_PFX -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Remove macOS signing material
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: rm -f "${CAMELLIA_NEXUS_MACOS_API_KEY:-}"
+      - name: Upload package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: camellia-nexus-${{ inputs.build-id }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist-artifacts/camellia-nexus-${{ inputs.build-id }}-${{ matrix.platform }}-${{ matrix.arch }}.*
+            dist-artifacts/camellia-nexus-${{ inputs.build-id }}-${{ matrix.platform }}-${{ matrix.arch }}-portable.zip
+            build-metadata/${{ matrix.platform }}-${{ matrix.arch }}.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1

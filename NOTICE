@@ -1,0 +1,11 @@
+Camellia Nexus
+Copyright (c) 2026 Camellia Computing. All rights reserved.
+
+Camellia Nexus is proprietary software. Use and redistribution require express
+authorization under LICENSE. This repository contains third-party dependencies,
+tooling, and platform integrations that remain subject to their own copyright
+notices and license terms. Dependency lockfiles are the authoritative inventory
+for a build; release automation must produce and retain an SBOM.
+
+The clean source baseline is identified in SOURCE_PROVENANCE.json. Importing that
+snapshot into a fresh repository does not alter third-party rights or obligations.

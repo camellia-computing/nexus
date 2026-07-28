@@ -1,0 +1,15 @@
+overrides:
+  '@wdio/native-utils': 2.5.0
+  brace-expansion: 5.0.8
+  serialize-javascript: 7.0.7
+
+allowBuilds:
+  edgedriver: false
+  esbuild: true
+  geckodriver: false
+
+patchedDependencies:
+  # Temporary GHSA-mh99-v99m-4gvg bridge: the latest secure brace-expansion
+  # crosses WebdriverIO's legacy minimatch module contract. Keep this exact
+  # patch and its retirement conditions aligned with docs/dependency-management.md.
+  brace-expansion@5.0.8: patches/brace-expansion@5.0.8.patch

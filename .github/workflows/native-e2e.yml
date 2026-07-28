@@ -1,0 +1,216 @@
+name: Native E2E
+
+on:
+  workflow_call:
+    inputs:
+      client-ref:
+        description: Exact Camellia Nexus commit or ref to test
+        required: true
+        type: string
+      server-ref:
+        description: Exact management-server commit or ref to test
+        required: false
+        default: main
+        type: string
+      suite:
+        description: Native scenario depth
+        required: false
+        default: smoke
+        type: string
+    secrets:
+      CROSS_REPO_READ_APP_PRIVATE_KEY:
+        description: Optional private key for private sibling repository access
+        required: false
+  workflow_dispatch:
+    inputs:
+      client-ref:
+        description: Exact Camellia Nexus commit or ref to test
+        required: false
+        default: main
+        type: string
+      server-ref:
+        description: Exact management-server commit or ref to test
+        required: false
+        default: main
+        type: string
+      suite:
+        description: Native scenario depth
+        required: true
+        default: full
+        type: choice
+        options:
+          - smoke
+          - full
+  schedule:
+    - cron: '31 18 * * 2,5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-e2e-${{ github.workflow }}-${{ github.ref }}-${{ inputs.client-ref || github.sha }}-${{ inputs.server-ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  server:
+    name: Linux server image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      revision: ${{ steps.metadata.outputs.revision }}
+    steps:
+      - name: Resolve sibling authentication
+        id: sibling-auth
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          TRUSTED_CONTEXT: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' }}
+        run: |
+          set -euo pipefail
+          if [[ "$TRUSTED_CONTEXT" != true ]]; then
+            mode=public
+          elif [[ -n "$APP_CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            mode=app
+          elif [[ -z "$APP_CLIENT_ID" && -z "$APP_PRIVATE_KEY" ]]; then
+            mode=public
+          else
+            echo '::error title=Cross-repository authentication misconfigured::CROSS_REPO_READ_APP_CLIENT_ID and CROSS_REPO_READ_APP_PRIVATE_KEY must be configured together.'
+            exit 1
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: Verify public management server
+        if: ${{ steps.sibling-auth.outputs.mode == 'public' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository_owner }}/nexus-management-server
+        run: |
+          set -euo pipefail
+          repository_json="$(gh api "repos/$TARGET_REPOSITORY")" || {
+            echo "::error title=Private sibling requires cross-repository App::Cannot read $TARGET_REPOSITORY as a public repository. Configure the cross-repository read App for this repository owner."
+            exit 1
+          }
+          jq -e --arg target "$TARGET_REPOSITORY" '
+            .private == false and
+            ((.full_name | ascii_downcase) == ($target | ascii_downcase))
+          ' <<< "$repository_json" >/dev/null || {
+            echo "::error title=Sibling repository verification failed::$TARGET_REPOSITORY is private or resolved to an unexpected repository."
+            exit 1
+          }
+      - name: Cross-repository read token
+        if: ${{ steps.sibling-auth.outputs.mode == 'app' }}
+        id: sibling-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CROSS_REPO_READ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: nexus-management-server
+          permission-contents: read
+          permission-metadata: read
+      - name: Checkout management server
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository_owner }}/nexus-management-server
+          ref: ${{ inputs.server-ref || 'main' }}
+          path: server
+          token: ${{ steps.sibling-token.outputs.token || github.token }}
+          persist-credentials: false
+      - name: Resolve immutable server metadata
+        id: metadata
+        working-directory: server
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          {
+            echo "revision=$revision"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build final server image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: server
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: camellia-nexus-management-server:e2e-${{ steps.metadata.outputs.revision }}
+          build-args: |
+            VERSION=${{ steps.metadata.outputs.version }}
+            REVISION=${{ steps.metadata.outputs.revision }}
+            SOURCE=${{ github.server_url }}/${{ github.repository_owner }}/nexus-management-server
+          cache-from: type=gha,scope=native-e2e-server
+          cache-to: type=gha,mode=max,scope=native-e2e-server
+          provenance: false
+          sbom: false
+      - name: Verify exact Linux container contract
+        working-directory: server
+        env:
+          IMAGE: camellia-nexus-management-server:e2e-${{ steps.metadata.outputs.revision }}
+        run: bash scripts/test-container-runtime.sh "$IMAGE"
+      - name: Export portable WSL root filesystems
+        working-directory: server
+        env:
+          IMAGE: camellia-nexus-management-server:e2e-${{ steps.metadata.outputs.revision }}
+        run: bash scripts/build-e2e-bundle.sh "$IMAGE" "$RUNNER_TEMP/camellia-server-e2e"
+      - name: Upload server bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-e2e-server-${{ steps.metadata.outputs.revision }}
+          path: ${{ runner.temp }}/camellia-server-e2e
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    name: Windows Tauri and WSL
+    needs: server
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Checkout desktop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.client-ref || github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: windows-native-e2e
+      - name: Download server bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: native-e2e-server-${{ needs.server.outputs.revision }}
+          path: ${{ runner.temp }}/camellia-server-e2e
+      - name: Native prerequisites
+        shell: pwsh
+        run: ./scripts/e2e-native.ps1 -Action Doctor -Provider WslBundle
+      - name: Native scenarios
+        shell: pwsh
+        run: >-
+          ./scripts/e2e-native.ps1
+          -Provider WslBundle
+          -BundlePath "$env:RUNNER_TEMP/camellia-server-e2e"
+          -Suite "${{ github.event_name == 'schedule' && 'full' || inputs.suite || 'smoke' }}"
+          -OutputDirectory "$env:RUNNER_TEMP/camellia-native-e2e"
+      - name: Upload native diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-e2e-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/camellia-native-e2e
+          if-no-files-found: warn
+          retention-days: 7

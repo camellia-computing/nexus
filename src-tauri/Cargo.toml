@@ -1,0 +1,90 @@
+[package]
+name = "camellia-nexus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+publish = false
+
+[lib]
+name = "camellia_nexus_desktop"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "camellia-nexus"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+custom-protocol = ["tauri/custom-protocol"]
+desktop = [
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:tauri",
+  "dep:tauri-plugin-autostart",
+  "dep:tauri-plugin-dialog",
+  "dep:tauri-plugin-fs",
+  "dep:tauri-plugin-single-instance",
+]
+desktop-e2e = [
+  "desktop",
+  "camellia-nexus-licensing/test-support",
+  "dep:tauri-plugin-wdio",
+  "dep:tauri-plugin-wdio-webdriver",
+]
+
+[build-dependencies]
+sha2.workspace = true
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+async-trait.workspace = true
+camellia-nexus-core = { path = "../crates/camellia-nexus-core" }
+camellia-nexus-licensing = { path = "../crates/camellia-nexus-licensing" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+tauri = { version = "2.11.5", features = ["tray-icon", "image-png"], optional = true }
+tauri-plugin-autostart = { version = "2.5.1", optional = true }
+tauri-plugin-dialog = { version = "2.7.1", optional = true }
+tauri-plugin-fs = { version = "2.5.1", optional = true }
+tauri-plugin-single-instance = { version = "2.4.2", optional = true }
+tauri-plugin-wdio = { version = "1.2.0", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1.2.0", optional = true }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_Security_Cryptography_Catalog",
+  "Win32_Security_Cryptography_Sip",
+  "Win32_Security_WinTrust",
+  "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Pipes",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true

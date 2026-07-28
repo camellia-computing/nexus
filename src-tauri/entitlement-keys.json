@@ -1,0 +1,11 @@
+{
+  "issuer": "https://license.nexus.invalid",
+  "audience": "camellia-nexus-desktop",
+  "minimumLicenseEpoch": 0,
+  "keys": [
+    {
+      "keyId": "entitlement-2026-00",
+      "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEpGNM4nBaTddHJhs/kja1sBYd9RniFmpq5WdeE7vLSCkm4GqUucmhjPaRjlo/NFfj0pHl2AXRv/Iu1UwUOCf3BQ==\n-----END PUBLIC KEY-----"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "com.camellia.nexus.e2e",
+  "build": {
+    "beforeBuildCommand": "pnpm build --mode e2e"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "e2e",
+          "description": "Isolated native test capability; never enabled in production builds",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "core:window:allow-set-theme",
+            "core:webview:allow-set-webview-zoom",
+            "dialog:allow-save",
+            "fs:allow-write-text-file",
+            "wdio:default",
+            "wdio-webdriver:default"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

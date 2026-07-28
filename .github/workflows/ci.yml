@@ -1,0 +1,450 @@
+name: CI
+
+on:
+  workflow_call:
+    outputs:
+      validated-sha:
+        description: Commit validated by the trusted main run
+        value: ${{ jobs.gate.outputs.validated-sha }}
+      validation-run-id:
+        description: Trusted main run that validated the commit
+        value: ${{ jobs.gate.outputs.validation-run-id }}
+    secrets:
+      CROSS_REPO_READ_APP_PRIVATE_KEY:
+        description: Optional private key for private sibling repository access
+        required: false
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-draft-${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  metadata:
+    name: Context
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build-id: ${{ steps.resolve.outputs.build-id }}
+      release-path: ${{ steps.resolve.outputs.release-path }}
+      release-pr-number: ${{ steps.resolve.outputs.release-pr-number }}
+      validation-profile: ${{ steps.resolve.outputs.validation-profile }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Version and path
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE: ${{ github.event.pull_request.base.ref || '' }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PUSH_BEFORE: ${{ github.event.before || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_id="$(cargo pkgid --locked -p camellia-nexus)"
+          version="${package_id##*@}"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Committed client version is not canonical stable SemVer: $version" >&2
+            exit 1
+          }
+
+          build_id="$version"
+          release_path=none
+          release_pr_number=
+          if [[ "$GITHUB_EVENT_NAME" == pull_request &&
+                "$PR_BASE" == main &&
+                "$PR_HEAD" == release/next &&
+                "$PR_REPOSITORY" == "$GITHUB_REPOSITORY" ]]; then
+            release_path=open
+            release_pr_number="$PR_NUMBER"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            if [[ "$(git log -1 --format=%s)" =~ ^chore\(release\):\ v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              release_pr_number="$(bash scripts/manage-release.sh resolve-merged-pr "$GITHUB_SHA")"
+              release_path=merged
+            fi
+          fi
+
+          changed_files="$RUNNER_TEMP/changed-files"
+          : > "$changed_files"
+          diff_base=
+          diff_head=
+          diff_resolved=false
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              diff_base="$PR_BASE_SHA"
+              diff_head="$PR_HEAD_SHA"
+              ;;
+            push)
+              diff_base="$PUSH_BEFORE"
+              diff_head="$GITHUB_SHA"
+              ;;
+          esac
+          zero_sha=0000000000000000000000000000000000000000
+          if [[ "$diff_base" =~ ^[0-9a-f]{40}$ &&
+                "$diff_head" =~ ^[0-9a-f]{40}$ &&
+                "$diff_base" != "$zero_sha" ]] &&
+             git cat-file -e "$diff_base^{commit}" 2>/dev/null &&
+             git cat-file -e "$diff_head^{commit}" 2>/dev/null; then
+            if git diff --no-renames --name-only -z "$diff_base" "$diff_head" > "$changed_files"; then
+              diff_resolved=true
+            else
+              echo 'Unable to resolve the changed file set; requiring candidate validation' >&2
+            fi
+          fi
+          validation_profile="$(bash scripts/resolve-ci-profile.sh \
+            --event "$GITHUB_EVENT_NAME" \
+            --release-path "$release_path" \
+            --diff-resolved "$diff_resolved" < "$changed_files")"
+
+          case "$validation_profile" in
+            standard|candidate|release) ;;
+            *) echo "Invalid validation profile: $validation_profile" >&2; exit 1 ;;
+          esac
+          if [[ "$validation_profile" == candidate ]]; then
+            build_id="candidate-${GITHUB_SHA::12}"
+          fi
+
+          {
+            echo "build-id=$build_id"
+            echo "release-path=$release_path"
+            echo "release-pr-number=$release_pr_number"
+            echo "validation-profile=$validation_profile"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '## Validation'
+            echo "- Version: \`$version\`"
+            echo "- Build: \`$build_id\`"
+            echo "- Release path: \`$release_path\`"
+            echo "- Validation profile: \`$validation_profile\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-check:
+    name: Release PR
+    needs: metadata
+    if: ${{ needs.metadata.outputs.release-path != 'none' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.metadata.outputs.release-path == 'open' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: git-cliff
+        run: bash scripts/install-git-cliff.sh
+      - name: Validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_PATH: ${{ needs.metadata.outputs.release-path }}
+          RELEASE_PR_NUMBER: ${{ needs.metadata.outputs.release-pr-number }}
+        run: |
+          if [[ "$RELEASE_PATH" == open ]]; then
+            bash scripts/manage-release.sh validate-pr
+          else
+            bash scripts/manage-release.sh validate-main
+          fi
+
+  quality:
+    name: Quality
+    needs: metadata
+    if: ${{ needs.metadata.outputs.validation-profile != 'release' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Toolchains
+        shell: bash
+        run: bash scripts/report-toolchains.sh
+      - name: Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libayatana-appindicator3-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev
+      - name: Workflows
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+      - name: Version policy
+        run: |
+          bash scripts/check-version-policy.sh
+          bash scripts/test-update-toolchains.sh
+          bash -n scripts/resolve-ci-profile.sh scripts/test-resolve-ci-profile.sh
+          bash scripts/test-resolve-ci-profile.sh
+      - name: PR title
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        shell: bash
+        run: |
+          [[ "$PR_TITLE" =~ ^(feat|fix|perf|revert|build|docs|ci|test|style|refactor|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?:\ .+ ]] || {
+            echo 'PR title must use Conventional Commits syntax' >&2
+            exit 1
+          }
+      - name: Rust audit
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny yanked --ignore RUSTSEC-2024-0429
+      - name: Build scripts
+        shell: pwsh
+        run: |
+          foreach ($path in @(
+            'scripts/ci-local.ps1',
+            'scripts/e2e-native.ps1',
+            'scripts/stage-windows-release.ps1',
+            'scripts/test-e2e-native.ps1',
+            'scripts/test-stage-windows-release.ps1',
+            'scripts/test-windows-authenticode.ps1',
+            'scripts/windows-authenticode.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              throw "$path`n$($errors.Message -join "`n")"
+            }
+          }
+          ./scripts/test-e2e-native.ps1
+          ./scripts/test-stage-windows-release.ps1
+      - name: Release scripts
+        run: |
+          bash -n \
+            scripts/test-ci-local.sh \
+            scripts/manage-release.sh \
+            scripts/linux-openpgp-sign.sh \
+            scripts/linux-openpgp-verify.sh \
+            scripts/publish-client-release.sh \
+            scripts/resolve-linux-signing.sh \
+            scripts/resolve-macos-signing.sh \
+            scripts/stage-unix-release.sh \
+            scripts/test-cross-platform-signing.sh \
+            scripts/test-manage-release.sh \
+            scripts/test-publish-client-release.sh \
+            scripts/test-stage-unix-release.sh
+          bash scripts/test-ci-local.sh
+          bash scripts/test-cross-platform-signing.sh
+          bash scripts/test-manage-release.sh
+          bash scripts/test-publish-client-release.sh
+          bash scripts/test-stage-unix-release.sh
+      - name: Core gates
+        run: bash scripts/ci-local.sh
+      - name: Desktop gates
+        run: |
+          broker_target="$(rustc --print host-tuple)"
+          TAURI_ENV_TARGET_TRIPLE="$broker_target" TAURI_ENV_DEBUG=true \
+            node scripts/prepare-privilege-broker.mjs
+          cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+          cargo test --locked -p camellia-nexus --features desktop
+      - name: Interaction browser
+        run: pnpm --dir ui exec playwright install --with-deps chromium
+      - name: Interactions
+        run: |
+          pnpm --dir ui test:e2e
+          pnpm --dir ui test:e2e:stability
+      - name: Frontend audit
+        run: pnpm --dir ui audit --audit-level high
+
+  windows:
+    name: Windows
+    needs: metadata
+    if: ${{ needs.metadata.outputs.validation-profile == 'standard' }}
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: windows
+      - name: Toolchains
+        shell: bash
+        run: bash scripts/report-toolchains.sh
+      - name: Authenticode regression
+        shell: pwsh
+        run: ./scripts/test-windows-authenticode.ps1
+      - name: Desktop
+        shell: pwsh
+        run: ./scripts/ci-local.ps1 -Mode DesktopCheck -SkipQuality
+
+  native-e2e:
+    name: Native E2E
+    needs: metadata
+    if: ${{ contains(fromJSON('["standard", "candidate"]'), needs.metadata.outputs.validation-profile) }}
+    uses: ./.github/workflows/native-e2e.yml
+    with:
+      client-ref: ${{ github.sha }}
+      server-ref: main
+      suite: ${{ needs.metadata.outputs.validation-profile == 'standard' && 'full' || 'smoke' }}
+    secrets:
+      CROSS_REPO_READ_APP_PRIVATE_KEY: ${{ secrets.CROSS_REPO_READ_APP_PRIVATE_KEY }}
+
+  packages:
+    name: Candidate Packages
+    needs: [metadata, quality]
+    if: ${{ needs.metadata.outputs.validation-profile == 'candidate' && needs.metadata.result == 'success' && needs.quality.result == 'success' }}
+    uses: ./.github/workflows/client-packages.yml
+    with:
+      build-id: ${{ needs.metadata.outputs.build-id }}
+      commit: ${{ github.sha }}
+      release: false
+      version: ${{ needs.metadata.outputs.version }}
+
+  gate:
+    name: Gate
+    if: ${{ always() && !cancelled() && needs.metadata.result != 'skipped' }}
+    needs: [metadata, release-check, quality, windows, native-e2e, packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      validated-sha: ${{ steps.results.outputs.validated-sha }}
+      validation-run-id: ${{ steps.results.outputs.validation-run-id }}
+    steps:
+      - name: Results
+        id: results
+        env:
+          METADATA_RESULT: ${{ needs.metadata.result }}
+          NATIVE_E2E_RESULT: ${{ needs.native-e2e.result }}
+          PACKAGES_RESULT: ${{ needs.packages.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          RELEASE_PATH: ${{ needs.metadata.outputs.release-path }}
+          RELEASE_RESULT: ${{ needs.release-check.result }}
+          VALIDATION_PROFILE: ${{ needs.metadata.outputs.validation-profile }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: |
+          set -euo pipefail
+
+          failures=0
+          {
+            echo '## Gate results'
+            echo
+            echo '| Job | Result | Expected |'
+            echo '| --- | --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          check_result() {
+            local job="$1"
+            local actual="$2"
+            local expected="$3"
+
+            printf "| \`%s\` | \`%s\` | \`%s\` |\n" \
+              "$job" "$actual" "$expected" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$actual" != "$expected" ]]; then
+              printf '::error title=Gate rejected::%s returned %s; expected %s\n' \
+                "$job" "$actual" "$expected"
+              failures=$((failures + 1))
+            fi
+          }
+
+          check_result Context "$METADATA_RESULT" success
+          if [[ "$METADATA_RESULT" != success ]]; then
+            check_result 'Release PR' "$RELEASE_RESULT" skipped
+            check_result Quality "$QUALITY_RESULT" skipped
+            check_result Windows "$WINDOWS_RESULT" skipped
+            check_result 'Native E2E' "$NATIVE_E2E_RESULT" skipped
+            check_result 'Candidate Packages' "$PACKAGES_RESULT" skipped
+          else
+            case "$VALIDATION_PROFILE" in
+              release)
+                [[ "$RELEASE_PATH" == open || "$RELEASE_PATH" == merged ]] || {
+                  printf '::error title=Gate rejected::Release profile has invalid path %s\n' "$RELEASE_PATH"
+                  failures=$((failures + 1))
+                }
+                check_result 'Release PR' "$RELEASE_RESULT" success
+                check_result Quality "$QUALITY_RESULT" skipped
+                check_result Windows "$WINDOWS_RESULT" skipped
+                check_result 'Native E2E' "$NATIVE_E2E_RESULT" skipped
+                check_result 'Candidate Packages' "$PACKAGES_RESULT" skipped
+                ;;
+              standard)
+                [[ "$RELEASE_PATH" == none ]] || {
+                  printf '::error title=Gate rejected::Standard profile has invalid path %s\n' "$RELEASE_PATH"
+                  failures=$((failures + 1))
+                }
+                check_result 'Release PR' "$RELEASE_RESULT" skipped
+                check_result Quality "$QUALITY_RESULT" success
+                check_result Windows "$WINDOWS_RESULT" success
+                check_result 'Native E2E' "$NATIVE_E2E_RESULT" success
+                check_result 'Candidate Packages' "$PACKAGES_RESULT" skipped
+                ;;
+              candidate)
+                [[ "$RELEASE_PATH" == none ]] || {
+                  printf '::error title=Gate rejected::Candidate profile has invalid path %s\n' "$RELEASE_PATH"
+                  failures=$((failures + 1))
+                }
+                check_result 'Release PR' "$RELEASE_RESULT" skipped
+                check_result Quality "$QUALITY_RESULT" success
+                check_result Windows "$WINDOWS_RESULT" skipped
+                check_result 'Native E2E' "$NATIVE_E2E_RESULT" success
+                check_result 'Candidate Packages' "$PACKAGES_RESULT" success
+                ;;
+              *)
+                printf "| \`Validation profile\` | \`%s\` | \`standard\`, \`candidate\`, or \`release\` |\n" \
+                  "$VALIDATION_PROFILE" >> "$GITHUB_STEP_SUMMARY"
+                printf '::error title=Gate rejected::Invalid validation profile: %s\n' "$VALIDATION_PROFILE"
+                failures=$((failures + 1))
+                ;;
+            esac
+          fi
+
+          if ((failures > 0)); then
+            printf 'Gate rejected %d unexpected result(s).\n' "$failures" >&2
+            exit 1
+          fi
+
+          {
+            echo "validated-sha=$GITHUB_SHA"
+            echo "validation-run-id=$GITHUB_RUN_ID"
+          } >> "$GITHUB_OUTPUT"

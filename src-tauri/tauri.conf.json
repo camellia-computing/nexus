@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Camellia Nexus",
+  "identifier": "com.camellia.nexus",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Camellia Nexus",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 680,
+        "minHeight": 480,
+        "create": true,
+        "visible": false,
+        "center": true,
+        "backgroundColor": [245, 245, 247, 255]
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; connect-src ipc: http://ipc.localhost",
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Camellia Computing",
+    "copyright": "Copyright © 2026 Camellia Computing",
+    "license": "Proprietary",
+    "licenseFile": "../LICENSE",
+    "category": "Utility",
+    "shortDescription": "Manage binary programs and their complete lifecycle.",
+    "longDescription": "Camellia Nexus is a cross-platform desktop manager for binary programs, arguments, configurations, logs and lifecycle policies.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

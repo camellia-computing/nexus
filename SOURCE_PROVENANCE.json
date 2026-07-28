@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "component": "camellia-nexus",
+  "source_repository": "https://github.com/camellia-nexus/CamelliaNexus",
+  "source_commit": "4dc91d147180eaecae5b626934dc6b74b3558d57",
+  "normalized_repository": "https://github.com/camellia-computing/nexus",
+  "history_policy": "fresh-root-snapshot",
+  "data_compatibility_policy": "current-schema-only-before-first-release",
+  "license": "LicenseRef-Camellia-Proprietary-1.0"
+}
