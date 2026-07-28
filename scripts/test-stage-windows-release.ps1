@@ -34,7 +34,15 @@ try {
     throw "Portable package does not contain the exact application/broker pair: $($portableFiles -join ',')"
   }
   $metadata = Get-Content -LiteralPath (Join-Path $testRoot 'metadata/windows-x64.json') -Raw | ConvertFrom-Json
-  if ($metadata.schemaVersion -ne 2 -or $metadata.version -ne '1.2.3' -or $metadata.nativeSigning -ne 'unsigned' -or $metadata.artifactSigning.scheme -ne 'none' -or $metadata.commit -ne ('a' * 40)) {
+  if ($metadata.schemaVersion -ne 3 -or
+      $metadata.version -ne '1.2.3' -or
+      $metadata.nativeSigning -ne 'unsigned' -or
+      $metadata.distributionTrust -ne 'none' -or
+      $null -ne $metadata.identity -or
+      $metadata.artifactSigning.scheme -ne 'none' -or
+      $metadata.artifactSigning.trust -ne 'none' -or
+      $metadata.delivery -ne 'installable' -or
+      $metadata.commit -ne ('a' * 40)) {
     throw 'Windows build metadata does not match the staged fixture'
   }
 
@@ -45,6 +53,8 @@ try {
     try {
       & $scriptPath -BuildId '1.2.3' -Architecture x64 -RunnerArchitecture X64 `
         -Version '1.2.3' -Commit ('a' * 40) -NativeSigning signed `
+        -DistributionTrust private-trust -ExpectedSigningThumbprint ('B' * 40) `
+        -ExpectedSigningSha256 ('C' * 64) `
         -SigningPfxPath (Join-Path $testRoot 'missing-signing-identity.pfx') `
         -SigningPfxPassword (ConvertTo-SecureString 'test-only' -AsPlainText -Force) `
         -TargetDirectory $target -OutputDirectory $output -MetadataDirectory (Join-Path $testRoot 'metadata')

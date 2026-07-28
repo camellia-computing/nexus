@@ -236,8 +236,11 @@ Windows staging regressions, publication recovery tests, release-security audit 
 Authenticode catalog-versus-embedded-signature fixture. The cross-platform test exercises unsigned
 and ad-hoc macOS resolution plus isolated OpenPGP sign/verify/tamper rejection; native certificate,
 notarization and WinTrust acceptance remain on their owning operating-system runners.
+`scripts/test_client_release_metadata.py` also proves exact schema-3 identity/trust combinations,
+duplicate-key rejection, deterministic report generation and report-tamper rejection.
 
 发布或签名变更还必须执行 `scripts/test-cross-platform-signing.sh`、Unix 与 Windows 两套暂存回归、
 发布恢复测试、发布安全审计夹具，以及 Authenticode 目录签名与嵌入签名区分夹具。跨平台测试覆盖
 macOS 未签名/ad-hoc 配置解析及隔离 OpenPGP 签名、验证和篡改拒绝；原生证书、notarization 与
-WinTrust 验收仍在各自操作系统 runner 上完成。
+WinTrust 验收仍在各自操作系统 runner 上完成。`scripts/test_client_release_metadata.py` 还会验证
+schema 3 身份/信任组合、重复 JSON 键拒绝、报告确定性生成以及报告篡改拒绝。

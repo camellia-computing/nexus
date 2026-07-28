@@ -213,7 +213,12 @@ jobs:
         run: |
           set -euo pipefail
           git cat-file -e "$GITHUB_WORKFLOW_SHA^{commit}"
-          for script in manage-release.sh publish-client-release.sh linux-openpgp-verify.sh; do
+          for script in \
+            client_release_metadata.py \
+            linux-openpgp-verify.sh \
+            manage-release.sh \
+            publish-client-release.sh
+          do
             git show "$GITHUB_WORKFLOW_SHA:scripts/$script" > "$RUNNER_TEMP/$script"
             chmod 700 "$RUNNER_TEMP/$script"
           done
@@ -285,39 +290,12 @@ jobs:
             echo "Expected four platform metadata files; found ${#metadata[@]}" >&2
             exit 1
           }
-          jq -s \
-            --arg commit "${{ needs.metadata.outputs.sha }}" \
-            --arg version "$VERSION" '
-              . as $builds |
-              if (
-                length == 4 and
-                (map(.platform + "-" + .architecture) | unique | length) == 4 and
-                all(.[];
-                  .schemaVersion == 2 and
-                  .product == "Camellia Nexus" and
-                  .version == $version and
-                  .buildId == $version and
-                  .commit == $commit and
-                  (
-                    (.platform == "linux" and .architecture == "x64" and .nativeSigning == "not-applicable" and
-                      (((.artifactSigning | keys | sort) == ["scheme"] and .artifactSigning.scheme == "none") or
-                       ((.artifactSigning | keys | sort) == ["fingerprint", "scheme"] and
-                         .artifactSigning.scheme == "openpgp-detached" and
-                         (.artifactSigning.fingerprint | test("^[0-9A-F]{40}$|^[0-9A-F]{64}$"))))) or
-                    (.platform == "windows" and .architecture == "x64" and (.nativeSigning == "unsigned" or .nativeSigning == "signed") and .artifactSigning == {scheme:"none"}) or
-                    (.platform == "macos" and (.architecture == "x64" or .architecture == "arm64") and
-                      (.nativeSigning == "unsigned" or .nativeSigning == "ad-hoc" or .nativeSigning == "signed" or .nativeSigning == "notarized") and
-                      .artifactSigning == {scheme:"none"})
-                  )
-                )
-              ) then {
-                schemaVersion: 2,
-                product: "Camellia Nexus",
-                version: $version,
-                commit: $commit,
-                builds: ($builds | sort_by(.platform, .architecture))
-              } else error("invalid package metadata") end
-            ' "${metadata[@]}" > release-assets/RELEASE-METADATA.json
+          python3 "$RUNNER_TEMP/client_release_metadata.py" aggregate \
+            --version "$VERSION" \
+            --commit "${{ needs.metadata.outputs.sha }}" \
+            --output release-assets/RELEASE-METADATA.json \
+            --report release-assets/NATIVE-SIGNING.md \
+            "${metadata[@]}"
           if [[ "$linux_artifact_signing" == openpgp-detached ]]; then
             fingerprint="$(jq -r '.artifactSigning.fingerprint' "$linux_metadata")"
             LINUX_GPG_FINGERPRINT="$fingerprint" \
@@ -327,7 +305,10 @@ jobs:
                 "release-assets/camellia-nexus-$VERSION-linux-x64.deb" \
                 "release-assets/camellia-nexus-$VERSION-linux-x64.tar.gz"
           fi
-          (cd release-assets && sha256sum camellia-nexus-* RELEASE-METADATA.json > SHA256SUMS)
+          (
+            cd release-assets
+            sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS
+          )
 
       - name: Reauthorize
         id: reauthorize

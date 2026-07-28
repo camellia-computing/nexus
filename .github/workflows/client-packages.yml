@@ -182,24 +182,50 @@ jobs:
       - name: Windows signing
         if: runner.os == 'Windows'
         env:
+          WINDOWS_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.release && vars.WINDOWS_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.release && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
           WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.release && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}
         shell: pwsh
         run: |
-          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_BASE64)
-          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_PASSWORD)
-          if ($hasCertificate -xor $hasPassword) {
-            throw 'WINDOWS_CODESIGN_PFX_BASE64 and WINDOWS_CODESIGN_PFX_PASSWORD must be configured together'
+          $values = @(
+            $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256,
+            $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT,
+            $env:WINDOWS_CODESIGN_PFX_BASE64,
+            $env:WINDOWS_CODESIGN_PFX_PASSWORD,
+            $env:WINDOWS_SIGNING_TRUST_MODE
+          )
+          $configured = @($values | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+          }).Count
+          if ($configured -ne 0 -and $configured -ne $values.Count) {
+            throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256, WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT, WINDOWS_CODESIGN_PFX_BASE64, WINDOWS_CODESIGN_PFX_PASSWORD and WINDOWS_SIGNING_TRUST_MODE must be configured together'
           }
-          if ($hasCertificate) {
+          if ($configured -eq $values.Count) {
+            if ($env:WINDOWS_SIGNING_TRUST_MODE -notin @('private-trust', 'public-trust')) {
+              throw 'WINDOWS_SIGNING_TRUST_MODE must be private-trust or public-trust'
+            }
+            $certificateSha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+            if ($certificateSha256 -cnotmatch '^[0-9A-F]{64}$') {
+              throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal leaf fingerprint'
+            }
+            $thumbprint = $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT
+            if ($thumbprint -cnotmatch '^[0-9A-F]{40}$') {
+              throw 'WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT must be the canonical uppercase 40-hexadecimal leaf thumbprint'
+            }
             $pfxPath = Join-Path $env:RUNNER_TEMP 'camellia-codesign.pfx'
             $base64 = $env:WINDOWS_CODESIGN_PFX_BASE64 -replace '\s', ''
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
             "CAMELLIA_NEXUS_SIGN_PFX=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "DISTRIBUTION_TRUST=$($env:WINDOWS_SIGNING_TRUST_MODE)" | Out-File -FilePath $env:GITHUB_ENV -Append
             'NATIVE_SIGNING=signed' | Out-File -FilePath $env:GITHUB_ENV -Append
+            "WINDOWS_EXPECTED_SIGNING_SHA256=$certificateSha256" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "WINDOWS_EXPECTED_SIGNING_THUMBPRINT=$thumbprint" | Out-File -FilePath $env:GITHUB_ENV -Append
             Write-Host 'Windows Authenticode signing enabled'
           }
           else {
+            'DISTRIBUTION_TRUST=none' | Out-File -FilePath $env:GITHUB_ENV -Append
             'NATIVE_SIGNING=unsigned' | Out-File -FilePath $env:GITHUB_ENV -Append
             Write-Host 'Windows package will be unsigned'
           }
@@ -212,7 +238,9 @@ jobs:
           APPLE_API_PRIVATE_KEY: ${{ inputs.release && secrets.APPLE_API_PRIVATE_KEY || '' }}
           APPLE_CERTIFICATE: ${{ inputs.release && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ inputs.release && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ inputs.release && vars.APPLE_SIGNING_CERTIFICATE_SHA256 || '' }}
           APPLE_SIGNING_IDENTITY: ${{ inputs.release && vars.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_SIGNING_TRUST_MODE: ${{ inputs.release && vars.APPLE_SIGNING_TRUST_MODE || '' }}
         shell: bash
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
@@ -242,7 +270,9 @@ jobs:
           }
           if ($env:NATIVE_SIGNING -eq 'signed') {
             $parameters.Sign = $true
-            $parameters.TrustEmbeddedRoot = $true
+            if ($env:DISTRIBUTION_TRUST -eq 'private-trust') {
+              $parameters.TrustEmbeddedRoot = $true
+            }
           }
           ./scripts/ci-local.ps1 @parameters
       - name: Linux package
@@ -272,17 +302,22 @@ jobs:
             -Architecture $env:ARCHITECTURE `
             -Version $env:APP_VERSION `
             -Commit $env:PACKAGE_SHA `
-            -NativeSigning $env:NATIVE_SIGNING
+            -NativeSigning $env:NATIVE_SIGNING `
+            -DistributionTrust $env:DISTRIBUTION_TRUST `
+            -ExpectedSigningSha256 $env:WINDOWS_EXPECTED_SIGNING_SHA256 `
+            -ExpectedSigningThumbprint $env:WINDOWS_EXPECTED_SIGNING_THUMBPRINT
       - name: Stage Unix
         if: runner.os != 'Windows'
         env:
           ARTIFACT_SIGNING: ${{ runner.os == 'Linux' && env.ARTIFACT_SIGNING || 'none' }}
           ARCH: ${{ matrix.arch }}
+          DISTRIBUTION_TRUST: ${{ runner.os == 'Linux' && 'not-applicable' || env.DISTRIBUTION_TRUST }}
           LINUX_GPG_FINGERPRINT: ${{ inputs.release && vars.LINUX_GPG_FINGERPRINT || '' }}
           LINUX_GPG_PRIVATE_KEY: ${{ inputs.release && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
           LINUX_GPG_PASSPHRASE: ${{ inputs.release && secrets.LINUX_GPG_PASSPHRASE || '' }}
           NATIVE_SIGNING: ${{ runner.os == 'Linux' && 'not-applicable' || env.NATIVE_SIGNING }}
           PLATFORM: ${{ matrix.platform }}
+          SIGNING_IDENTITY: ${{ runner.os == 'Linux' && '' || env.SIGNING_IDENTITY }}
         run: bash scripts/stage-unix-release.sh
 
       - name: Remove Windows signing material

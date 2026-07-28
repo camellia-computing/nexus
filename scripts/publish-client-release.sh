@@ -49,35 +49,14 @@ verify_bundle() {
 verify_asset_directory() {
   local directory="$1" subject bundle artifact_signing fingerprint
   (cd "$directory" && sha256sum --check SHA256SUMS)
-  jq -e --arg commit "$RELEASE_SHA" --arg version "$VERSION" '
-    .schemaVersion == 2 and
-    .product == "Camellia Nexus" and
-    .version == $version and
-    .commit == $commit and
-    (.builds | length) == 4 and
-    (.builds | map(.platform + "-" + .architecture) | unique | length) == 4 and
-    all(.builds[];
-      .schemaVersion == 2 and
-      .product == "Camellia Nexus" and
-      .version == $version and
-      .buildId == $version and
-      .commit == $commit and
-      (
-        (.platform == "linux" and .architecture == "x64" and .nativeSigning == "not-applicable" and
-          ((.artifactSigning == {scheme:"none"}) or
-           ((.artifactSigning | keys | sort) == ["fingerprint", "scheme"] and
-            .artifactSigning.scheme == "openpgp-detached" and
-            (.artifactSigning.fingerprint | test("^[0-9A-F]{40}$|^[0-9A-F]{64}$"))))) or
-        (.platform == "windows" and .architecture == "x64" and (.nativeSigning == "unsigned" or .nativeSigning == "signed") and .artifactSigning == {scheme:"none"}) or
-        (.platform == "macos" and (.architecture == "x64" or .architecture == "arm64") and
-          (.nativeSigning == "unsigned" or .nativeSigning == "ad-hoc" or .nativeSigning == "signed" or .nativeSigning == "notarized") and
-          .artifactSigning == {scheme:"none"})
-      )
-    )
-  ' "$directory/RELEASE-METADATA.json" >/dev/null || {
-    echo "Release build metadata is invalid" >&2
-    return 1
-  }
+  python3 "$script_directory/client_release_metadata.py" validate \
+    --version "$VERSION" \
+    --commit "$RELEASE_SHA" \
+    --input "$directory/RELEASE-METADATA.json" \
+    --report "$directory/NATIVE-SIGNING.md" || {
+      echo "Release build metadata is invalid" >&2
+      return 1
+    }
   artifact_signing="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.scheme' "$directory/RELEASE-METADATA.json")"
   if [[ "$artifact_signing" == openpgp-detached ]]; then
     fingerprint="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.fingerprint' "$directory/RELEASE-METADATA.json")"
@@ -113,6 +92,7 @@ camellia-nexus-$VERSION-macos-x64.tar.gz
 camellia-nexus-$VERSION-windows-x64.msi
 camellia-nexus-$VERSION-windows-x64-portable.zip
 RELEASE-METADATA.json
+NATIVE-SIGNING.md
 SHA256SUMS
 EOF
   artifact_signing="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.scheme // empty' "$metadata")"

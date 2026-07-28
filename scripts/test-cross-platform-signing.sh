@@ -10,16 +10,64 @@ env -i PATH="$PATH" SIGNING_ENV_FILE="$macos_env" SIGNING_TEMP_DIRECTORY="$test_
   bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'CAMELLIA_NEXUS_MACOS_SIGN=disabled' "$macos_env"
 grep -Fqx 'NATIVE_SIGNING=unsigned' "$macos_env"
+grep -Fqx 'DISTRIBUTION_TRUST=none' "$macos_env"
 
 : > "$macos_env"
 env -i PATH="$PATH" APPLE_SIGNING_IDENTITY=- SIGNING_ENV_FILE="$macos_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'CAMELLIA_NEXUS_MACOS_SIGN=required' "$macos_env"
 grep -Fqx 'NATIVE_SIGNING=ad-hoc' "$macos_env"
+grep -Fqx 'DISTRIBUTION_TRUST=none' "$macos_env"
 
 if env -i PATH="$PATH" APPLE_CERTIFICATE=partial SIGNING_ENV_FILE="$macos_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null 2>&1; then
   echo 'Partial macOS signing configuration was accepted' >&2
+  exit 1
+fi
+
+macos_password='test-only-password'
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$test_root/macos.key" \
+  -out "$test_root/macos.crt" \
+  -subj '/CN=Camellia Nexus macOS Test' \
+  -days 1 >/dev/null 2>&1
+openssl pkcs12 -export \
+  -inkey "$test_root/macos.key" \
+  -in "$test_root/macos.crt" \
+  -out "$test_root/macos.p12" \
+  -passout "pass:$macos_password" >/dev/null 2>&1
+macos_certificate="$(
+  base64 -w 0 "$test_root/macos.p12"
+)"
+macos_sha256="$(
+  openssl x509 -in "$test_root/macos.crt" -outform DER |
+    shasum -a 256 |
+    awk '{ print toupper($1) }'
+)"
+: > "$macos_env"
+env -i \
+  PATH="$PATH" \
+  APPLE_CERTIFICATE="$macos_certificate" \
+  APPLE_CERTIFICATE_PASSWORD="$macos_password" \
+  APPLE_SIGNING_CERTIFICATE_SHA256="$macos_sha256" \
+  APPLE_SIGNING_IDENTITY='Camellia Nexus macOS Test' \
+  APPLE_SIGNING_TRUST_MODE=private-trust \
+  SIGNING_ENV_FILE="$macos_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
+grep -Fqx 'NATIVE_SIGNING=signed' "$macos_env"
+grep -Fqx "SIGNING_CERTIFICATE_SHA256=$macos_sha256" "$macos_env"
+if env -i \
+  PATH="$PATH" \
+  APPLE_CERTIFICATE="$macos_certificate" \
+  APPLE_CERTIFICATE_PASSWORD="$macos_password" \
+  APPLE_SIGNING_CERTIFICATE_SHA256="$(printf 'A%.0s' {1..64})" \
+  APPLE_SIGNING_IDENTITY='Camellia Nexus macOS Test' \
+  APPLE_SIGNING_TRUST_MODE=private-trust \
+  SIGNING_ENV_FILE="$macos_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null 2>&1; then
+  echo 'An unregistered macOS certificate was accepted' >&2
   exit 1
 fi
 
@@ -90,6 +138,7 @@ printf 'deb\n' > "$stage_root/target/release/bundle/deb/Camellia Nexus.deb"
   LINUX_GPG_PRIVATE_KEY="$private_key" \
   LINUX_GPG_PASSPHRASE="$passphrase" \
   NATIVE_SIGNING=not-applicable \
+  DISTRIBUTION_TRUST=not-applicable \
   PACKAGE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   PLATFORM=linux \
   RUNNER_ARCH=X64 \
@@ -97,8 +146,13 @@ printf 'deb\n' > "$stage_root/target/release/bundle/deb/Camellia Nexus.deb"
 )
 [[ "$(find "$stage_root/dist-artifacts" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 7 ]]
 jq -e --arg fingerprint "$fingerprint" '
-  .schemaVersion == 2 and
-  .artifactSigning == {scheme:"openpgp-detached", fingerprint:$fingerprint}
+  .schemaVersion == 3 and
+  .distributionTrust == "not-applicable" and
+  .artifactSigning == {
+    scheme:"openpgp-detached",
+    trust:"platform-key",
+    fingerprint:$fingerprint
+  }
 ' "$stage_root/build-metadata/linux-x64.json" >/dev/null
 LINUX_GPG_FINGERPRINT="$fingerprint" \
 LINUX_GPG_PUBLIC_KEY="$stage_root/dist-artifacts/camellia-nexus-1.2.3-linux-x64.signing-key.asc" \

@@ -13,7 +13,9 @@ group fails before packaging. When enabled, the release contains:
 
 - one `.asc` detached signature beside each Linux package;
 - one `camellia-nexus-<version>-linux-x64.signing-key.asc` public key;
-- the full configured fingerprint in `RELEASE-METADATA.json`.
+- the full configured fingerprint and `platform-key` trust classification in
+  `RELEASE-METADATA.json`;
+- the same identity and trust state in the generated `NATIVE-SIGNING.md` report.
 
 Publication reimports that exact public key into a temporary keyring and requires every signature's
 `VALIDSIG` fingerprint to match the metadata. Candidate workflows never receive signing secrets.
@@ -82,6 +84,8 @@ The signing script verifies its own output with a separate public-only keyring b
 
 ## Rotation and incident handling
 
+- Publish the current non-secret fingerprint, validity period and rotation state in the
+  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/signing/identities.json).
 - Replace the private key, passphrase and fingerprint as one atomic configuration group.
 - Keep a release in draft state when its expected signing mode, key or signature set differs from
   metadata; never repair or relabel a published release in place.

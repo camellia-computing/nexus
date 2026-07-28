@@ -6,15 +6,24 @@ This document defines the supported local and GitHub Actions signing modes for C
 
 | Mode | Configuration | Result | Suitable use |
 | --- | --- | --- | --- |
-| Unsigned | No Windows signing secrets | Unsigned `.exe` and `.msi` | Internal testing or users who accept SmartScreen warnings |
-| Authenticode | Both Windows signing secrets | SHA-256 Authenticode plus RFC 3161 timestamp | Private-CA testing or public CA distribution |
+| Unsigned | No Windows signing configuration | Unsigned `.exe` and `.msi` | Internal testing or users who accept SmartScreen warnings |
+| Private trust | Complete Windows group with `private-trust` | SHA-256 Authenticode, RFC 3161 timestamp and isolated embedded-root verification | Managed test devices that explicitly trust the private CA |
+| Public trust | Complete Windows group with `public-trust` | SHA-256 Authenticode, RFC 3161 timestamp and normal Windows trust-policy verification | Public distribution with a publicly trusted issuer |
 
-The workflow requires both secrets or neither:
+The workflow requires one complete five-value group or no Windows signing values:
 
+- variable `WINDOWS_CODESIGN_CERTIFICATE_SHA256`: the canonical uppercase
+  64-hexadecimal SHA-256 leaf fingerprint recorded in the organization signing registry;
+- variable `WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT`: the complete uppercase 40-hexadecimal SHA-1
+  leaf thumbprint recorded in the organization signing registry;
+- variable `WINDOWS_SIGNING_TRUST_MODE`: exactly `private-trust` or `public-trust`;
 - `WINDOWS_CODESIGN_PFX_BASE64`: one-line base64 of a password-protected PFX;
 - `WINDOWS_CODESIGN_PFX_PASSWORD`: its export password.
 
 Optional variable `WINDOWS_TIMESTAMP_URL` overrides the default RFC 3161 endpoint. A partial configuration fails before the build. `RELEASE-METADATA.json` records `unsigned` or `signed`.
+For a signed build it also records the reviewed leaf thumbprint and explicit distribution-trust mode;
+`NATIVE-SIGNING.md` is deterministically regenerated from that metadata and published beside the
+artifacts.
 
 A self-signed/private-CA signature proves integrity only to machines that trust that private root. It does not create public SmartScreen reputation. Commercial public distribution should use a current trusted code-signing service or certificate and follow the issuer's hardware-key/cloud-signing requirements.
 
@@ -135,14 +144,24 @@ Configure the current repository without embedding an owner or account:
 ```powershell
 Get-Content -Raw '.\certificate-base64.txt' | gh secret set WINDOWS_CODESIGN_PFX_BASE64
 gh secret set WINDOWS_CODESIGN_PFX_PASSWORD
+gh variable set WINDOWS_CODESIGN_CERTIFICATE_SHA256 --body '<UPPERCASE-64-HEX-LEAF-FINGERPRINT>'
+gh variable set WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT --body '<UPPERCASE-40-HEX-LEAF-THUMBPRINT>'
+gh variable set WINDOWS_SIGNING_TRUST_MODE --body 'private-trust'
 gh variable set WINDOWS_TIMESTAMP_URL --body 'http://timestamp.digicert.com'
 ```
 
 Delete `certificate-base64.txt` after configuration. The release workflow decodes the PFX only into the ephemeral runner directory and removes it in an always-run cleanup step.
+The workflow derives the leaf certificate from the PFX and refuses publication when either its
+canonical SHA-256 fingerprint or Windows-native SHA-1 thumbprint differs from the reviewed values.
+Change `WINDOWS_SIGNING_TRUST_MODE` to `public-trust` only after the same identity passes normal
+Windows trust policy.
 
 ## Rotation and incident handling
 
-- Replace the PFX and password together; a half-rotated pair intentionally blocks release.
+- First publish the new non-secret certificate identity, validity period and trust classification
+  in the [organization signing registry](https://github.com/camellia-computing/.github/blob/main/signing/identities.json).
+- Replace the PFX, password, expected thumbprint and trust mode as one reviewed configuration
+  change; a partially rotated group intentionally blocks release.
 - Revoke or distrust a compromised certificate before uploading a replacement.
 - Preserve timestamp evidence: a valid RFC 3161 timestamp allows verification of a signature made while the certificate was valid.
 - A release whose native signing status is unexpected must remain a draft. Do not rewrite metadata or sign already-published bytes.

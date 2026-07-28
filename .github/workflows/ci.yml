@@ -263,6 +263,10 @@ jobs:
             scripts/test-manage-release.sh \
             scripts/test-publish-client-release.sh \
             scripts/test-stage-unix-release.sh
+          python3 -m py_compile \
+            scripts/client_release_metadata.py \
+            scripts/test_client_release_metadata.py
+          python3 scripts/test_client_release_metadata.py -v
           bash scripts/test-ci-local.sh
           bash scripts/test-cross-platform-signing.sh
           bash scripts/test-manage-release.sh
