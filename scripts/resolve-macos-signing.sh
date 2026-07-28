@@ -8,6 +8,7 @@ set -euo pipefail
 signing_values=(
   APPLE_CERTIFICATE
   APPLE_CERTIFICATE_PASSWORD
+  APPLE_SIGNING_CERTIFICATE_SHA256
   APPLE_SIGNING_IDENTITY
   APPLE_SIGNING_TRUST_MODE
 )
@@ -35,19 +36,19 @@ if [[ "${APPLE_SIGNING_IDENTITY:-}" == - ]]; then
   exit 0
 fi
 
-[[ "$signing_count" == 0 || "$signing_count" == 4 ]] || {
-  echo 'APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY and APPLE_SIGNING_TRUST_MODE must be configured together' >&2
+[[ "$signing_count" == 0 || "$signing_count" == 5 ]] || {
+  echo 'APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_CERTIFICATE_SHA256, APPLE_SIGNING_IDENTITY and APPLE_SIGNING_TRUST_MODE must be configured together' >&2
   exit 1
 }
 [[ "$notary_count" == 0 || "$notary_count" == 3 ]] || {
   echo 'APPLE_API_ISSUER, APPLE_API_KEY and APPLE_API_PRIVATE_KEY must be configured together' >&2
   exit 1
 }
-[[ "$notary_count" == 0 || "$signing_count" == 4 ]] || {
+[[ "$notary_count" == 0 || "$signing_count" == 5 ]] || {
   echo 'macOS notarization requires a complete signing configuration' >&2
   exit 1
 }
-if [[ "$signing_count" == 4 ]]; then
+if [[ "$signing_count" == 5 ]]; then
   [[ "$APPLE_SIGNING_TRUST_MODE" == private-trust ||
      "$APPLE_SIGNING_TRUST_MODE" == public-trust ]] || {
     echo 'APPLE_SIGNING_TRUST_MODE must be private-trust or public-trust' >&2
@@ -56,6 +57,10 @@ if [[ "$signing_count" == 4 ]]; then
   [[ "$APPLE_SIGNING_IDENTITY" != *$'\n'* &&
      "$APPLE_SIGNING_IDENTITY" != *$'\r'* ]] || {
     echo 'APPLE_SIGNING_IDENTITY must not contain line breaks' >&2
+    exit 1
+  }
+  [[ "$APPLE_SIGNING_CERTIFICATE_SHA256" =~ ^[0-9A-F]{64}$ ]] || {
+    echo 'APPLE_SIGNING_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal certificate fingerprint' >&2
     exit 1
   }
 fi
@@ -88,9 +93,59 @@ if [[ "$signing_count" == 0 ]]; then
   exit 0
 fi
 
+certificate_path="$SIGNING_TEMP_DIRECTORY/camellia-nexus-macos-validation.p12"
+certificate_pem="$SIGNING_TEMP_DIRECTORY/camellia-nexus-macos-certificate.pem"
+umask 077
+if ! printf '%s' "$APPLE_CERTIFICATE" |
+  python3 -c '
+import base64
+import sys
+
+payload = b"".join(sys.stdin.buffer.read().split())
+try:
+    decoded = base64.b64decode(payload, validate=True)
+except Exception as error:
+    raise SystemExit(f"APPLE_CERTIFICATE is invalid: {error}")
+if not decoded:
+    raise SystemExit("APPLE_CERTIFICATE decoded to an empty file")
+sys.stdout.buffer.write(decoded)
+' > "$certificate_path"; then
+  rm -f -- "$certificate_path"
+  exit 1
+fi
+if ! openssl pkcs12 \
+  -in "$certificate_path" \
+  -clcerts \
+  -nokeys \
+  -passin env:APPLE_CERTIFICATE_PASSWORD \
+  -out "$certificate_pem" >/dev/null 2>&1; then
+  rm -f -- "$certificate_path" "$certificate_pem"
+  echo 'APPLE_CERTIFICATE is not a valid password-protected PKCS#12 identity' >&2
+  exit 1
+fi
+certificate_count="$(
+  grep -c '^-----BEGIN CERTIFICATE-----$' "$certificate_pem" || true
+)"
+[[ "$certificate_count" == 1 ]] || {
+  rm -f -- "$certificate_path" "$certificate_pem"
+  echo "APPLE_CERTIFICATE must contain exactly one leaf certificate; found $certificate_count" >&2
+  exit 1
+}
+certificate_sha256="$(
+  openssl x509 -in "$certificate_pem" -outform DER |
+    shasum -a 256 |
+    awk '{ print toupper($1) }'
+)"
+rm -f -- "$certificate_path" "$certificate_pem"
+[[ "$certificate_sha256" == "$APPLE_SIGNING_CERTIFICATE_SHA256" ]] || {
+  echo 'The macOS P12 does not match APPLE_SIGNING_CERTIFICATE_SHA256' >&2
+  exit 1
+}
+
 echo 'CAMELLIA_NEXUS_MACOS_SIGN=required' >> "$SIGNING_ENV_FILE"
 {
   echo "DISTRIBUTION_TRUST=$APPLE_SIGNING_TRUST_MODE"
+  echo "SIGNING_CERTIFICATE_SHA256=$certificate_sha256"
   echo "SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
 } >> "$SIGNING_ENV_FILE"
 if [[ "$notary_count" == 3 ]]; then

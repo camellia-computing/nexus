@@ -160,7 +160,7 @@ file remains a non-production development trust fixture and is never accepted fo
 
 - No native signing values: release unsigned packages.
 - Complete Windows group (PFX, password, reviewed SHA-256 fingerprint, native SHA-1 thumbprint and trust mode): Authenticode-sign and timestamp the application, privilege broker, and `.msi`; verify the exact registered leaf and declared private/public trust policy; publish the application/broker pair in the portable ZIP plus the MSI.
-- Complete macOS certificate group (certificate, password, identity and trust mode): sign both macOS builds.
+- Complete macOS certificate group (certificate, password, reviewed SHA-256 fingerprint, identity and trust mode): sign both macOS builds.
 - Complete public-trust macOS certificate plus API group: sign, notarize and staple.
 - `APPLE_SIGNING_IDENTITY=-` alone: intentional ad-hoc signing.
 - Complete Linux OpenPGP group: sign the AppImage, Debian package and portable archive with ASCII-armored detached signatures and publish the matching public key.

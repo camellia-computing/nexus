@@ -22,9 +22,11 @@ An Apple Developer free membership can create development identities for testing
 
 ## GitHub Actions configuration
 
-Certificate signing requires all four values:
+Certificate signing requires all five values:
 
 - variable `APPLE_SIGNING_IDENTITY`: the exact identity shown by `security find-identity -v -p codesigning`;
+- variable `APPLE_SIGNING_CERTIFICATE_SHA256`: the canonical uppercase
+  64-hexadecimal leaf fingerprint in the organization signing registry;
 - variable `APPLE_SIGNING_TRUST_MODE`: exactly `private-trust` or `public-trust`;
 - secret `APPLE_CERTIFICATE`: one-line base64 of the exported `.p12`;
 - secret `APPLE_CERTIFICATE_PASSWORD`: the `.p12` export password.
@@ -40,6 +42,7 @@ Example configuration without embedding any repository or account name:
 ```bash
 openssl base64 -A -in camellia-nexus-codesign.p12 -out certificate-base64.txt
 gh variable set APPLE_SIGNING_IDENTITY --body 'Developer ID Application: Example Organization (TEAMID)'
+gh variable set APPLE_SIGNING_CERTIFICATE_SHA256 --body '<UPPERCASE-64-HEX-LEAF-FINGERPRINT>'
 gh variable set APPLE_SIGNING_TRUST_MODE --body 'public-trust'
 gh secret set APPLE_CERTIFICATE < certificate-base64.txt
 gh secret set APPLE_CERTIFICATE_PASSWORD

@@ -238,6 +238,7 @@ jobs:
           APPLE_API_PRIVATE_KEY: ${{ inputs.release && secrets.APPLE_API_PRIVATE_KEY || '' }}
           APPLE_CERTIFICATE: ${{ inputs.release && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ inputs.release && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ inputs.release && vars.APPLE_SIGNING_CERTIFICATE_SHA256 || '' }}
           APPLE_SIGNING_IDENTITY: ${{ inputs.release && vars.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_SIGNING_TRUST_MODE: ${{ inputs.release && vars.APPLE_SIGNING_TRUST_MODE || '' }}
         shell: bash

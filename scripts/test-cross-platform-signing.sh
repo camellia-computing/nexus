@@ -25,6 +25,52 @@ if env -i PATH="$PATH" APPLE_CERTIFICATE=partial SIGNING_ENV_FILE="$macos_env" \
   exit 1
 fi
 
+macos_password='test-only-password'
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$test_root/macos.key" \
+  -out "$test_root/macos.crt" \
+  -subj '/CN=Camellia Nexus macOS Test' \
+  -days 1 >/dev/null 2>&1
+openssl pkcs12 -export \
+  -inkey "$test_root/macos.key" \
+  -in "$test_root/macos.crt" \
+  -out "$test_root/macos.p12" \
+  -passout "pass:$macos_password" >/dev/null 2>&1
+macos_certificate="$(
+  base64 -w 0 "$test_root/macos.p12"
+)"
+macos_sha256="$(
+  openssl x509 -in "$test_root/macos.crt" -outform DER |
+    shasum -a 256 |
+    awk '{ print toupper($1) }'
+)"
+: > "$macos_env"
+env -i \
+  PATH="$PATH" \
+  APPLE_CERTIFICATE="$macos_certificate" \
+  APPLE_CERTIFICATE_PASSWORD="$macos_password" \
+  APPLE_SIGNING_CERTIFICATE_SHA256="$macos_sha256" \
+  APPLE_SIGNING_IDENTITY='Camellia Nexus macOS Test' \
+  APPLE_SIGNING_TRUST_MODE=private-trust \
+  SIGNING_ENV_FILE="$macos_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
+grep -Fqx 'NATIVE_SIGNING=signed' "$macos_env"
+grep -Fqx "SIGNING_CERTIFICATE_SHA256=$macos_sha256" "$macos_env"
+if env -i \
+  PATH="$PATH" \
+  APPLE_CERTIFICATE="$macos_certificate" \
+  APPLE_CERTIFICATE_PASSWORD="$macos_password" \
+  APPLE_SIGNING_CERTIFICATE_SHA256="$(printf 'A%.0s' {1..64})" \
+  APPLE_SIGNING_IDENTITY='Camellia Nexus macOS Test' \
+  APPLE_SIGNING_TRUST_MODE=private-trust \
+  SIGNING_ENV_FILE="$macos_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null 2>&1; then
+  echo 'An unregistered macOS certificate was accepted' >&2
+  exit 1
+fi
+
 linux_env="$test_root/linux-env"
 env -i PATH="$PATH" SIGNING_ENV_FILE="$linux_env" \
   bash "$repository/scripts/resolve-linux-signing.sh" >/dev/null
