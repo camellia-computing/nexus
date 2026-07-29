@@ -1,4 +1,7 @@
 overrides:
+  # @rolldown/binding-wasm32-wasi 1.1.5 pins the stable 1.x emnapi pair.
+  # wasm-runtime 1.2.0 requires the incompatible 2.0 alpha pair.
+  '@napi-rs/wasm-runtime': 1.1.6
   '@wdio/native-utils': 2.5.0
   brace-expansion: 5.0.8
   serialize-javascript: 7.0.7

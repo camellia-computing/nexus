@@ -243,6 +243,7 @@ clean_tauri_build_cache() {
 }
 
 run_step "Install locked frontend dependencies" pnpm --dir ui install --frozen-lockfile
+run_step "Check frontend peer dependency graph" pnpm --dir ui peers check
 
 if [[ "$RUN_QUALITY" -eq 1 ]]; then
   run_step "Audit release authorization boundaries" node scripts/audit-release-security.mjs
