@@ -1096,7 +1096,7 @@
   .billing-review-note.danger span { color: var(--ui-danger); }
   .billing-payment-form {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
     align-items: start;
     gap: var(--ui-gap-md);
     padding: 16px;
