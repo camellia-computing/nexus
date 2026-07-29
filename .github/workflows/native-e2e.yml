@@ -200,11 +200,13 @@ jobs:
         run: ./scripts/e2e-native.ps1 -Action Doctor -Provider WslBundle
       - name: Native scenarios
         shell: pwsh
+        env:
+          E2E_SUITE: ${{ github.event_name == 'schedule' && 'full' || inputs.suite || 'smoke' }}
         run: >-
           ./scripts/e2e-native.ps1
           -Provider WslBundle
           -BundlePath "$env:RUNNER_TEMP/camellia-server-e2e"
-          -Suite "${{ github.event_name == 'schedule' && 'full' || inputs.suite || 'smoke' }}"
+          -Suite "$env:E2E_SUITE"
           -OutputDirectory "$env:RUNNER_TEMP/camellia-native-e2e"
       - name: Upload native diagnostics
         if: ${{ always() }}

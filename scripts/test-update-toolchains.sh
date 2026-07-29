@@ -18,7 +18,11 @@ cp \
   "$repository_root/ui/pnpm-workspace.yaml" \
   "$fixture/ui/"
 cp "$repository_root/ui/patches/brace-expansion@5.0.8.patch" "$fixture/ui/patches/"
-cp "$repository_root/scripts/check-version-policy.sh" "$repository_root/scripts/update-toolchains.sh" "$fixture/scripts/"
+cp \
+  "$repository_root/scripts/check-version-policy.sh" \
+  "$repository_root/scripts/ci-local.sh" \
+  "$repository_root/scripts/update-toolchains.sh" \
+  "$fixture/scripts/"
 cp "$repository_root/docs/dependency-management.md" "$fixture/docs/"
 cp -R "$repository_root/.github/workflows" "$fixture/.github/"
 cp "$repository_root/.github/dependabot.yml" "$fixture/.github/"
@@ -66,6 +70,18 @@ git -C "$fixture" reset -q --hard HEAD
 sed -i '/serialize-javascript: 7.0.7/d' "$fixture/ui/pnpm-workspace.yaml"
 if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
   fail 'the serialize-javascript security override could be removed silently'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i "/'@napi-rs\\/wasm-runtime': 1.1.6/d" "$fixture/ui/pnpm-workspace.yaml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'the Rolldown WASI compatibility override could be removed silently'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i '/uvx --from zizmor==1.28.0/d' "$fixture/.github/workflows/ci.yml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'the blocking workflow security scan could be removed silently'
 fi
 
 printf '%s\n' 'Toolchain updater tests passed.'

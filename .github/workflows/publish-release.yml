@@ -12,7 +12,6 @@ on:
         type: string
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -115,9 +114,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: read
+      actions: read # Revalidate the exact CI evidence authorized by the release PR.
       contents: read
-      pull-requests: read
+      pull-requests: read # Bind the tag to immutable merged release PR metadata.
     outputs:
       release-draft: ${{ steps.release.outputs.release-draft }}
     steps:
@@ -187,10 +186,10 @@ jobs:
     environment: release
     timeout-minutes: 30
     permissions:
-      actions: read
+      actions: read # Download only the platform artifacts produced for this release.
       contents: read
-      id-token: write
-      pull-requests: write
+      id-token: write # Obtain short-lived Sigstore identities for release asset bundles.
+      pull-requests: write # Remove the release-pending label after public readback succeeds.
     steps:
       - name: Policy token
         id: policy-token
@@ -232,6 +231,7 @@ jobs:
       - name: Assets
         if: ${{ needs.authorize.outputs.release-draft == 'true' }}
         env:
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
           VERSION: ${{ needs.metadata.outputs.version }}
         shell: bash
         run: |
@@ -292,7 +292,7 @@ jobs:
           }
           python3 "$RUNNER_TEMP/client_release_metadata.py" aggregate \
             --version "$VERSION" \
-            --commit "${{ needs.metadata.outputs.sha }}" \
+            --commit "$RELEASE_SHA" \
             --output release-assets/RELEASE-METADATA.json \
             --report release-assets/NATIVE-SIGNING.md \
             "${metadata[@]}"

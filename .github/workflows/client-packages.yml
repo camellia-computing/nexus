@@ -306,18 +306,28 @@ jobs:
             -DistributionTrust $env:DISTRIBUTION_TRUST `
             -ExpectedSigningSha256 $env:WINDOWS_EXPECTED_SIGNING_SHA256 `
             -ExpectedSigningThumbprint $env:WINDOWS_EXPECTED_SIGNING_THUMBPRINT
-      - name: Stage Unix
-        if: runner.os != 'Windows'
+      - name: Stage Linux
+        if: runner.os == 'Linux'
         env:
-          ARTIFACT_SIGNING: ${{ runner.os == 'Linux' && env.ARTIFACT_SIGNING || 'none' }}
+          ARTIFACT_SIGNING: ${{ env.ARTIFACT_SIGNING }}
           ARCH: ${{ matrix.arch }}
-          DISTRIBUTION_TRUST: ${{ runner.os == 'Linux' && 'not-applicable' || env.DISTRIBUTION_TRUST }}
+          DISTRIBUTION_TRUST: not-applicable
           LINUX_GPG_FINGERPRINT: ${{ inputs.release && vars.LINUX_GPG_FINGERPRINT || '' }}
           LINUX_GPG_PRIVATE_KEY: ${{ inputs.release && secrets.LINUX_GPG_PRIVATE_KEY || '' }}
           LINUX_GPG_PASSPHRASE: ${{ inputs.release && secrets.LINUX_GPG_PASSPHRASE || '' }}
-          NATIVE_SIGNING: ${{ runner.os == 'Linux' && 'not-applicable' || env.NATIVE_SIGNING }}
+          NATIVE_SIGNING: not-applicable
           PLATFORM: ${{ matrix.platform }}
-          SIGNING_IDENTITY: ${{ runner.os == 'Linux' && '' || env.SIGNING_IDENTITY }}
+          SIGNING_IDENTITY: ""
+        run: bash scripts/stage-unix-release.sh
+      - name: Stage macOS
+        if: runner.os == 'macOS'
+        env:
+          ARTIFACT_SIGNING: none
+          ARCH: ${{ matrix.arch }}
+          DISTRIBUTION_TRUST: ${{ env.DISTRIBUTION_TRUST }}
+          NATIVE_SIGNING: ${{ env.NATIVE_SIGNING }}
+          PLATFORM: ${{ matrix.platform }}
+          SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
         run: bash scripts/stage-unix-release.sh
 
       - name: Remove Windows signing material
