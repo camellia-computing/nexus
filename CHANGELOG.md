@@ -3,6 +3,27 @@
 All notable changes to Camellia Nexus will be recorded here from the first
 commercial release onward.
 
+## [1.0.0] - 2026-07-29
+
+### Added
+
+- establish Camellia Nexus production baseline
+
+- publish verified signing trust metadata (#5)
+
+
+### Build
+
+- update ajv to 8.18.0
+
+
+### Changed
+
+- bound glib advisory exception
+
+- harden canonical version parsing
+
+
 ## [Unreleased]
 
 - Establish the clean 0.1.0 pre-release product baseline.
