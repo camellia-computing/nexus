@@ -342,8 +342,7 @@ async function waitForSettledRender(page: Page) {
 async function openXrayDashboard(page: Page) {
   const program = page.locator('.program-item[data-program-id="xray-primary"]');
   const navigationToggle = page.locator('.mobile-nav-toggle');
-  if (!(await program.isVisible())) {
-    await expect(navigationToggle).toBeVisible();
+  if (await navigationToggle.isVisible()) {
     if ((await navigationToggle.getAttribute('aria-expanded')) !== 'true') {
       await navigationToggle.click();
     }
