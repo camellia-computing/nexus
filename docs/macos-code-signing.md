@@ -37,20 +37,30 @@ Notarization additionally requires all three values:
 - variable `APPLE_API_KEY`: 10-character key ID;
 - secret `APPLE_API_PRIVATE_KEY`: the complete downloaded `AuthKey_<key-id>.p8` PEM.
 
-Example configuration without embedding any repository or account name:
+Prepare the P12 with the organization tool rather than hand-encoding it or
+copying its fingerprint from an old release. Run this from a checked-out
+`camellia-computing/.github` repository:
 
 ```bash
-openssl base64 -A -in camellia-nexus-codesign.p12 -out certificate-base64.txt
-gh variable set APPLE_SIGNING_IDENTITY --body 'Developer ID Application: Example Organization (TEAMID)'
-gh variable set APPLE_SIGNING_CERTIFICATE_SHA256 --body '<UPPERCASE-64-HEX-LEAF-FINGERPRINT>'
-gh variable set APPLE_SIGNING_TRUST_MODE --body 'public-trust'
-gh secret set APPLE_CERTIFICATE < certificate-base64.txt
-gh secret set APPLE_CERTIFICATE_PASSWORD
-
-gh variable set APPLE_API_ISSUER --body '<issuer-uuid>'
-gh variable set APPLE_API_KEY --body '<key-id>'
-gh secret set APPLE_API_PRIVATE_KEY < 'AuthKey_<key-id>.p8'
+bash scripts/prepare-camellia-apple-signing-bundle.sh macos \
+  "$HOME/Secure/camellia-nexus-macos-signing" \
+  /controlled-inputs/developer-id.p12 \
+  'Developer ID Application: Camellia Computing (TEAMID)' \
+  public-trust
 ```
+
+Review the generated `metadata.json` and `variables.env`, then upload the
+complete certificate group deliberately. The organization selected scope is
+used only when the identity is intentionally shared with Remote Client:
+
+```bash
+./github-actions/upload.sh --apply \
+  --org camellia-computing --repos nexus,remote-client
+```
+
+Notarization API credentials are a separate public-trust group. Add them only
+after Developer ID enrollment and a reviewed release decision; the private P12
+bundle never prints or contains `APPLE_API_PRIVATE_KEY`.
 
 For intentional ad-hoc release signing, configure only:
 
@@ -72,73 +82,41 @@ Ad-hoc mode must not retain `APPLE_SIGNING_TRUST_MODE`. Notarization is accepted
    security find-identity -v -p codesigning
    ```
 
-4. Export the identity and private key together as a password-protected `.p12`, then configure the certificate group above.
+4. Export the identity and private key together as a password-protected `.p12`, then prepare the certificate group above.
 5. Leave the App Store Connect API group absent. The result is `signed`, not `notarized`, and must not be presented as a publicly trusted macOS release.
 
 Free development certificates can be short-lived and device/account constrained. Treat expiration as an expected rotation event.
 
 ## Private development CA
 
-Use this only for controlled test machines. Never distribute the root private key, never commit any generated key/P12 file, and never ask public customers to install a private root merely to run the product.
+Use this only for controlled test machines. The organization generator creates
+the private root, code-signing P12, public identity JSON, and the matching
+GitHub Actions bundle:
 
 ```bash
-umask 077
-mkdir macos-development-ca
-cd macos-development-ca
-
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out root.key
-openssl req -x509 -new -sha256 -days 3650 \
-  -key root.key \
-  -subj '/CN=Camellia Nexus Development Root CA' \
-  -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
-  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
-  -out root.crt
-
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out codesign.key
-openssl req -new -sha256 \
-  -key codesign.key \
-  -subj '/CN=Camellia Nexus Development Code Signing' \
-  -out codesign.csr
-
-cat > codesign.ext <<'EOF'
-basicConstraints=critical,CA:FALSE
-keyUsage=critical,digitalSignature
-extendedKeyUsage=codeSigning
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid,issuer
-EOF
-
-openssl x509 -req -sha256 -days 825 \
-  -in codesign.csr \
-  -CA root.crt \
-  -CAkey root.key \
-  -CAcreateserial \
-  -extfile codesign.ext \
-  -out codesign.crt
-
-openssl pkcs12 -export \
-  -name 'Camellia Nexus Development Code Signing' \
-  -inkey codesign.key \
-  -in codesign.crt \
-  -certfile root.crt \
-  -out camellia-nexus-development-codesign.p12
+bash scripts/new-camellia-macos-private-code-signing-identity.sh \
+  "$HOME/Secure/camellia-nexus-macos-signing"
 ```
 
-Import `root.crt` only on managed test machines, then import the `.p12` into the login keychain and confirm the identity:
+Import its public `camellia-private-code-signing-root.crt` only on managed
+test machines, then import the generated leaf `.p12` into the login
+keychain and confirm the identity:
 
 ```bash
-security import camellia-nexus-development-codesign.p12 -k ~/Library/Keychains/login.keychain-db
+security import camellia-private-code-signing-leaf.p12 -k ~/Library/Keychains/login.keychain-db
 security find-identity -v -p codesigning
 ```
 
-Export the `.p12` base64 and configure the certificate group. Do not configure notarization: Apple will not notarize a private-CA identity.
+Use its generated `github-actions/` bundle to configure the certificate
+group. Do not configure notarization: Apple will not notarize a private-CA
+identity.
 
 ## Local build and verification
 
 With an identity already installed in the login keychain:
 
 ```bash
-export APPLE_SIGNING_IDENTITY='Camellia Nexus Development Code Signing'
+export APPLE_SIGNING_IDENTITY='Camellia Computing Private Code Signing'
 export CAMELLIA_NEXUS_MACOS_SIGN=required
 bash scripts/ci-local.sh --desktop-package --skip-quality
 
@@ -161,7 +139,7 @@ Structural `codesign --verify` success for a private or ad-hoc identity does not
 
 - Keep the root/private key and App Store Connect key out of source control, logs, artifacts and command arguments.
 - Publish the current non-secret identity, validity period and trust classification in the
-  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/signing/identities.json).
+  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json).
 - Rotate an expiring or exposed certificate/key, identity and trust mode as one atomic
   configuration group.
 - Revoke compromised Apple credentials before replacing repository values.

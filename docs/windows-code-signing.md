@@ -29,48 +29,21 @@ A self-signed/private-CA signature proves integrity only to machines that trust 
 
 ## Create a private development CA
 
-Run PowerShell on a controlled Windows machine. These commands create an exportable development root and a leaf restricted to code signing.
+Run the reviewed organization generator with the latest stable PowerShell 7 on
+a controlled Windows machine. It creates an exportable root/leaf hierarchy,
+public identity metadata, and the exact GitHub Actions configuration bundle
+consumed by Nexus and, when separately reviewed, Remote Client:
 
 ```powershell
-$root = New-SelfSignedCertificate `
-  -Type Custom `
-  -Subject 'CN=Camellia Nexus Development Root CA' `
-  -FriendlyName 'Camellia Nexus Development Root CA' `
-  -KeyAlgorithm RSA `
-  -KeyLength 4096 `
-  -HashAlgorithm SHA256 `
-  -KeyExportPolicy Exportable `
-  -KeyUsage CertSign, CRLSign, DigitalSignature `
-  -TextExtension @('2.5.29.19={critical}{text}ca=true&pathlength=0') `
-  -NotAfter (Get-Date).AddYears(10) `
-  -CertStoreLocation 'Cert:\CurrentUser\My'
-
-$rootCer = Join-Path $PWD 'camellia-nexus-Development-Root.cer'
-Export-Certificate -Cert $root -FilePath $rootCer | Out-Null
-Import-Certificate -FilePath $rootCer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
-
-$leaf = New-SelfSignedCertificate `
-  -Type CodeSigningCert `
-  -Subject 'CN=Camellia Nexus Development Code Signing' `
-  -FriendlyName 'Camellia Nexus Development Code Signing' `
-  -Signer $root `
-  -KeyAlgorithm RSA `
-  -KeyLength 3072 `
-  -HashAlgorithm SHA256 `
-  -KeyExportPolicy Exportable `
-  -NotAfter (Get-Date).AddMonths(24) `
-  -CertStoreLocation 'Cert:\CurrentUser\My'
-
-$password = Read-Host 'PFX export password' -AsSecureString
-$pfx = Join-Path $PWD 'camellia-nexus-development-codesign.pfx'
-Export-PfxCertificate `
-  -Cert $leaf `
-  -FilePath $pfx `
-  -Password $password `
-  -ChainOption BuildChain | Out-Null
+pwsh -NoProfile -File .\scripts\New-CamelliaWindowsPrivateCodeSigningCertificate.ps1 `
+  -OutputDirectory C:\Secure\camellia-windows-signing
 ```
 
-Keep the root private key offline after issuing the leaf. Install only the public root certificate on managed test machines. Never commit the `.pfx`, password, root key or generated base64 file, and never ask public customers to trust this development root.
+Run the command from a checked-out `camellia-computing/.github` repository.
+Use the resulting `camellia-private-code-signing-leaf.pfx` for the local
+Nexus package test and install only the public root CER on managed test
+machines. Keep both PFX files and passwords offline; never ask public
+customers to trust this private root.
 
 ## Local build and verification
 
@@ -81,7 +54,7 @@ $password = Read-Host 'PFX password' -AsSecureString
   -SkipQuality `
   -Sign `
   -TrustEmbeddedRoot `
-  -PfxPath '.\camellia-nexus-development-codesign.pfx' `
+  -PfxPath '.\camellia-private-code-signing-leaf.pfx' `
   -PfxPassword $password
 ```
 
@@ -131,27 +104,21 @@ the signature bytes and timestamp are intact.
 
 ## GitHub Actions configuration
 
-Create a one-line base64 value without printing the PFX password:
+The organization generator writes a protected `github-actions/` bundle beside
+the PFX. Review its public `metadata.json` and directly copyable
+`variables.env`, then use the helper without printing Secret payloads:
 
 ```powershell
-$pfx = Resolve-Path '.\camellia-nexus-development-codesign.pfx'
-[Convert]::ToBase64String([IO.File]::ReadAllBytes($pfx)) |
-  Set-Content -NoNewline '.\certificate-base64.txt'
+pwsh -NoProfile -File .\github-actions\Upload.ps1 -Apply `
+  -Organization camellia-computing -Repositories nexus,remote-client
 ```
 
-Configure the current repository without embedding an owner or account:
-
-```powershell
-Get-Content -Raw '.\certificate-base64.txt' | gh secret set WINDOWS_CODESIGN_PFX_BASE64
-gh secret set WINDOWS_CODESIGN_PFX_PASSWORD
-gh variable set WINDOWS_CODESIGN_CERTIFICATE_SHA256 --body '<UPPERCASE-64-HEX-LEAF-FINGERPRINT>'
-gh variable set WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT --body '<UPPERCASE-40-HEX-LEAF-THUMBPRINT>'
-gh variable set WINDOWS_SIGNING_TRUST_MODE --body 'private-trust'
-gh variable set WINDOWS_TIMESTAMP_URL --body 'http://timestamp.digicert.com'
-```
-
-Delete `certificate-base64.txt` after configuration. The release workflow decodes the PFX only into the ephemeral runner directory and removes it in an always-run cleanup step.
-The workflow derives the leaf certificate from the PFX and refuses publication when either its
+The selected organization scope is appropriate only after both desktop clients
+are intended to consume the same reviewed identity. For a Nexus-only
+experiment, use `-Repository camellia-computing/nexus` instead. The release
+workflow decodes the PFX only into the ephemeral runner directory and removes
+it in an always-run cleanup step. It derives the leaf certificate from the PFX
+and refuses publication when either its
 canonical SHA-256 fingerprint or Windows-native SHA-1 thumbprint differs from the reviewed values.
 Change `WINDOWS_SIGNING_TRUST_MODE` to `public-trust` only after the same identity passes normal
 Windows trust policy.
@@ -159,7 +126,7 @@ Windows trust policy.
 ## Rotation and incident handling
 
 - First publish the new non-secret certificate identity, validity period and trust classification
-  in the [organization signing registry](https://github.com/camellia-computing/.github/blob/main/signing/identities.json).
+  in the [organization signing registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json).
 - Replace the PFX, password, expected thumbprint and trust mode as one reviewed configuration
   change; a partially rotated group intentionally blocks release.
 - Revoke or distrust a compromised certificate before uploading a replacement.

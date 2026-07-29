@@ -25,23 +25,21 @@ Actions and regression tests.
 
 ## Create a controlled signing key
 
-Generate the key on a protected workstation. An offline primary key with a dedicated signing
-subkey is preferred for long-lived production custody; a single signing-capable key is sufficient
-for controlled internal distribution.
+Generate the key on a protected workstation with the organization tool. It
+creates an offline primary key, a dedicated signing subkey, public identity
+metadata, and the exact GitHub Actions configuration bundle:
 
 ```bash
-umask 077
-export GNUPGHOME="$(mktemp -d)"
-gpg --quick-generate-key 'Camellia Nexus Linux Release <release@example.invalid>' ed25519 cert 1y
-gpg --quick-add-key '<primary-fingerprint>' ed25519 sign 1y
-gpg --armor --export-secret-subkeys '<signing-subkey-fingerprint>!' > linux-release-private.asc
-gpg --armor --export '<primary-fingerprint>' > linux-release-public.asc
+bash scripts/new-camellia-linux-openpgp-key.sh \
+  "$HOME/Secure/camellia-nexus-linux-signing" \
+  'Camellia Computing Release <release@example.invalid>'
 ```
 
-Keep the exported private key outside the repository and rotate it before expiry. Publish a
-fingerprint through an authenticated channel independent of the release download when users need
-publisher identity, rather than treating a public key shipped beside its own signature as a trust
-anchor.
+Run it from a checked-out `camellia-computing/.github` repository. Keep the
+exported private subkey outside the repository and rotate it before expiry.
+Publish a fingerprint through an authenticated channel independent of the
+release download when users need publisher identity, rather than treating a
+public key shipped beside its own signature as a trust anchor.
 
 ## GitHub Actions configuration
 
@@ -52,10 +50,13 @@ Configure all three values together:
 - secret `LINUX_GPG_PRIVATE_KEY`: the complete ASCII-armored secret-key export;
 - secret `LINUX_GPG_PASSPHRASE`: its non-empty passphrase.
 
+Review the generated `metadata.json` and `variables.env`, then use its
+uploader. Use the selected organization scope only after Nexus and Remote
+Client are both approved to consume the same identity:
+
 ```bash
-gh variable set LINUX_GPG_FINGERPRINT --body '<full-fingerprint>'
-gh secret set LINUX_GPG_PRIVATE_KEY < linux-release-private.asc
-gh secret set LINUX_GPG_PASSPHRASE
+./github-actions/upload.sh --apply \
+  --org camellia-computing --repos nexus,remote-client
 ```
 
 Remove all three values to return to the unsigned-Linux-artifact mode. Never configure an abbreviated
@@ -85,7 +86,7 @@ The signing script verifies its own output with a separate public-only keyring b
 ## Rotation and incident handling
 
 - Publish the current non-secret fingerprint, validity period and rotation state in the
-  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/signing/identities.json).
+  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json).
 - Replace the private key, passphrase and fingerprint as one atomic configuration group.
 - Keep a release in draft state when its expected signing mode, key or signature set differs from
   metadata; never repair or relabel a published release in place.
