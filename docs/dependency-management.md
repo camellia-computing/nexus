@@ -34,7 +34,7 @@ GitHub's current Dependabot support covers pnpm lockfiles through pnpm 10, so th
 The Rust toolchain is also excluded from a standalone Dependabot update because one Rust change must update both `rust-toolchain.toml` and the root `rust-version`. Apply coupled updates with, for example:
 
 ```bash
-bash scripts/update-toolchains.sh --node 24.18.0 --pnpm 11.18.0 --rust 1.97.0
+bash scripts/update-toolchains.sh --node 24.18.0 --pnpm 11.18.0 --rust 1.97.1
 ```
 
 The command rejects dirty target files, prepares every related edit, runs the version policy, and restores the original files if validation fails. Review upstream release notes and run the complete quality matrix before merging. CI denies yanked Cargo packages in addition to audited vulnerabilities.
