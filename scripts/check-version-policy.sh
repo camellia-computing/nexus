@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Workflow expressions and shell fragments are intentionally matched literally.
+# shellcheck disable=SC2016
 set -euo pipefail
 
 fail() {
@@ -99,23 +101,35 @@ for workflow in "${cross_repo_workflows[@]}"; do
     "$workflow does not use the pinned cross-repository token action"
   require_workflow_text "$workflow" 'owner: ${{ github.repository_owner }}' \
     "$workflow hard-codes the cross-repository App owner"
-  require_workflow_text "$workflow" 'repositories: nexus-management-server' \
-    "$workflow does not scope the App token to the management server"
+  require_workflow_text "$workflow" 'CURRENT_LOGICAL_ID: nexus-client' \
+    "$workflow does not bind the current repository to its stable logical identity"
+  require_workflow_text "$workflow" 'REPOSITORY_MAP: ${{ vars.NEXUS_REPOSITORY_MAP }}' \
+    "$workflow does not read the centrally audited repository map"
+  require_workflow_text "$workflow" 'SIBLING_LOGICAL_ID: nexus-management' \
+    "$workflow does not select the management service by stable logical identity"
+  require_workflow_text "$workflow" 'keys == ["nexus-client", "nexus-management"]' \
+    "$workflow does not reject incomplete repository maps"
+  require_workflow_text "$workflow" 'echo "repository=$GITHUB_REPOSITORY_OWNER/$sibling_name"' \
+    "$workflow does not resolve the mapped sibling under the runtime owner"
+  require_workflow_text "$workflow" 'echo "repository_name=$sibling_name"' \
+    "$workflow does not expose one validated sibling name for token scoping"
+  require_workflow_text "$workflow" 'repositories: ${{ steps.sibling-auth.outputs.repository_name }}' \
+    "$workflow does not scope the App token to the mapped management repository"
   require_workflow_text "$workflow" 'permission-contents: read' \
     "$workflow does not request read-only sibling contents"
   require_workflow_text "$workflow" 'permission-metadata: read' \
     "$workflow does not request read-only sibling metadata"
-  require_workflow_text "$workflow" 'repository: ${{ github.repository_owner }}/nexus-management-server' \
-    "$workflow does not resolve the fixed sibling under the runtime owner"
+  require_workflow_text "$workflow" 'repository: ${{ steps.sibling-auth.outputs.repository }}' \
+    "$workflow does not check out the validated mapped sibling"
   require_workflow_text "$workflow" 'token: ${{ steps.sibling-token.outputs.token || github.token }}' \
     "$workflow does not select App or public checkout credentials"
   if grep -qE 'permission-[^:]+:[[:space:]]+(write|admin)' "$workflow"; then
     fail "$workflow grants write or administration permission to cross-repository access"
   fi
 done
-if grep -qE 'server-repository|camellia-nexus/nexus-management-server' \
+if grep -qE 'server-repository|camellia-nexus/nexus-management-server|github\.repository_owner }}/nexus-management-server|repositories:[[:space:]]+nexus-management-server' \
   .github/workflows/ci.yml .github/workflows/native-e2e.yml .github/workflows/contract-monitor.yml; then
-  fail 'client cross-repository workflows must use a fixed sibling name under the runtime owner'
+  fail 'client cross-repository workflows must resolve siblings from the centrally audited map'
 fi
 require_workflow_text .github/workflows/native-e2e.yml 'CROSS_REPO_READ_APP_PRIVATE_KEY:' \
   'the native reusable workflow does not declare its optional App secret'
@@ -129,7 +143,7 @@ if grep -q 'RELEASE_APP_' "${cross_repo_workflows[@]}"; then
 fi
 require_workflow_text .github/workflows/ci.yml 'uses: astral-sh/setup-uv@' \
   'CI does not install the pinned workflow security runtime'
-require_workflow_text .github/workflows/ci.yml 'version: 0.11.29' \
+require_workflow_text .github/workflows/ci.yml 'version: 0.12.0' \
   'CI does not select the reviewed exact uv release'
 require_workflow_text .github/workflows/ci.yml \
   'run: uvx --from zizmor==1.28.0 zizmor --strict-collection --persona=pedantic --format=github .' \
