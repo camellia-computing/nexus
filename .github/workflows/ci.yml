@@ -274,6 +274,7 @@ jobs:
             scripts/client_release_metadata.py \
             scripts/test_client_release_metadata.py
           python3 scripts/test_client_release_metadata.py -v
+          node scripts/test-prepare-privilege-broker.mjs
           bash scripts/test-ci-local.sh
           bash scripts/test-cross-platform-signing.sh
           bash scripts/test-manage-release.sh
