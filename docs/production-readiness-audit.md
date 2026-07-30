@@ -1,7 +1,7 @@
 # Camellia Nexus production-readiness audit
 
 Audit date: 2026-07-28
-Scope: `nexus` and `nexus-management-server` as one commercial product
+Scope: logical repositories `nexus-client` and `nexus-management` as one commercial product
 Baseline policy: fresh repositories, current schema only, no pre-release data or source-history compatibility
 
 ## Decision
@@ -33,7 +33,7 @@ Resolved by deleting legacy local migration logic and making stale schema reject
 
 ### NX-P0-02 — Product authorization identity was coupled to an old scope/repository name
 
-Resolved by adopting one non-configurable scope, `camellia.nexus.license`, and the `nexus-management-server` repository/binary/deployment identity throughout code, contracts, scripts, E2E provisioning, and workflows.
+Resolved by adopting one non-configurable scope, `camellia.nexus.license`, a stable `nexus-management` logical repository identity, and the `camellia-nexus-management-server` binary/deployment identity throughout code, contracts, scripts, E2E provisioning, and workflows. Mutable physical repository names now come only from the centrally audited logical map.
 
 ### NX-P0-03 — License terms did not express the intended authorization requirement
 
