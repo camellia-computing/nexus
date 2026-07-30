@@ -18,6 +18,7 @@ uname() {
 }
 
 pnpm() {
+  printf 'pnpm:%s\n' "$*" >> "$MOCK_ARGUMENTS_LOG"
   return 0
 }
 
@@ -90,5 +91,7 @@ export MOCK_MODE=no-dmg
   bash scripts/ci-local.sh --desktop-package --skip-quality >/dev/null
 )
 [[ "$(cat "$counter")" == 1 ]] || fail 'package without a DMG used the retry path'
+grep -Fxq 'pnpm:--dir ui peers check' "$arguments_log" ||
+  fail 'package validation did not reject frontend peer dependency drift'
 
 echo 'Local CI retry tests passed.'

@@ -18,9 +18,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: read
   contents: read
-  pull-requests: read
+  pull-requests: read # Resolve the exact release PR represented by a main commit.
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}-draft-${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
@@ -144,9 +143,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: read
+      actions: read # Bind release authorization to the exact successful CI run.
       contents: read
-      pull-requests: read
+      pull-requests: read # Validate approval and immutable release PR metadata.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -203,6 +202,14 @@ jobs:
             librsvg2-dev
       - name: Workflows
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: 0.12.0
+          enable-cache: false
+      - name: Workflow security
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx --from zizmor==1.28.0 zizmor --strict-collection --persona=pedantic --format=github .
       - name: Version policy
         run: |
           bash scripts/check-version-policy.sh
