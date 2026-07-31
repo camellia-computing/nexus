@@ -737,7 +737,7 @@ release_merge_ready() {
         "$RELEASE_FOCUSED_RUN_CONCLUSION" != success ||
         ( -n "$expected_run_id" && "$RELEASE_FOCUSED_RUN_ID" != "$expected_run_id" ) ]]; then
     echo 'ready=false' >> "$GITHUB_OUTPUT"
-    echo "Release PR #$number is waiting for its latest exact-head Gate"
+    echo "Release PR #$number is waiting for its latest exact-head CI / Required"
     return 0
   fi
   echo 'ready=true' >> "$GITHUB_OUTPUT"
@@ -825,8 +825,11 @@ validate_release_proposal_commit() {
     return 1
   }
   message="$(jq -r '.commit.message // ""' <<< "$commit_json")"
-  [[ "$message" =~ ^chore\(release\):\ v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]] &&
-    valid_product_version "${BASH_REMATCH[1]}" || {
+  [[ "$message" =~ ^chore\(release\):\ v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]] || {
+    echo "Release proposal commit $sha has a non-canonical message" >&2
+    return 1
+  }
+  valid_product_version "${BASH_REMATCH[1]}" || {
     echo "Release proposal commit $sha has a non-canonical message" >&2
     return 1
   }
@@ -1176,6 +1179,7 @@ validate_publish_release() {
     echo "release-id=$release_id"
     echo "release-draft=$release_draft"
     echo "release-pr-number=$release_pr_number"
+    echo "validation-run-id=$RELEASE_VALIDATION_RUN_ID"
   } >> "$GITHUB_OUTPUT"
   echo "Validated managed release $tag from PR #$release_pr_number"
 }
@@ -1214,6 +1218,79 @@ mark_publish_complete() {
   }
   remove_pending_label "$MANAGED_RELEASE_PR_NUMBER" || return 1
   echo "Recorded completed publication for v$version"
+}
+
+reconcile_latest_release() {
+  local version="$1" release_json highest_tag latest_tag
+
+  validate_publish_release "$version" || return 1
+  release_json="$(GH_TOKEN="$RELEASE_POLICY_TOKEN" gh api \
+    "repos/$GITHUB_REPOSITORY/releases/$MANAGED_RELEASE_ID")" || {
+    echo "Unable to read Release v$version before reconciling latest" >&2
+    return 1
+  }
+  validate_managed_release_metadata \
+    "$release_json" "$version" "$RELEASE_SHA" "$MANAGED_RELEASE_PR_NUMBER" || return 1
+  [[ "$MANAGED_RELEASE_DRAFT" == false && "$MANAGED_RELEASE_COMPLETE" == true ]] || {
+    echo "Only a completed immutable release can participate in latest selection" >&2
+    return 1
+  }
+
+  highest_tag="$(
+    GH_TOKEN="$RELEASE_POLICY_TOKEN" gh api --paginate --slurp \
+      "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+      jq -r '
+        [
+          .[][] |
+          select(.draft == false and .immutable == true) |
+          (.tag_name // "") as $tag |
+          ($tag | capture(
+            "^v(?<major>0|[1-9][0-9]*)\\.(?<minor>0|[1-9][0-9]*)\\.(?<patch>0|[1-9][0-9]*)$"
+          )) as $version |
+          (.target_commitish // "") as $sha |
+          (.body // "") as $body |
+          select($sha | test("^[0-9a-f]{40}$")) |
+          select(
+            ([
+              $body | split("\n")[] |
+              select(. == ("<!-- release-complete:" + $sha + " -->"))
+            ] | length) == 1
+          ) |
+          {
+            tag: $tag,
+            major: ($version.major | tonumber),
+            minor: ($version.minor | tonumber),
+            patch: ($version.patch | tonumber)
+          }
+        ] |
+        sort_by(.major, .minor, .patch) |
+        (last.tag // empty)
+      '
+  )" || {
+    echo "Unable to resolve the highest completed stable release" >&2
+    return 1
+  }
+  [[ "$highest_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+    echo "No completed stable release is eligible for latest" >&2
+    return 1
+  }
+  GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release edit "$highest_tag" \
+    --repo "$GITHUB_REPOSITORY" --latest >/dev/null || {
+    echo "Unable to set latest to $highest_tag" >&2
+    return 1
+  }
+  latest_tag="$(
+    GH_TOKEN="$RELEASE_POLICY_TOKEN" gh api \
+      "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name // empty'
+  )" || {
+    echo "Unable to read back the latest release" >&2
+    return 1
+  }
+  [[ "$latest_tag" == "$highest_tag" ]] || {
+    echo "Latest readback differs: expected $highest_tag, found $latest_tag" >&2
+    return 1
+  }
+  echo "Latest stable release resolves to $highest_tag"
 }
 
 parse_release_record() {
@@ -1777,7 +1854,11 @@ main() {
       : "${EXPECTED_VERSION:?EXPECTED_VERSION is required}"
       mark_publish_complete "$EXPECTED_VERSION"
       ;;
-    *) echo "Usage: $0 [manage|resolve-merged-pr|validate-policy|merge-ready|validate-pr|validate-main|merge-approved|validate-publish|complete-publish]" >&2; exit 2 ;;
+    reconcile-latest)
+      : "${EXPECTED_VERSION:?EXPECTED_VERSION is required}"
+      reconcile_latest_release "$EXPECTED_VERSION"
+      ;;
+    *) echo "Usage: $0 [manage|resolve-merged-pr|validate-policy|merge-ready|validate-pr|validate-main|merge-approved|validate-publish|complete-publish|reconcile-latest]" >&2; exit 2 ;;
   esac
 }
 

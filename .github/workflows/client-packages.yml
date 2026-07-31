@@ -26,9 +26,19 @@ on:
         required: false
       APPLE_CERTIFICATE_PASSWORD:
         required: false
+      APPLE_SECONDARY_API_PRIVATE_KEY:
+        required: false
+      APPLE_SECONDARY_CERTIFICATE:
+        required: false
+      APPLE_SECONDARY_CERTIFICATE_PASSWORD:
+        required: false
       WINDOWS_CODESIGN_PFX_BASE64:
         required: false
       WINDOWS_CODESIGN_PFX_PASSWORD:
+        required: false
+      WINDOWS_SECONDARY_CODESIGN_PFX_BASE64:
+        required: false
+      WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD:
         required: false
       LINUX_GPG_PRIVATE_KEY:
         required: false
@@ -141,7 +151,15 @@ jobs:
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           package_json_file: ui/package.json
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Node.js without mutable package cache
+        if: inputs.release
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Node.js with candidate cache
+        if: ${{ !inputs.release }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -149,6 +167,7 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install --no-self-update
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: ${{ !inputs.release }}
         with:
           key: package-${{ matrix.platform }}-${{ matrix.arch }}
       - name: Toolchains
@@ -186,47 +205,68 @@ jobs:
           WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.release && vars.WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
           WINDOWS_CODESIGN_PFX_BASE64: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
-          WINDOWS_SIGNING_TRUST_MODE: ${{ inputs.release && vars.WINDOWS_SIGNING_TRUST_MODE || '' }}
+          WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256: ${{ inputs.release && vars.WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256 || '' }}
+          WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT: ${{ inputs.release && vars.WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT || '' }}
+          WINDOWS_SECONDARY_CODESIGN_PFX_BASE64: ${{ inputs.release && secrets.WINDOWS_SECONDARY_CODESIGN_PFX_BASE64 || '' }}
+          WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD: ${{ inputs.release && secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
         shell: pwsh
         run: |
-          $values = @(
-            $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256,
-            $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT,
-            $env:WINDOWS_CODESIGN_PFX_BASE64,
-            $env:WINDOWS_CODESIGN_PFX_PASSWORD,
-            $env:WINDOWS_SIGNING_TRUST_MODE
-          )
-          $configured = @($values | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_)
-          }).Count
-          if ($configured -ne 0 -and $configured -ne $values.Count) {
-            throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256, WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT, WINDOWS_CODESIGN_PFX_BASE64, WINDOWS_CODESIGN_PFX_PASSWORD and WINDOWS_SIGNING_TRUST_MODE must be configured together'
-          }
-          if ($configured -eq $values.Count) {
-            if ($env:WINDOWS_SIGNING_TRUST_MODE -notin @('private-trust', 'public-trust')) {
-              throw 'WINDOWS_SIGNING_TRUST_MODE must be private-trust or public-trust'
+          $groups = @(
+            [ordered]@{
+              Name = 'primary'
+              CertificateSha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+              CertificateThumbprint = $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT
+              PfxBase64 = $env:WINDOWS_CODESIGN_PFX_BASE64
+              PfxPassword = $env:WINDOWS_CODESIGN_PFX_PASSWORD
+            },
+            [ordered]@{
+              Name = 'secondary'
+              CertificateSha256 = $env:WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_SHA256
+              CertificateThumbprint = $env:WINDOWS_SECONDARY_CODESIGN_CERTIFICATE_THUMBPRINT
+              PfxBase64 = $env:WINDOWS_SECONDARY_CODESIGN_PFX_BASE64
+              PfxPassword = $env:WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD
             }
-            $certificateSha256 = $env:WINDOWS_CODESIGN_CERTIFICATE_SHA256
+          )
+          $selected = $null
+          foreach ($group in $groups) {
+            $values = @(
+              $group.CertificateSha256,
+              $group.CertificateThumbprint,
+              $group.PfxBase64,
+              $group.PfxPassword
+            )
+            $configured = @($values | Where-Object {
+              -not [string]::IsNullOrWhiteSpace($_)
+            }).Count
+            if ($configured -ne 0 -and $configured -ne $values.Count) {
+              throw "The $($group.Name) Windows signing credential group is partial"
+            }
+            if ($null -eq $selected -and $configured -eq $values.Count) {
+              $selected = $group
+            }
+          }
+          if ($null -ne $selected) {
+            $certificateSha256 = $selected.CertificateSha256
             if ($certificateSha256 -cnotmatch '^[0-9A-F]{64}$') {
               throw 'WINDOWS_CODESIGN_CERTIFICATE_SHA256 must be the canonical uppercase 64-hexadecimal leaf fingerprint'
             }
-            $thumbprint = $env:WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT
+            $thumbprint = $selected.CertificateThumbprint
             if ($thumbprint -cnotmatch '^[0-9A-F]{40}$') {
               throw 'WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT must be the canonical uppercase 40-hexadecimal leaf thumbprint'
             }
             $pfxPath = Join-Path $env:RUNNER_TEMP 'camellia-codesign.pfx'
-            $base64 = $env:WINDOWS_CODESIGN_PFX_BASE64 -replace '\s', ''
+            $base64 = $selected.PfxBase64 -replace '\s', ''
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
             "CAMELLIA_NEXUS_SIGN_PFX=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "DISTRIBUTION_TRUST=$($env:WINDOWS_SIGNING_TRUST_MODE)" | Out-File -FilePath $env:GITHUB_ENV -Append
             'NATIVE_SIGNING=signed' | Out-File -FilePath $env:GITHUB_ENV -Append
             "WINDOWS_EXPECTED_SIGNING_SHA256=$certificateSha256" | Out-File -FilePath $env:GITHUB_ENV -Append
             "WINDOWS_EXPECTED_SIGNING_THUMBPRINT=$thumbprint" | Out-File -FilePath $env:GITHUB_ENV -Append
-            Write-Host 'Windows Authenticode signing enabled'
+            "WINDOWS_SIGNING_GROUP=$($selected.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "Windows Authenticode signing enabled with the $($selected.Name) group"
           }
           else {
-            'DISTRIBUTION_TRUST=none' | Out-File -FilePath $env:GITHUB_ENV -Append
             'NATIVE_SIGNING=unsigned' | Out-File -FilePath $env:GITHUB_ENV -Append
+            'WINDOWS_SIGNING_GROUP=none' | Out-File -FilePath $env:GITHUB_ENV -Append
             Write-Host 'Windows package will be unsigned'
           }
 
@@ -240,7 +280,13 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ inputs.release && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
           APPLE_SIGNING_CERTIFICATE_SHA256: ${{ inputs.release && vars.APPLE_SIGNING_CERTIFICATE_SHA256 || '' }}
           APPLE_SIGNING_IDENTITY: ${{ inputs.release && vars.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_SIGNING_TRUST_MODE: ${{ inputs.release && vars.APPLE_SIGNING_TRUST_MODE || '' }}
+          APPLE_SECONDARY_API_ISSUER: ${{ inputs.release && vars.APPLE_SECONDARY_API_ISSUER || '' }}
+          APPLE_SECONDARY_API_KEY: ${{ inputs.release && vars.APPLE_SECONDARY_API_KEY || '' }}
+          APPLE_SECONDARY_API_PRIVATE_KEY: ${{ inputs.release && secrets.APPLE_SECONDARY_API_PRIVATE_KEY || '' }}
+          APPLE_SECONDARY_CERTIFICATE: ${{ inputs.release && secrets.APPLE_SECONDARY_CERTIFICATE || '' }}
+          APPLE_SECONDARY_CERTIFICATE_PASSWORD: ${{ inputs.release && secrets.APPLE_SECONDARY_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256: ${{ inputs.release && vars.APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256 || '' }}
+          APPLE_SECONDARY_SIGNING_IDENTITY: ${{ inputs.release && vars.APPLE_SECONDARY_SIGNING_IDENTITY || '' }}
         shell: bash
         run: |
           SIGNING_ENV_FILE="$GITHUB_ENV" SIGNING_TEMP_DIRECTORY="$RUNNER_TEMP" \
@@ -270,9 +316,7 @@ jobs:
           }
           if ($env:NATIVE_SIGNING -eq 'signed') {
             $parameters.Sign = $true
-            if ($env:DISTRIBUTION_TRUST -eq 'private-trust') {
-              $parameters.TrustEmbeddedRoot = $true
-            }
+            $parameters.TrustEmbeddedRoot = $true
           }
           ./scripts/ci-local.ps1 @parameters
       - name: Linux package
@@ -284,9 +328,9 @@ jobs:
       - name: macOS package
         if: runner.os == 'macOS'
         env:
-          APPLE_CERTIFICATE: ${{ inputs.release && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.release && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ inputs.release && vars.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_CERTIFICATE: ${{ env.APPLE_SIGNING_GROUP == 'primary' && secrets.APPLE_CERTIFICATE || env.APPLE_SIGNING_GROUP == 'secondary' && secrets.APPLE_SECONDARY_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ env.APPLE_SIGNING_GROUP == 'primary' && secrets.APPLE_CERTIFICATE_PASSWORD || env.APPLE_SIGNING_GROUP == 'secondary' && secrets.APPLE_SECONDARY_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_GROUP == 'ad-hoc' && '-' || env.APPLE_SIGNING_GROUP == 'primary' && vars.APPLE_SIGNING_IDENTITY || env.APPLE_SIGNING_GROUP == 'secondary' && vars.APPLE_SECONDARY_SIGNING_IDENTITY || '' }}
           CAMELLIA_NEXUS_TAURI_BUNDLES: app,dmg
         run: bash scripts/ci-local.sh --desktop-package --skip-quality
 
@@ -294,7 +338,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           ARCHITECTURE: ${{ matrix.arch }}
-          CAMELLIA_NEXUS_SIGN_PASSWORD: ${{ inputs.release && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || '' }}
+          CAMELLIA_NEXUS_SIGN_PASSWORD: ${{ env.WINDOWS_SIGNING_GROUP == 'primary' && secrets.WINDOWS_CODESIGN_PFX_PASSWORD || env.WINDOWS_SIGNING_GROUP == 'secondary' && secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD || '' }}
         shell: pwsh
         run: |
           ./scripts/stage-windows-release.ps1 `
@@ -303,7 +347,6 @@ jobs:
             -Version $env:APP_VERSION `
             -Commit $env:PACKAGE_SHA `
             -NativeSigning $env:NATIVE_SIGNING `
-            -DistributionTrust $env:DISTRIBUTION_TRUST `
             -ExpectedSigningSha256 $env:WINDOWS_EXPECTED_SIGNING_SHA256 `
             -ExpectedSigningThumbprint $env:WINDOWS_EXPECTED_SIGNING_THUMBPRINT
       - name: Stage Linux

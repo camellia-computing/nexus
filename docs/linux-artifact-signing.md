@@ -86,7 +86,7 @@ The signing script verifies its own output with a separate public-only keyring b
 ## Rotation and incident handling
 
 - Publish the current non-secret fingerprint, validity period and rotation state in the
-  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json).
+  organization governance repository's signing registry.
 - Replace the private key, passphrase and fingerprint as one atomic configuration group.
 - Keep a release in draft state when its expected signing mode, key or signature set differs from
   metadata; never repair or relabel a published release in place.

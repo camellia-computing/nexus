@@ -40,7 +40,7 @@ esac
 signing_identity="${SIGNING_IDENTITY:-}"
 case "$PLATFORM:$NATIVE_SIGNING:$DISTRIBUTION_TRUST" in
   linux:not-applicable:not-applicable|macos:unsigned:none|macos:ad-hoc:none) ;;
-  macos:signed:private-trust|macos:signed:public-trust|macos:notarized:public-trust)
+  macos:signed:derive|macos:notarized:derive)
     [[ -n "$signing_identity" && "$signing_identity" != *$'\n'* &&
        "$signing_identity" != *$'\r'* ]] || {
       echo "A signed macOS package requires one printable signing identity" >&2
@@ -93,6 +93,28 @@ if [[ "$PLATFORM" == macos ]]; then
   if [[ "$NATIVE_SIGNING" == notarized ]]; then
     xcrun stapler validate "$app_bundle"
     spctl --assess --type execute --verbose=2 "$app_bundle"
+    DISTRIBUTION_TRUST=public-trust
+  elif [[ "$NATIVE_SIGNING" == signed ]]; then
+    certificate_directory="$(mktemp -d "${TMPDIR:-/tmp}/camellia-macos-certificates.XXXXXX")"
+    trap 'rm -rf "$certificate_directory"' EXIT
+    certificate_prefix="$certificate_directory/codesign"
+    codesign -d --extract-certificates "$certificate_prefix" "$app_bundle"
+    [[ -f "${certificate_prefix}0" ]] || {
+      echo 'codesign did not expose the final app signing certificate' >&2
+      exit 1
+    }
+    actual_certificate_sha256="$(
+      shasum -a 256 "${certificate_prefix}0" | awk '{ print toupper($1) }'
+    )"
+    [[ "$actual_certificate_sha256" == "${SIGNING_CERTIFICATE_SHA256:-}" ]] || {
+      echo 'Final macOS app certificate differs from the reviewed P12 identity' >&2
+      exit 1
+    }
+    if security verify-cert -p codeSign -c "${certificate_prefix}0" >/dev/null 2>&1; then
+      DISTRIBUTION_TRUST=public-trust
+    else
+      DISTRIBUTION_TRUST=private-trust
+    fi
   fi
   tar -czf "dist-artifacts/$name.tar.gz" -C "$(dirname "$app_bundle")" "$(basename "$app_bundle")"
 fi

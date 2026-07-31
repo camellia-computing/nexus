@@ -53,7 +53,7 @@ try {
     try {
       & $scriptPath -BuildId '1.2.3' -Architecture x64 -RunnerArchitecture X64 `
         -Version '1.2.3' -Commit ('a' * 40) -NativeSigning signed `
-        -DistributionTrust private-trust -ExpectedSigningThumbprint ('B' * 40) `
+        -ExpectedSigningThumbprint ('B' * 40) `
         -ExpectedSigningSha256 ('C' * 64) `
         -SigningPfxPath (Join-Path $testRoot 'missing-signing-identity.pfx') `
         -SigningPfxPassword (ConvertTo-SecureString 'test-only' -AsPlainText -Force) `

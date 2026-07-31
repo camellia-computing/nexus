@@ -243,10 +243,8 @@ def render_report(release: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "The current reviewed public identities and rotation states are maintained in "
-            "the [organization signing registry]"
-            "(https://github.com/camellia-computing/.github/blob/main/"
-            "docs/SIGNING_IDENTITY_REGISTRY.md).",
+            "The current reviewed public identities and rotation states are maintained "
+            "in the organization governance repository's signing identity registry.",
             "",
         ]
     )

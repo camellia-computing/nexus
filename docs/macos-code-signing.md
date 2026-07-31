@@ -8,9 +8,9 @@ This document defines the supported local and GitHub Actions signing modes for C
 | --- | --- | --- | --- |
 | Unsigned | No Apple values | Tauri builds with `--no-sign` | Internal testing; users must approve the app manually |
 | Ad hoc | `APPLE_SIGNING_IDENTITY=-` only | Structurally signed, no publisher identity or notarization | Local/controlled Apple Silicon testing |
-| Private trust | Complete certificate group with `private-trust` | Signed with the configured identity | Free Apple development certificate or controlled private-CA distribution |
-| Public trust | Complete certificate group with `public-trust` | Signed with a publicly trusted identity | Public distribution when notarization is temporarily unavailable |
-| Notarized | Public-trust certificate and complete App Store Connect API groups | Signed, notarized and stapled | Public distribution outside the App Store |
+| Private trust | Complete certificate group whose final app does not pass the system code-signing trust policy | Signed with the configured identity | Free Apple development certificate or controlled private-CA distribution |
+| Public trust | Complete certificate group whose final app passes the system code-signing trust policy | Signed with a publicly trusted identity | Public distribution when notarization is temporarily unavailable |
+| Notarized | Complete certificate and App Store Connect API groups with successful final notarization | Signed, notarized and stapled | Public distribution outside the App Store |
 
 The workflow rejects every partial group. Candidate builds never inherit signing secrets. `RELEASE-METADATA.json` records `unsigned`, `ad-hoc`, `signed`, or `notarized` for each macOS architecture.
 It also records the explicit trust mode and signing identity; `NATIVE-SIGNING.md` is regenerated
@@ -22,12 +22,11 @@ An Apple Developer free membership can create development identities for testing
 
 ## GitHub Actions configuration
 
-Certificate signing requires all five values:
+Certificate signing requires all four values:
 
 - variable `APPLE_SIGNING_IDENTITY`: the exact identity shown by `security find-identity -v -p codesigning`;
 - variable `APPLE_SIGNING_CERTIFICATE_SHA256`: the canonical uppercase
   64-hexadecimal leaf fingerprint in the organization signing registry;
-- variable `APPLE_SIGNING_TRUST_MODE`: exactly `private-trust` or `public-trust`;
 - secret `APPLE_CERTIFICATE`: one-line base64 of the exported `.p12`;
 - secret `APPLE_CERTIFICATE_PASSWORD`: the `.p12` export password.
 
@@ -58,7 +57,7 @@ used only when the identity is intentionally shared with Remote Client:
   --org camellia-computing --repos nexus,remote-client
 ```
 
-Notarization API credentials are a separate public-trust group. Add them only
+Notarization API credentials are a separate extension. Add them only
 after Developer ID enrollment and a reviewed release decision; the private P12
 bundle never prints or contains `APPLE_API_PRIVATE_KEY`.
 
@@ -68,9 +67,12 @@ For intentional ad-hoc release signing, configure only:
 gh variable set APPLE_SIGNING_IDENTITY --body '-'
 ```
 
-Remove the variable again to return to unsigned releases. Do not leave certificate, password, identity or notarization values partially configured.
-Ad-hoc mode must not retain `APPLE_SIGNING_TRUST_MODE`. Notarization is accepted only with
-`public-trust`; a private or free development identity remains a signed but non-notarized build.
+Remove the variable again to return to unsigned releases. Do not leave certificate, password,
+identity or notarization values partially configured. An optional `APPLE_SECONDARY_*` signing and
+notarization group is selected only when the primary signing group is absent; a failed primary
+never falls through. Ad-hoc mode cannot be combined with certificate or notarization values.
+The workflow extracts the certificate from the final app, evaluates the system trust policy, and
+records `public-trust` or `private-trust`; successful notarization is always `public-trust`.
 
 ## Free Apple development certificate
 
@@ -139,8 +141,8 @@ Structural `codesign --verify` success for a private or ad-hoc identity does not
 
 - Keep the root/private key and App Store Connect key out of source control, logs, artifacts and command arguments.
 - Publish the current non-secret identity, validity period and trust classification in the
-  [organization signing registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json).
-- Rotate an expiring or exposed certificate/key, identity and trust mode as one atomic
+  organization governance repository's signing registry.
+- Rotate an expiring or exposed certificate/key and identity as one atomic
   configuration group.
 - Revoke compromised Apple credentials before replacing repository values.
 - A release whose native signing status is unexpected must remain a draft; do not relabel metadata or add a signature after publication.

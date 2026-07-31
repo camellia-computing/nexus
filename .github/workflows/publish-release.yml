@@ -119,6 +119,7 @@ jobs:
       pull-requests: read # Bind the tag to immutable merged release PR metadata.
     outputs:
       release-draft: ${{ steps.release.outputs.release-draft }}
+      validation-run-id: ${{ steps.release.outputs.validation-run-id }}
     steps:
       - name: Policy token
         id: policy-token
@@ -172,36 +173,29 @@ jobs:
       APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SECONDARY_API_PRIVATE_KEY: ${{ secrets.APPLE_SECONDARY_API_PRIVATE_KEY }}
+      APPLE_SECONDARY_CERTIFICATE: ${{ secrets.APPLE_SECONDARY_CERTIFICATE }}
+      APPLE_SECONDARY_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_SECONDARY_CERTIFICATE_PASSWORD }}
       LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
       LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
       CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON: ${{ secrets.CAMELLIA_NEXUS_ENTITLEMENT_KEYS_JSON }}
       WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
       WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+      WINDOWS_SECONDARY_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_SECONDARY_CODESIGN_PFX_BASE64 }}
+      WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SECONDARY_CODESIGN_PFX_PASSWORD }}
 
-  release:
-    name: Publish
-    if: ${{ always() && needs.metadata.result == 'success' && needs.authorize.result == 'success' && (needs.authorize.outputs.release-draft == 'false' || needs.packages.result == 'success') }}
+  evidence:
+    name: Evidence
+    if: ${{ always() && needs.metadata.result == 'success' && needs.authorize.result == 'success' && needs.authorize.outputs.release-draft == 'true' && needs.packages.result == 'success' }}
     needs: [metadata, authorize, packages]
     runs-on: ubuntu-24.04
-    environment: release
     timeout-minutes: 30
     permissions:
-      actions: read # Download only the platform artifacts produced for this release.
+      actions: read # Download only the exact authorized package artifacts.
+      attestations: write # Record SBOM and provenance for the frozen release subjects.
       contents: read
-      id-token: write # Obtain short-lived Sigstore identities for release asset bundles.
-      pull-requests: write # Remove the release-pending label after public readback succeeds.
+      id-token: write # Mint the short-lived identity used by GitHub attestations.
     steps:
-      - name: Policy token
-        id: policy-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-administration: read
-          permission-contents: write
-          permission-metadata: read
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
@@ -213,23 +207,19 @@ jobs:
           set -euo pipefail
           git cat-file -e "$GITHUB_WORKFLOW_SHA^{commit}"
           for script in \
+            build_release_evidence.py \
             client_release_metadata.py \
             linux-openpgp-verify.sh \
-            manage-release.sh \
-            publish-client-release.sh
+            validate-release-evidence.py
           do
             git show "$GITHUB_WORKFLOW_SHA:scripts/$script" > "$RUNNER_TEMP/$script"
             chmod 700 "$RUNNER_TEMP/$script"
           done
-      - name: Rust toolchain
-        run: rustup toolchain install --no-self-update
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        if: ${{ needs.authorize.outputs.release-draft == 'true' }}
         with:
           pattern: camellia-nexus-${{ needs.metadata.outputs.version }}-*
           path: release-inputs
-      - name: Assets
-        if: ${{ needs.authorize.outputs.release-draft == 'true' }}
+      - name: Assemble immutable inputs
         env:
           RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
           VERSION: ${{ needs.metadata.outputs.version }}
@@ -290,7 +280,7 @@ jobs:
             echo "Expected four platform metadata files; found ${#metadata[@]}" >&2
             exit 1
           }
-          python3 "$RUNNER_TEMP/client_release_metadata.py" aggregate \
+          PYTHONPATH="$RUNNER_TEMP" python3 "$RUNNER_TEMP/client_release_metadata.py" aggregate \
             --version "$VERSION" \
             --commit "$RELEASE_SHA" \
             --output release-assets/RELEASE-METADATA.json \
@@ -305,10 +295,125 @@ jobs:
                 "release-assets/camellia-nexus-$VERSION-linux-x64.deb" \
                 "release-assets/camellia-nexus-$VERSION-linux-x64.tar.gz"
           fi
+          find release-assets -maxdepth 1 -type f \( \
+            -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o \
+            -name '*.msi' -o -name '*.tar.gz' -o -name '*-portable.zip' \
+          \) -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > release-subjects.sha256
+      - name: SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: release-assets/SBOM.spdx.json
+          syft-version: v1.50.0
+          dependency-snapshot: false
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Provenance attestation
+        id: provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-checksums: release-subjects.sha256
+      - name: SBOM attestation
+        id: sbom-attestation
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-checksums: release-subjects.sha256
+          sbom-path: release-assets/SBOM.spdx.json
+      - name: Freeze evidence
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          SBOM_ATTESTATION_BUNDLE: ${{ steps.sbom-attestation.outputs.bundle-path }}
+          VALIDATION_RUN_ID: ${{ needs.authorize.outputs.validation-run-id }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -- "$PROVENANCE_BUNDLE" release-assets/PROVENANCE.intoto.jsonl
+          cp -- "$SBOM_ATTESTATION_BUNDLE" \
+            release-assets/SBOM-ATTESTATION.intoto.jsonl
+          PYTHONPATH="$RUNNER_TEMP" python3 "$RUNNER_TEMP/build_release_evidence.py" \
+            --assets release-assets \
+            --metadata release-assets/RELEASE-METADATA.json \
+            --report release-assets/NATIVE-SIGNING.md \
+            --sbom release-assets/SBOM.spdx.json \
+            --provenance release-assets/PROVENANCE.intoto.jsonl \
+            --version "$VERSION" \
+            --commit "$RELEASE_SHA" \
+            --validation-run-id "$VALIDATION_RUN_ID" \
+            --output release-assets/release-evidence.json
+          python3 "$RUNNER_TEMP/validate-release-evidence.py" \
+            release-assets/release-evidence.json
           (
             cd release-assets
-            sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 sha256sum > "$RUNNER_TEMP/release-checksums"
+            mv "$RUNNER_TEMP/release-checksums" SHA256SUMS
+            sha256sum --check SHA256SUMS
           )
+      - name: Upload frozen release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: camellia-nexus-${{ needs.metadata.outputs.version }}-release-evidence
+          path: release-assets/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish
+    if: ${{ always() && needs.metadata.result == 'success' && needs.authorize.result == 'success' && (needs.authorize.outputs.release-draft == 'false' || needs.evidence.result == 'success') }}
+    needs: [metadata, authorize, packages, evidence]
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      actions: read # Download only the platform artifacts produced for this release.
+      attestations: read # Verify the frozen provenance and SBOM attestations.
+      contents: read
+      id-token: write # Obtain short-lived Sigstore identities for release asset bundles.
+      pull-requests: write # Remove the release-pending label after public readback succeeds.
+    steps:
+      - name: Policy token
+        id: policy-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-contents: write
+          permission-metadata: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.metadata.outputs.tag }}
+      - name: Control
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$GITHUB_WORKFLOW_SHA^{commit}"
+          for script in \
+            client_release_metadata.py \
+            linux-openpgp-verify.sh \
+            manage-release.sh \
+            publish-client-release.sh \
+            validate-release-evidence.py
+          do
+            git show "$GITHUB_WORKFLOW_SHA:scripts/$script" > "$RUNNER_TEMP/$script"
+            chmod 700 "$RUNNER_TEMP/$script"
+          done
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: ${{ needs.authorize.outputs.release-draft == 'true' }}
+        with:
+          name: camellia-nexus-${{ needs.metadata.outputs.version }}-release-evidence
+          path: release-assets
 
       - name: Reauthorize
         id: reauthorize
@@ -347,3 +452,13 @@ jobs:
           RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: bash "$RUNNER_TEMP/manage-release.sh" complete-publish
+      - name: Reconcile latest stable release
+        env:
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_LOGIN }}
+          RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}
+          RELEASE_POLICY_TOKEN: ${{ steps.policy-token.outputs.token }}
+          RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: bash "$RUNNER_TEMP/manage-release.sh" reconcile-latest

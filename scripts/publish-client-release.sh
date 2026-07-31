@@ -47,7 +47,8 @@ verify_bundle() {
 }
 
 verify_asset_directory() {
-  local directory="$1" subject bundle artifact_signing fingerprint
+  local directory="$1" subject bundle artifact_signing fingerprint encoded
+  local name expected_sha expected_size actual_sha actual_size evidence_name evidence_sha
   (cd "$directory" && sha256sum --check SHA256SUMS)
   python3 "$script_directory/client_release_metadata.py" validate \
     --version "$VERSION" \
@@ -57,6 +58,63 @@ verify_asset_directory() {
       echo "Release build metadata is invalid" >&2
       return 1
     }
+  python3 "$script_directory/validate-release-evidence.py" \
+    "$directory/release-evidence.json" >/dev/null
+  jq -e \
+    --arg commit "$RELEASE_SHA" \
+    --arg repository "nexus-client" \
+    --arg ref "refs/tags/v$VERSION" \
+    --arg version "$VERSION" '
+      .repository == $repository and
+      .version == $version and
+      .release_kind == "formal" and
+      .source.commit == $commit and
+      .source.ref == $ref and
+      (.files | length) == 9 and
+      (.images | length) == 0
+    ' "$directory/release-evidence.json" >/dev/null || {
+      echo "Release evidence does not identify the managed Nexus client release" >&2
+      return 1
+    }
+  while IFS= read -r encoded; do
+    name="$(base64 --decode <<< "$encoded" | jq -r '.name')"
+    expected_sha="$(base64 --decode <<< "$encoded" | jq -r '.sha256')"
+    expected_size="$(base64 --decode <<< "$encoded" | jq -r '.size_bytes')"
+    [[ -f "$directory/$name" && ! -L "$directory/$name" ]] || {
+      echo "Release evidence names a missing or unsafe artifact: $name" >&2
+      return 1
+    }
+    actual_sha="$(sha256sum "$directory/$name" | awk '{print $1}')"
+    actual_size="$(stat -c '%s' "$directory/$name")"
+    [[ "$actual_sha" == "$expected_sha" && "$actual_size" == "$expected_size" ]] || {
+      echo "Release evidence differs from downloaded artifact bytes: $name" >&2
+      return 1
+    }
+    GH_TOKEN="$GH_TOKEN" gh attestation verify "$directory/$name" \
+      --repo "$GITHUB_REPOSITORY" >/dev/null || {
+      echo "GitHub provenance verification failed: $name" >&2
+      return 1
+    }
+    GH_TOKEN="$GH_TOKEN" gh attestation verify "$directory/$name" \
+      --repo "$GITHUB_REPOSITORY" \
+      --predicate-type https://spdx.dev/Document/v2.3 >/dev/null || {
+      echo "GitHub SBOM attestation verification failed: $name" >&2
+      return 1
+    }
+  done < <(jq -r '.files[] | @base64' "$directory/release-evidence.json")
+  while IFS=$'\t' read -r evidence_name evidence_sha; do
+    [[ -f "$directory/$evidence_name" && ! -L "$directory/$evidence_name" ]] || {
+      echo "Release evidence support file is unavailable: $evidence_name" >&2
+      return 1
+    }
+    [[ "$(sha256sum "$directory/$evidence_name" | awk '{print $1}')" == "$evidence_sha" ]] || {
+      echo "Release evidence support file digest differs: $evidence_name" >&2
+      return 1
+    }
+  done < <(
+    jq -r '[.files[] | .sbom, .provenance] | unique_by(.name)[] | [.name, .sha256] | @tsv' \
+      "$directory/release-evidence.json"
+  )
   artifact_signing="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.scheme' "$directory/RELEASE-METADATA.json")"
   if [[ "$artifact_signing" == openpgp-detached ]]; then
     fingerprint="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.fingerprint' "$directory/RELEASE-METADATA.json")"
@@ -78,10 +136,11 @@ release_json="$work_directory/release.json"
 assets_json="$work_directory/assets.json"
 expected_names="$work_directory/expected-assets"
 expected_raw_names="$work_directory/expected-raw-assets"
+expected_product_names="$work_directory/expected-product-assets"
 remote_names="$work_directory/remote-assets"
 configure_expected_assets() {
   local metadata="$1" artifact_signing
-  cat > "$expected_raw_names" <<EOF
+  cat > "$expected_product_names" <<EOF
 camellia-nexus-$VERSION-linux-x64.AppImage
 camellia-nexus-$VERSION-linux-x64.deb
 camellia-nexus-$VERSION-linux-x64.tar.gz
@@ -91,9 +150,16 @@ camellia-nexus-$VERSION-macos-x64.dmg
 camellia-nexus-$VERSION-macos-x64.tar.gz
 camellia-nexus-$VERSION-windows-x64.msi
 camellia-nexus-$VERSION-windows-x64-portable.zip
+EOF
+  cat "$expected_product_names" > "$expected_raw_names"
+  cat >> "$expected_raw_names" <<EOF
 RELEASE-METADATA.json
 NATIVE-SIGNING.md
+PROVENANCE.intoto.jsonl
+SBOM-ATTESTATION.intoto.jsonl
+SBOM.spdx.json
 SHA256SUMS
+release-evidence.json
 EOF
   artifact_signing="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.scheme // empty' "$metadata")"
   if [[ "$artifact_signing" == openpgp-detached ]]; then
@@ -107,6 +173,7 @@ EOF
     echo "Unsupported Linux artifact signing mode: $artifact_signing" >&2
     return 1
   fi
+  LC_ALL=C sort -o "$expected_product_names" "$expected_product_names"
   LC_ALL=C sort -o "$expected_raw_names" "$expected_raw_names"
   {
     cat "$expected_raw_names"
@@ -181,6 +248,9 @@ verify_remote_release() {
     download_asset "$name" "$destination/$name"
   done < "$expected_names"
   verify_asset_directory "$destination"
+  jq -r '.files[].name' "$destination/release-evidence.json" |
+    LC_ALL=C sort > "$work_directory/evidence-product-assets"
+  diff -u "$expected_product_names" "$work_directory/evidence-product-assets"
 }
 
 if [[ "$verify_published_only" == true || "$(jq -r '.draft' "$release_json")" == false ]]; then
@@ -252,7 +322,8 @@ verify_remote_release "$verified_draft"
 EXPECTED_VERSION="$VERSION" bash "$script_directory/manage-release.sh" validate-publish >/dev/null
 refresh_release
 if [[ "$(jq -r '.draft' "$release_json")" == true ]]; then
-  GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+  GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release edit "$tag" \
+    --repo "$GITHUB_REPOSITORY" --draft=false
 fi
 
 # Re-read the public state and bytes after the publication mutation.

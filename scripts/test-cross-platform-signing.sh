@@ -9,6 +9,7 @@ macos_env="$test_root/macos-env"
 env -i PATH="$PATH" SIGNING_ENV_FILE="$macos_env" SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'CAMELLIA_NEXUS_MACOS_SIGN=disabled' "$macos_env"
+grep -Fqx 'APPLE_SIGNING_GROUP=none' "$macos_env"
 grep -Fqx 'NATIVE_SIGNING=unsigned' "$macos_env"
 grep -Fqx 'DISTRIBUTION_TRUST=none' "$macos_env"
 
@@ -16,6 +17,7 @@ grep -Fqx 'DISTRIBUTION_TRUST=none' "$macos_env"
 env -i PATH="$PATH" APPLE_SIGNING_IDENTITY=- SIGNING_ENV_FILE="$macos_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'CAMELLIA_NEXUS_MACOS_SIGN=required' "$macos_env"
+grep -Fqx 'APPLE_SIGNING_GROUP=ad-hoc' "$macos_env"
 grep -Fqx 'NATIVE_SIGNING=ad-hoc' "$macos_env"
 grep -Fqx 'DISTRIBUTION_TRUST=none' "$macos_env"
 
@@ -51,11 +53,12 @@ env -i \
   APPLE_CERTIFICATE_PASSWORD="$macos_password" \
   APPLE_SIGNING_CERTIFICATE_SHA256="$macos_sha256" \
   APPLE_SIGNING_IDENTITY='Camellia Nexus macOS Test' \
-  APPLE_SIGNING_TRUST_MODE=private-trust \
   SIGNING_ENV_FILE="$macos_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
 grep -Fqx 'NATIVE_SIGNING=signed' "$macos_env"
+grep -Fqx 'APPLE_SIGNING_GROUP=primary' "$macos_env"
+grep -Fqx 'DISTRIBUTION_TRUST=derive' "$macos_env"
 grep -Fqx "SIGNING_CERTIFICATE_SHA256=$macos_sha256" "$macos_env"
 if env -i \
   PATH="$PATH" \
@@ -63,13 +66,24 @@ if env -i \
   APPLE_CERTIFICATE_PASSWORD="$macos_password" \
   APPLE_SIGNING_CERTIFICATE_SHA256="$(printf 'A%.0s' {1..64})" \
   APPLE_SIGNING_IDENTITY='Camellia Nexus macOS Test' \
-  APPLE_SIGNING_TRUST_MODE=private-trust \
   SIGNING_ENV_FILE="$macos_env" \
   SIGNING_TEMP_DIRECTORY="$test_root" \
   bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null 2>&1; then
   echo 'An unregistered macOS certificate was accepted' >&2
   exit 1
 fi
+
+: > "$macos_env"
+env -i \
+  PATH="$PATH" \
+  APPLE_SECONDARY_CERTIFICATE="$macos_certificate" \
+  APPLE_SECONDARY_CERTIFICATE_PASSWORD="$macos_password" \
+  APPLE_SECONDARY_SIGNING_CERTIFICATE_SHA256="$macos_sha256" \
+  APPLE_SECONDARY_SIGNING_IDENTITY='Camellia Nexus macOS Test' \
+  SIGNING_ENV_FILE="$macos_env" \
+  SIGNING_TEMP_DIRECTORY="$test_root" \
+  bash "$repository/scripts/resolve-macos-signing.sh" >/dev/null
+grep -Fqx 'APPLE_SIGNING_GROUP=secondary' "$macos_env"
 
 linux_env="$test_root/linux-env"
 env -i PATH="$PATH" SIGNING_ENV_FILE="$linux_env" \
