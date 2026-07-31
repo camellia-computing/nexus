@@ -7,21 +7,23 @@ This document defines the supported local and GitHub Actions signing modes for C
 | Mode | Configuration | Result | Suitable use |
 | --- | --- | --- | --- |
 | Unsigned | No Windows signing configuration | Unsigned `.exe` and `.msi` | Internal testing or users who accept SmartScreen warnings |
-| Private trust | Complete Windows group with `private-trust` | SHA-256 Authenticode, RFC 3161 timestamp and isolated embedded-root verification | Managed test devices that explicitly trust the private CA |
-| Public trust | Complete Windows group with `public-trust` | SHA-256 Authenticode, RFC 3161 timestamp and normal Windows trust-policy verification | Public distribution with a publicly trusted issuer |
+| Private trust | Complete Windows group whose final signatures require the reviewed private root | SHA-256 Authenticode, RFC 3161 timestamp and isolated embedded-root verification | Managed test devices that explicitly trust the private CA |
+| Public trust | Complete Windows group whose final signatures pass normal Windows trust policy | SHA-256 Authenticode, RFC 3161 timestamp and normal Windows trust-policy verification | Public distribution with a publicly trusted issuer |
 
-The workflow requires one complete five-value group or no Windows signing values:
+The workflow requires one complete four-value group or no Windows signing values:
 
 - variable `WINDOWS_CODESIGN_CERTIFICATE_SHA256`: the canonical uppercase
   64-hexadecimal SHA-256 leaf fingerprint recorded in the organization signing registry;
 - variable `WINDOWS_CODESIGN_CERTIFICATE_THUMBPRINT`: the complete uppercase 40-hexadecimal SHA-1
   leaf thumbprint recorded in the organization signing registry;
-- variable `WINDOWS_SIGNING_TRUST_MODE`: exactly `private-trust` or `public-trust`;
 - `WINDOWS_CODESIGN_PFX_BASE64`: one-line base64 of a password-protected PFX;
 - `WINDOWS_CODESIGN_PFX_PASSWORD`: its export password.
 
-Optional variable `WINDOWS_TIMESTAMP_URL` overrides the default RFC 3161 endpoint. A partial configuration fails before the build. `RELEASE-METADATA.json` records `unsigned` or `signed`.
-For a signed build it also records the reviewed leaf thumbprint and explicit distribution-trust mode;
+Optional variable `WINDOWS_TIMESTAMP_URL` overrides the default RFC 3161 endpoint. An optional
+`WINDOWS_SECONDARY_*` group has the same shape. A partial group fails before the build; primary wins
+when both are complete, and a failed primary never falls through. `RELEASE-METADATA.json` records
+`unsigned` or `signed`. For a signed build it also records the reviewed leaf thumbprint and the
+distribution trust derived from the final embedded signatures;
 `NATIVE-SIGNING.md` is deterministically regenerated from that metadata and published beside the
 artifacts.
 
@@ -110,24 +112,25 @@ the PFX. Review its public `metadata.json` and directly copyable
 
 ```powershell
 pwsh -NoProfile -File .\github-actions\Upload.ps1 -Apply `
-  -Organization camellia-computing -Repositories nexus,remote-client
+  -Organization <organization> -Repositories <client-repository-a>,<client-repository-b>
 ```
 
 The selected organization scope is appropriate only after both desktop clients
-are intended to consume the same reviewed identity. For a Nexus-only
-experiment, use `-Repository camellia-computing/nexus` instead. The release
+are intended to consume the same reviewed identity. For a single-repository
+experiment, use `-Repository <organization>/<repository>` instead. The release
 workflow decodes the PFX only into the ephemeral runner directory and removes
 it in an always-run cleanup step. It derives the leaf certificate from the PFX
 and refuses publication when either its
 canonical SHA-256 fingerprint or Windows-native SHA-1 thumbprint differs from the reviewed values.
-Change `WINDOWS_SIGNING_TRUST_MODE` to `public-trust` only after the same identity passes normal
-Windows trust policy.
+It first applies normal Windows trust policy and only then retries with the reviewed private root.
+The successful verifier path records `public-trust` or `private-trust`; no configured label can
+promote the result.
 
 ## Rotation and incident handling
 
 - First publish the new non-secret certificate identity, validity period and trust classification
-  in the [organization signing registry](https://github.com/camellia-computing/.github/blob/main/config/signing-identities.json).
-- Replace the PFX, password, expected thumbprint and trust mode as one reviewed configuration
+  in the organization governance repository's signing registry.
+- Replace the PFX, password and expected fingerprints as one reviewed configuration
   change; a partially rotated group intentionally blocks release.
 - Revoke or distrust a compromised certificate before uploading a replacement.
 - Preserve timestamp evidence: a valid RFC 3161 timestamp allows verification of a signature made while the certificate was valid.

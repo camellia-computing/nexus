@@ -24,9 +24,6 @@ param(
   [ValidateSet('unsigned', 'signed')]
   [string]$NativeSigning = 'unsigned',
 
-  [ValidateSet('none', 'private-trust', 'public-trust')]
-  [string]$DistributionTrust = 'none',
-
   [ValidatePattern('^$|^[0-9A-Fa-f]{40}$')]
   [string]$ExpectedSigningThumbprint = '',
 
@@ -51,13 +48,12 @@ if ($ExpectedSigningThumbprint -cne $expectedThumbprint -or
   throw 'Reviewed Windows certificate identities must use canonical uppercase hexadecimal'
 }
 if ($NativeSigning -eq 'unsigned') {
-  if ($DistributionTrust -ne 'none' -or $expectedThumbprint -or $expectedSha256) {
-    throw 'Unsigned Windows packages require distribution trust none and no signing identity'
+  if ($expectedThumbprint -or $expectedSha256) {
+    throw 'Unsigned Windows packages require no signing identity'
   }
 }
-elseif ($DistributionTrust -notin @('private-trust', 'public-trust') -or
-        -not $expectedThumbprint -or -not $expectedSha256) {
-  throw 'Signed Windows packages require private-trust/public-trust and both reviewed certificate fingerprints'
+elseif (-not $expectedThumbprint -or -not $expectedSha256) {
+  throw 'Signed Windows packages require both reviewed certificate fingerprints'
 }
 
 $expectedRunnerArchitecture = switch ($Architecture) {
@@ -96,6 +92,7 @@ if ($NativeSigning -eq 'signed' -and $env:OS -ne 'Windows_NT') {
   throw 'Signed Windows release staging requires a Windows host'
 }
 $signingIdentity = $null
+$distributionTrust = 'none'
 if ($NativeSigning -eq 'signed') {
   . (Join-Path $PSScriptRoot 'windows-authenticode.ps1')
   if ([string]::IsNullOrWhiteSpace($SigningPfxPath)) {
@@ -113,7 +110,7 @@ if ($NativeSigning -eq 'signed') {
     $verificationContext = Get-WindowsPfxVerificationContext `
       -PfxPath $SigningPfxPath `
       -Password $verificationPassword `
-      -TrustEmbeddedRoot:($DistributionTrust -eq 'private-trust')
+      -TrustEmbeddedRoot
     $signingIdentity = $verificationContext.Thumbprint.ToUpperInvariant()
     if ($signingIdentity -ne $expectedThumbprint) {
       throw "The signing PFX identity does not match the reviewed certificate thumbprint: expected $expectedThumbprint, found $signingIdentity"
@@ -125,13 +122,31 @@ if ($NativeSigning -eq 'signed') {
       throw "The signing PFX identity does not match the reviewed certificate SHA-256 fingerprint: expected $expectedSha256, found $signingSha256"
     }
     $signTool = Find-WindowsSignTool
-    foreach ($signedFile in @($executable, $broker, $stagedMsi)) {
-      Assert-WindowsSignature `
-        -File $signedFile `
-        -SignTool $signTool `
-        -ExpectedThumbprint $verificationContext.Thumbprint `
-        -PrivateRoots $verificationContext.PrivateRoots `
-        -ChainCertificates $verificationContext.ChainCertificates
+    $signedFiles = @($executable, $broker, $stagedMsi)
+    try {
+      foreach ($signedFile in $signedFiles) {
+        Assert-WindowsSignature `
+          -File $signedFile `
+          -SignTool $signTool `
+          -ExpectedThumbprint $verificationContext.Thumbprint `
+          -PrivateRoots @() `
+          -ChainCertificates $verificationContext.ChainCertificates
+      }
+      $distributionTrust = 'public-trust'
+    }
+    catch {
+      if ($verificationContext.PrivateRoots.Count -eq 0) {
+        throw
+      }
+      foreach ($signedFile in $signedFiles) {
+        Assert-WindowsSignature `
+          -File $signedFile `
+          -SignTool $signTool `
+          -ExpectedThumbprint $verificationContext.Thumbprint `
+          -PrivateRoots $verificationContext.PrivateRoots `
+          -ChainCertificates $verificationContext.ChainCertificates
+      }
+      $distributionTrust = 'private-trust'
     }
   }
   finally {
@@ -169,7 +184,7 @@ $metadata = [ordered]@{
   platform = $Platform
   architecture = $Architecture
   nativeSigning = $NativeSigning
-  distributionTrust = $DistributionTrust
+  distributionTrust = $distributionTrust
   identity = $signingIdentity
   artifactSigning = [ordered]@{
     scheme = 'none'
