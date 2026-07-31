@@ -44,6 +44,16 @@ $PfxLeafCertificate = $null
 $PfxVerificationContext = $null
 try {
     New-Item -ItemType Directory -Path $TemporaryDirectory | Out-Null
+    $FailingSignTool = Join-Path $TemporaryDirectory "signtool-failure.cmd"
+    [IO.File]::WriteAllText($FailingSignTool, "@echo off`r`nexit /b 7`r`n")
+    $global:LASTEXITCODE = 91
+    $ProbeExitCode = Invoke-WindowsSignToolVerification `
+        -SignTool $FailingSignTool `
+        -File (Join-Path $TemporaryDirectory "probe.exe")
+    if ($ProbeExitCode -ne 7 -or $LASTEXITCODE -ne 0) {
+        throw "SignTool verification did not isolate its expected native failure status"
+    }
+
     $DiscoveryRoot = Join-Path $TemporaryDirectory "sdk-bin"
     $OlderX64 = Join-Path $DiscoveryRoot "10.0.999.0\x64\signtool.exe"
     $LatestX64 = Join-Path $DiscoveryRoot "10.0.1000.0\x64\signtool.exe"
