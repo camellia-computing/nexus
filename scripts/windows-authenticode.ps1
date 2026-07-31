@@ -965,6 +965,21 @@ namespace CamelliaNexus.Build
     return [CamelliaNexus.Build.WinTrust]::Inspect($ResolvedFile)
 }
 
+function Invoke-WindowsSignToolVerification {
+    param(
+        [Parameter(Mandatory)][string]$SignTool,
+        [Parameter(Mandatory)][string]$File
+    )
+
+    & $SignTool verify /pa /all /v $File | Out-Host
+    $ExitCode = $LASTEXITCODE
+    # GitHub's PowerShell wrapper exits with the last native status. Encapsulate
+    # the public-trust probe so an expected failure cannot poison a later,
+    # successful isolated-private-root verification.
+    $global:LASTEXITCODE = 0
+    return $ExitCode
+}
+
 function Assert-WindowsSignature {
     param(
         [string]$File,
@@ -990,8 +1005,10 @@ function Assert-WindowsSignature {
         $FormattedStatus = [CamelliaNexus.Build.WinTrust]::FormatStatus($TrustStatus)
         Write-Host "Embedded WinTrust verification status: $FormattedStatus"
         if ($PrivateRoots.Count -eq 0) {
-            & $SignTool verify /pa /all /v $File
-            if ($LASTEXITCODE -ne 0 -or $TrustStatus -ne [CamelliaNexus.Build.WinTrust]::Success) {
+            $SignToolExitCode = Invoke-WindowsSignToolVerification `
+                -SignTool $SignTool `
+                -File $File
+            if ($SignToolExitCode -ne 0 -or $TrustStatus -ne [CamelliaNexus.Build.WinTrust]::Success) {
                 throw "Authenticode verification failed for ${File}: $FormattedStatus"
             }
         } elseif (
