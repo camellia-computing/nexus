@@ -67,7 +67,7 @@ input_guard_line="$(grep -nF 'diff -u "$RUNNER_TEMP/expected-build-assets" "$RUN
 copy_line="$(grep -nF 'cp -- "$asset" release-assets/' "$publish_workflow" | cut -d: -f1)"
 [[ "$input_guard_line" =~ ^[1-9][0-9]*$ && "$copy_line" =~ ^[1-9][0-9]*$ && "$input_guard_line" -lt "$copy_line" ]] ||
   fail "client artifacts are copied before the exact input multiset is validated"
-[[ "$(grep -Fc 'RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}' "$publish_workflow")" == 4 ]] ||
+[[ "$(grep -Fc 'RELEASE_APP_SLUG: ${{ steps.policy-token.outputs.app-slug }}' "$publish_workflow")" == 5 ]] ||
   fail "publication boundaries do not all receive the installation App slug"
 [[ "$(grep -Fc 'permission-metadata: read' "$publish_workflow")" == 2 ]] ||
   fail "publication policy tokens do not use the documented Metadata-read scope"
@@ -1179,10 +1179,13 @@ validate_release_pr() {
   VALIDATED_PR_NUMBER=17
   VALIDATED_RELEASE_SHA=release-sha
   VALIDATED_RELEASE_VERSION=1.2.3
+  RELEASE_VALIDATION_RUN_ID=4242
 }
 validate_publish_release 1.2.3
 grep -Fxq 'release-id=42' "$GITHUB_OUTPUT" || fail "publish validation did not expose the Release identity"
 grep -Fxq 'release-draft=true' "$GITHUB_OUTPUT" || fail "publish validation did not expose the draft state"
+grep -Fxq 'validation-run-id=4242' "$GITHUB_OUTPUT" ||
+  fail "publish validation did not expose the exact CI run"
 RELEASE_APP_SLUG=other-release-bot
 if validate_publish_release 1.2.3 >/dev/null 2>&1; then
   fail "publish validation accepted a mismatched App identity"
@@ -1252,6 +1255,41 @@ mark_publish_complete 1.2.3
 assert_eq "$completion_label_removed" true
 [[ "$(jq -r .body "$completion_state" | grep -Fxc "<!-- release-complete:$completion_sha -->" || true)" == 1 ]] ||
   fail "Publication completion proof was not recorded exactly once"
+
+latest_selected=
+gh() {
+  if [[ "$*" == "api repos/test/repository/releases/42" ]]; then
+    cat "$completion_state"
+  elif [[ "$1" == api && "$2" == --paginate && "$3" == --slurp &&
+          "$4" == 'repos/test/repository/releases?per_page=100' ]]; then
+    jq -nc --arg current "$completion_sha" '
+      [[
+        {
+          draft:false, immutable:true, tag_name:"v1.2.3",
+          target_commitish:$current,
+          body:("<!-- release-complete:" + $current + " -->")
+        },
+        {
+          draft:false, immutable:true, tag_name:"v1.10.0",
+          target_commitish:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          body:"<!-- release-complete:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->"
+        },
+        {
+          draft:false, immutable:true, tag_name:"v2.0.0",
+          target_commitish:"cccccccccccccccccccccccccccccccccccccccc",
+          body:"publication is incomplete"
+        }
+      ]]'
+  elif [[ "$*" == "release edit v1.10.0 --repo test/repository --latest" ]]; then
+    latest_selected=v1.10.0
+  elif [[ "$*" == "api repos/test/repository/releases/latest --jq .tag_name // empty" ]]; then
+    printf '%s\n' "$latest_selected"
+  else
+    fail "unexpected latest-reconciliation gh call: $*"
+  fi
+}
+reconcile_latest_release 1.2.3
+assert_eq "$latest_selected" v1.10.0
 rm -f "$GITHUB_OUTPUT"
 
 echo "Release manager state tests passed"

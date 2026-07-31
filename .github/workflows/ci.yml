@@ -271,8 +271,12 @@ jobs:
             scripts/test-publish-client-release.sh \
             scripts/test-stage-unix-release.sh
           python3 -m py_compile \
+            scripts/build_release_evidence.py \
             scripts/client_release_metadata.py \
-            scripts/test_client_release_metadata.py
+            scripts/test_build_release_evidence.py \
+            scripts/test_client_release_metadata.py \
+            scripts/validate-release-evidence.py
+          python3 scripts/test_build_release_evidence.py -v
           python3 scripts/test_client_release_metadata.py -v
           node scripts/test-prepare-privilege-broker.mjs
           bash scripts/test-ci-local.sh
@@ -355,7 +359,7 @@ jobs:
       version: ${{ needs.metadata.outputs.version }}
 
   gate:
-    name: Gate
+    name: CI / Required
     if: ${{ always() && !cancelled() && needs.metadata.result != 'skipped' }}
     needs: [metadata, release-check, quality, windows, native-e2e, packages]
     runs-on: ubuntu-24.04

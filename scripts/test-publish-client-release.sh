@@ -45,8 +45,8 @@ workflow_asset_templates() {
 
 publisher_asset_templates() {
   awk '
-    /cat > "\$expected_raw_names" <<EOF/ { capture = 1; next }
-    capture && /^RELEASE-METADATA\.json$/ { exit }
+    /cat > "\$expected_product_names" <<EOF/ { capture = 1; next }
+    capture && /^EOF$/ { exit }
     capture { print }
   ' scripts/publish-client-release.sh
 }
@@ -95,7 +95,26 @@ Path(sys.argv[2]).write_text(
     encoding="utf-8",
 )
 PY
-(cd "$remote" && sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS)
+printf '{"spdxVersion":"SPDX-2.3"}\n' > "$remote/SBOM.spdx.json"
+printf '{"mediaType":"provenance-fixture"}\n' > "$remote/PROVENANCE.intoto.jsonl"
+printf '{"mediaType":"sbom-fixture"}\n' > "$remote/SBOM-ATTESTATION.intoto.jsonl"
+PYTHONPATH=scripts python3 scripts/build_release_evidence.py \
+  --assets "$remote" \
+  --metadata "$remote/RELEASE-METADATA.json" \
+  --report "$remote/NATIVE-SIGNING.md" \
+  --sbom "$remote/SBOM.spdx.json" \
+  --provenance "$remote/PROVENANCE.intoto.jsonl" \
+  --version 1.2.3 \
+  --commit dddddddddddddddddddddddddddddddddddddddd \
+  --validation-run-id 42 \
+  --generated-at 2026-07-31T00:00:00Z \
+  --output "$remote/release-evidence.json"
+(
+  cd "$remote"
+  find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
+    LC_ALL=C sort -z |
+    xargs -0 sha256sum > SHA256SUMS
+)
 for subject in "$remote"/*; do
   printf 'mock bundle for %s\n' "$(basename "$subject")" > "$subject.sigstore.json"
 done
@@ -124,6 +143,8 @@ gh() {
     name="$(find "$MOCK_REMOTE" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | sed -n "${BASH_REMATCH[1]}p")"
     [[ -n "$name" ]]
     command cat "$MOCK_REMOTE/$name"
+  elif [[ "$1" == attestation && "$2" == verify && -f "$3" ]]; then
+    return 0
   else
     echo "Unexpected mock gh call: $*" >&2
     return 1
@@ -170,13 +191,23 @@ run_verification() {
 run_verification >/dev/null
 cp "$remote/NATIVE-SIGNING.md" "$root/native-signing-original"
 printf 'tampered report\n' >> "$remote/NATIVE-SIGNING.md"
-(cd "$remote" && sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS)
+(
+  cd "$remote"
+  find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name '*.sigstore.json' -print0 |
+    LC_ALL=C sort -z |
+    xargs -0 sha256sum > SHA256SUMS
+)
 if run_verification >/dev/null 2>&1; then
   echo "Published release verification accepted a report that disagrees with metadata" >&2
   exit 1
 fi
 cp "$root/native-signing-original" "$remote/NATIVE-SIGNING.md"
-(cd "$remote" && sha256sum camellia-nexus-* NATIVE-SIGNING.md RELEASE-METADATA.json > SHA256SUMS)
+(
+  cd "$remote"
+  find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name '*.sigstore.json' -print0 |
+    LC_ALL=C sort -z |
+    xargs -0 sha256sum > SHA256SUMS
+)
 
 rm "$remote/SHA256SUMS.sigstore.json"
 if run_verification >/dev/null 2>&1; then
@@ -235,6 +266,8 @@ gh() {
     rm "$MOCK_REMOTE/$name"
   elif [[ "$1" == release && "$2" == upload && "$3" == v1.2.3 && -f "$4" ]]; then
     cp "$4" "$MOCK_REMOTE/$(basename "$4")"
+  elif [[ "$1" == attestation && "$2" == verify && -f "$3" ]]; then
+    return 0
   else
     echo "Intentional stop after draft reconciliation: $*" >&2
     return 1
