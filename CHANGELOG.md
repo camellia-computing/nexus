@@ -3,6 +3,15 @@
 All notable changes to Camellia Nexus will be recorded here from the first
 commercial release onward.
 
+## [1.0.1] - 2026-07-31
+
+### Fixed
+
+- isolate expected private trust probe failure (#13)
+
+- reconcile completed publication lifecycle (#14)
+
+
 ## [1.0.0] - 2026-07-31
 
 ### Added
