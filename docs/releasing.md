@@ -95,6 +95,8 @@ configuration checks; publication remains fail-closed until both variables and
 the private-key secret are valid.
 
 Frontend installation/build inside each platform package is not redundant: each Tauri build needs its platform-local CLI dependencies and embedded frontend output. Rust lint/test and Playwright suites are not repeated in package jobs.
+Formal package jobs disable mutable pnpm and Rust caches; non-publishing
+candidate jobs may retain them for throughput.
 
 ## Release PR merge policy
 
