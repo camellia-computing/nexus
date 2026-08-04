@@ -576,7 +576,7 @@ impl ProgramManager {
             report.attempted += 1;
             let program_id = handle.spec().await.id;
             active_handles.push((program_id.clone(), handle.clone()));
-            tasks.spawn(async move { (program_id, handle.mutate(Mutation::Stop).await) });
+            tasks.spawn(async move { (program_id, handle.stop_or_join().await) });
         }
         while let Some(result) = tasks.join_next().await {
             match result {

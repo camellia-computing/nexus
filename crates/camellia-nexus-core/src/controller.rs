@@ -7,7 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, mpsc, oneshot, watch};
+use tokio::sync::{
+    Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, mpsc, oneshot,
+    watch,
+};
 
 use crate::{
     AdapterRegistry, CamelliaNexusError, ConfigService, DynProcessDriver, DynProgramStore,
@@ -73,7 +76,7 @@ pub struct ControllerHandle {
     spec: Arc<RwLock<ProgramSpec>>,
     state: watch::Receiver<ProgramState>,
     mutation_pending: Arc<AtomicBool>,
-    stop_pending: Arc<AtomicBool>,
+    stop_gate: Arc<Mutex<()>>,
     operations: Arc<RwLock<()>>,
     removing: Arc<AtomicBool>,
 }
@@ -120,7 +123,7 @@ impl ControllerHandle {
             spec,
             state,
             mutation_pending: Arc::new(AtomicBool::new(false)),
-            stop_pending: Arc::new(AtomicBool::new(false)),
+            stop_gate: Arc::new(Mutex::new(())),
             operations: Arc::new(RwLock::new(())),
             removing: Arc::new(AtomicBool::new(false)),
         }
@@ -133,12 +136,24 @@ impl ControllerHandle {
             Some(MutationGuard::acquire(self.mutation_pending.clone())?)
         };
         let stop_guard = if matches!(&mutation, Mutation::Stop) {
-            Some(StopGuard::acquire(self.stop_pending.clone())?)
+            Some(StopGuard::acquire(self.stop_gate.clone())?)
         } else {
             None
         };
         self.send_mutation(mutation, mutation_guard, stop_guard)
             .await
+    }
+
+    /// Used by the bounded fail-closed sweep: join an already accepted Stop instead of
+    /// enqueueing a duplicate command. Ordinary callers still receive `ProgramBusy`.
+    pub(crate) async fn stop_or_join(&self) -> MutationResponse {
+        match self.mutate(Mutation::Stop).await {
+            Err(error) if error.code == ErrorCode::ProgramBusy => {
+                let _completed = self.stop_gate.clone().lock_owned().await;
+                Ok(None)
+            }
+            result => result,
+        }
     }
 
     pub(crate) fn try_reserve_mutation(&self) -> Result<MutationGuard> {
@@ -232,26 +247,19 @@ impl Drop for MutationGuard {
 }
 
 struct StopGuard {
-    pending: Arc<AtomicBool>,
+    _permit: OwnedMutexGuard<()>,
 }
 
 impl StopGuard {
-    fn acquire(pending: Arc<AtomicBool>) -> Result<Self> {
-        pending
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+    fn acquire(gate: Arc<Mutex<()>>) -> Result<Self> {
+        gate.try_lock_owned()
+            .map(|permit| Self { _permit: permit })
             .map_err(|_| {
                 CamelliaNexusError::new(
                     ErrorCode::ProgramBusy,
                     "Program stop is already in progress",
                 )
-            })?;
-        Ok(Self { pending })
-    }
-}
-
-impl Drop for StopGuard {
-    fn drop(&mut self) {
-        self.pending.store(false, Ordering::Release);
+            })
     }
 }
 
@@ -1057,20 +1065,22 @@ fn runtime_fields_changed(current: &ProgramSpec, next: &ProgramSpec) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::AtomicBool};
+    use std::sync::Arc;
+
+    use tokio::sync::Mutex;
 
     use super::{ErrorCode, StopGuard};
 
     #[test]
     fn stop_guard_is_single_flight_and_releases_after_completion() {
-        let pending = Arc::new(AtomicBool::new(false));
-        let guard = StopGuard::acquire(pending.clone()).expect("first stop");
-        let error = match StopGuard::acquire(pending.clone()) {
+        let gate = Arc::new(Mutex::new(()));
+        let guard = StopGuard::acquire(gate.clone()).expect("first stop");
+        let error = match StopGuard::acquire(gate.clone()) {
             Ok(_) => panic!("duplicate stop acquired the guard"),
             Err(error) => error,
         };
         assert_eq!(error.code, ErrorCode::ProgramBusy);
         drop(guard);
-        assert!(StopGuard::acquire(pending).is_ok());
+        assert!(StopGuard::acquire(gate).is_ok());
     }
 }
