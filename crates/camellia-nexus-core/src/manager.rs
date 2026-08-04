@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast, watch};
 
 use crate::{
     ActionDescriptor, ActionResult, AdapterRegistry, CamelliaNexusError, ConfigDocument,
@@ -48,10 +48,21 @@ pub struct ProgramManager {
     lifecycle: ManagerLifecycle,
 }
 
-#[derive(Default)]
 struct ManagerLifecycle {
     gate: Arc<RwLock<()>>,
     shutdown_started: AtomicBool,
+    shutdown_signal: watch::Sender<bool>,
+}
+
+impl Default for ManagerLifecycle {
+    fn default() -> Self {
+        let (shutdown_signal, _) = watch::channel(false);
+        Self {
+            gate: Arc::new(RwLock::new(())),
+            shutdown_started: AtomicBool::new(false),
+            shutdown_signal,
+        }
+    }
 }
 
 impl ManagerLifecycle {
@@ -64,11 +75,28 @@ impl ManagerLifecycle {
     }
 
     async fn begin_shutdown(&self) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
-        let permit = self.gate.clone().write_owned().await;
         if self.shutdown_started.swap(true, Ordering::AcqRel) {
-            None
-        } else {
-            Some(permit)
+            return None;
+        }
+        // Publish closing before waiting for existing readers so long-lived mutations can
+        // quiesce themselves instead of preventing the shutdown writer from ever arriving.
+        self.shutdown_signal.send_replace(true);
+        Some(self.gate.clone().write_owned().await)
+    }
+
+    fn is_shutdown_started(&self) -> bool {
+        self.shutdown_started.load(Ordering::Acquire)
+    }
+
+    async fn shutdown_requested(&self) {
+        let mut shutdown = self.shutdown_signal.subscribe();
+        loop {
+            if *shutdown.borrow_and_update() {
+                return;
+            }
+            if shutdown.changed().await.is_err() {
+                return;
+            }
         }
     }
 }
@@ -1116,10 +1144,15 @@ impl ProgramManager {
     }
 
     pub async fn reconcile_auto_start_programs(&self, startup_delay: Duration) -> AutoStartReport {
+        // Do not hold a mutation permit while another reconciliation owns the queue. Otherwise
+        // queued background work would itself delay the shutdown writer.
+        let _reconciliation = tokio::select! {
+            reconciliation = self.auto_start_reconciliation.lock() => reconciliation,
+            () = self.lifecycle.shutdown_requested() => return AutoStartReport::default(),
+        };
         let Ok(_mutation) = self.lifecycle.mutation_permit().await else {
             return AutoStartReport::default();
         };
-        let _reconciliation = self.auto_start_reconciliation.lock().await;
         let handles: Vec<_> = self.controllers.read().await.values().cloned().collect();
         let mut scheduled = Vec::new();
         for handle in handles {
@@ -1141,7 +1174,13 @@ impl ProgramManager {
         }
         for (id, handle) in scheduled {
             if !startup_delay.is_zero() {
-                tokio::time::sleep(startup_delay).await;
+                tokio::select! {
+                    () = tokio::time::sleep(startup_delay) => {}
+                    () = self.lifecycle.shutdown_requested() => break,
+                }
+            }
+            if self.lifecycle.is_shutdown_started() {
+                break;
             }
             let _automatic_start = self.automatic_lifecycle_gate.read().await;
             if !self.automatic_restarts_enabled.load(Ordering::Acquire) {
@@ -1362,6 +1401,14 @@ mod tests {
     async fn shutdown_gate_drains_mutations_and_rejects_late_work() {
         let lifecycle = Arc::new(ManagerLifecycle::default());
         let active = lifecycle.mutation_permit().await.expect("active mutation");
+        let requested = lifecycle.shutdown_requested();
+        tokio::pin!(requested);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut requested)
+                .await
+                .is_err(),
+            "the lifecycle must not report shutdown before it is requested"
+        );
         let closing = lifecycle.begin_shutdown();
         tokio::pin!(closing);
 
@@ -1371,6 +1418,13 @@ mod tests {
                 .is_err(),
             "shutdown must wait for an active mutation"
         );
+        assert!(
+            lifecycle.shutdown_started.load(Ordering::Acquire),
+            "shutdown must be observable while active mutations drain"
+        );
+        tokio::time::timeout(Duration::from_millis(100), &mut requested)
+            .await
+            .expect("shutdown notification deadline");
         drop(active);
         let shutdown = tokio::time::timeout(Duration::from_millis(100), &mut closing)
             .await
