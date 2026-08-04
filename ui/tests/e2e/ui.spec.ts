@@ -80,6 +80,10 @@ async function replaceEditorContent(page: Page, editor: Locator, content: string
   await page.keyboard.insertText(content);
 }
 
+async function isWindowsPreview(page: Page) {
+  return page.evaluate(() => navigator.userAgent.includes('Windows'));
+}
+
 async function trackPreviewExternalActions(page: Page) {
   await page.addInitScript(() => {
     const counts: Record<string, number> = {};
@@ -2554,7 +2558,12 @@ test('managed configuration sources stay dense, stable and responsive', async ({
 
   await editor.getByRole('button', { name: 'Local file' }).click();
   const localPath = editor.getByLabel('Local configuration path').last();
-  await expect(localPath).toHaveAttribute('placeholder', 'config.json · /etc/proxy/config.json');
+  await expect(localPath).toHaveAttribute(
+    'placeholder',
+    await isWindowsPreview(page)
+      ? 'config.json · C:/Configs/config.json'
+      : 'config.json · /etc/proxy/config.json',
+  );
   const longRemoteUrl = `https://example.com/${'nested-configuration-segment/'.repeat(18)}config.json`;
   const remoteUrl = remote.getByLabel('Remote configuration URL');
   await remoteUrl.fill(longRemoteUrl);
@@ -2702,7 +2711,9 @@ test('Mihomo keeps YAML configuration, managed Dashboard and compact layout inte
   await page.getByRole('button', { name: 'Add program' }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Add to Camellia Nexus' });
   await dialog.getByRole('button', { name: 'Mihomo', exact: true }).click();
-  await expect(dialog.getByLabel('Executable')).toHaveValue('mihomo');
+  await expect(dialog.getByLabel('Executable')).toHaveValue(
+    await isWindowsPreview(page) ? 'mihomo.exe' : 'mihomo',
+  );
   await expect(dialog.getByText('Use arguments or an optional stored configuration')).toBeVisible();
   await expect(dialog.getByRole('heading', { name: 'Stored configuration' })).toBeVisible();
   await dialog.getByRole('button', { name: 'Managed configuration' }).click();
