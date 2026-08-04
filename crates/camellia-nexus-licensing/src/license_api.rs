@@ -390,7 +390,7 @@ pub struct CreateTeamInvitation {
     pub role: WorkspaceRole,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamInvitation {
     pub id: String,
@@ -399,11 +399,33 @@ pub struct TeamInvitation {
     pub expires_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for TeamInvitation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TeamInvitation")
+            .field("id", &self.id)
+            .field("member_id", &self.member.id)
+            .field("invitation_token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcceptTeamInvitation {
     pub operation_id: String,
     pub invitation_token: String,
+}
+
+impl std::fmt::Debug for AcceptTeamInvitation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AcceptTeamInvitation")
+            .field("operation_id", &self.operation_id)
+            .field("invitation_token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,7 +437,7 @@ pub struct UpdateWorkspaceMember {
     pub row_version: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberDeviceEnrollment {
     pub id: String,
@@ -424,11 +446,33 @@ pub struct MemberDeviceEnrollment {
     pub expires_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for MemberDeviceEnrollment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MemberDeviceEnrollment")
+            .field("id", &self.id)
+            .field("member_id", &self.member_id)
+            .field("enrollment_token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcceptMemberDeviceEnrollment {
     pub operation_id: String,
     pub enrollment_token: String,
+}
+
+impl std::fmt::Debug for AcceptMemberDeviceEnrollment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AcceptMemberDeviceEnrollment")
+            .field("operation_id", &self.operation_id)
+            .field("enrollment_token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2700,6 +2744,47 @@ mod tests {
             created_at,
             updated_at: created_at,
         }
+    }
+
+    #[test]
+    fn team_one_time_secret_diagnostics_are_redacted() {
+        let invitation = TeamInvitation {
+            id: "invitation_abc".into(),
+            member: team_member("member_abc", 1_000),
+            invitation_token: "invitation-token-secret".into(),
+            expires_at: 2_000,
+        };
+        let invitation_debug = format!("{invitation:?}");
+        assert!(invitation_debug.contains("member_abc"));
+        assert!(invitation_debug.contains("[REDACTED]"));
+        assert!(!invitation_debug.contains("invitation-token-secret"));
+
+        let accepted = AcceptTeamInvitation {
+            operation_id: "operation_accept".into(),
+            invitation_token: "accepted-invitation-secret".into(),
+        };
+        let accepted_debug = format!("{accepted:?}");
+        assert!(accepted_debug.contains("operation_accept"));
+        assert!(!accepted_debug.contains("accepted-invitation-secret"));
+
+        let enrollment = MemberDeviceEnrollment {
+            id: "enrollment_abc".into(),
+            member_id: "member_abc".into(),
+            enrollment_token: "enrollment-token-secret".into(),
+            expires_at: 2_000,
+        };
+        let enrollment_debug = format!("{enrollment:?}");
+        assert!(enrollment_debug.contains("member_abc"));
+        assert!(enrollment_debug.contains("[REDACTED]"));
+        assert!(!enrollment_debug.contains("enrollment-token-secret"));
+
+        let accepted = AcceptMemberDeviceEnrollment {
+            operation_id: "operation_enroll".into(),
+            enrollment_token: "accepted-enrollment-secret".into(),
+        };
+        let accepted_debug = format!("{accepted:?}");
+        assert!(accepted_debug.contains("operation_enroll"));
+        assert!(!accepted_debug.contains("accepted-enrollment-secret"));
     }
 
     #[test]
