@@ -1732,6 +1732,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: CreateSharedConfiguration,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         validate_shared_configuration_input(&request.name, &request.input, &request.content)?;
         let url = self.endpoint("v1/workspace/configurations")?;
         let response = self
@@ -1750,6 +1751,7 @@ impl LicenseApi for HttpLicenseApi {
         document_id: &str,
         request: ReviseSharedConfiguration,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         validate_shared_configuration_input(&request.name, &request.input, &request.content)?;
         let document_id = canonical_resource_id(document_id, "shared_config_")?;
         let url = self.endpoint(&format!(
@@ -1771,6 +1773,7 @@ impl LicenseApi for HttpLicenseApi {
         document_id: &str,
         request: PublishSharedConfiguration,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let document_id = canonical_resource_id(document_id, "shared_config_")?;
         let url = self.endpoint(&format!(
             "v1/workspace/configurations/{document_id}/publish"
@@ -1791,6 +1794,7 @@ impl LicenseApi for HttpLicenseApi {
         document_id: &str,
         request: VersionedWorkspaceMutation,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let document_id = canonical_resource_id(document_id, "shared_config_")?;
         let url = self.endpoint(&format!("v1/workspace/configurations/{document_id}"))?;
         let response = self
@@ -1809,6 +1813,7 @@ impl LicenseApi for HttpLicenseApi {
         document_id: &str,
         request: VersionedWorkspaceMutation,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let document_id = canonical_resource_id(document_id, "shared_config_")?;
         let url = self.endpoint(&format!(
             "v1/workspace/configurations/{document_id}/restore"
@@ -1829,6 +1834,7 @@ impl LicenseApi for HttpLicenseApi {
         document_id: &str,
         request: VersionedWorkspaceMutation,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let document_id = canonical_resource_id(document_id, "shared_config_")?;
         let url = self.endpoint(&format!("v1/workspace/configurations/{document_id}/purge"))?;
         let response = self
@@ -1884,6 +1890,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: AdvanceWorkspaceCheckpoint,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let url = self.endpoint("v1/workspace/sync/checkpoint")?;
         let response = self
             .device_authenticated(session, proof, reqwest::Method::POST, url)?
@@ -2039,6 +2046,7 @@ impl LicenseApi for HttpLicenseApi {
         device_id: &str,
         request: DeviceRemovalRequest,
     ) -> Result<()> {
+        validate_operation_id(&request.operation_id)?;
         let device_id = canonical_device_id(device_id)?;
         let path = format!("v1/devices/{device_id}");
         let url = self.endpoint(&path)?;
@@ -2090,6 +2098,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         submission: CustomerPaymentSubmission,
     ) -> Result<ManualPaymentClaim> {
+        validate_operation_id(&submission.operation_id)?;
         let url = self.endpoint("v1/billing/payment-claims")?;
         tracing::info!("submitting manual payment claim to license service");
         let response = self
@@ -2300,6 +2309,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: CreateWorkspaceAlertRule,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let url = self.endpoint("v1/workspace/alerts/rules")?;
         let response = self
             .device_authenticated(session, proof, reqwest::Method::POST, url)?
@@ -2317,6 +2327,7 @@ impl LicenseApi for HttpLicenseApi {
         rule_id: &str,
         request: UpdateWorkspaceAlertRule,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let rule_id = canonical_resource_id(rule_id, "alert_rule_")?;
         let url = self.endpoint(&format!("v1/workspace/alerts/rules/{rule_id}"))?;
         let response = self
@@ -2335,6 +2346,7 @@ impl LicenseApi for HttpLicenseApi {
         rule_id: &str,
         request: VersionedWorkspaceMutation,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let rule_id = canonical_resource_id(rule_id, "alert_rule_")?;
         let url = self.endpoint(&format!("v1/workspace/alerts/rules/{rule_id}"))?;
         let response = self
@@ -2381,6 +2393,7 @@ impl LicenseApi for HttpLicenseApi {
         incident_id: &str,
         request: VersionedWorkspaceMutation,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let incident_id = canonical_resource_id(incident_id, "alert_incident_")?;
         let url = self.endpoint(&format!(
             "v1/workspace/alerts/incidents/{incident_id}/acknowledge"
@@ -2401,6 +2414,7 @@ impl LicenseApi for HttpLicenseApi {
         incident_id: &str,
         request: VersionedWorkspaceMutation,
     ) -> Result<WorkspaceMutationReceipt> {
+        validate_operation_id(&request.operation_id)?;
         let incident_id = canonical_resource_id(incident_id, "alert_incident_")?;
         let url = self.endpoint(&format!(
             "v1/workspace/alerts/incidents/{incident_id}/resolve"
@@ -2480,6 +2494,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: CreateWorkspaceWebhookEndpoint,
     ) -> Result<WorkspaceWebhookSecretResult> {
+        validate_operation_id(&request.operation_id)?;
         let url = self.endpoint("v1/workspace/webhooks")?;
         let response = self
             .device_authenticated(session, proof, reqwest::Method::POST, url)?
@@ -2497,6 +2512,7 @@ impl LicenseApi for HttpLicenseApi {
         endpoint_id: &str,
         request: UpdateWorkspaceWebhookEndpoint,
     ) -> Result<WorkspaceWebhookEndpoint> {
+        validate_operation_id(&request.operation_id)?;
         let endpoint_id = canonical_resource_id(endpoint_id, "webhook_endpoint_")?;
         let url = self.endpoint(&format!("v1/workspace/webhooks/{endpoint_id}"))?;
         let response = self
@@ -2515,6 +2531,7 @@ impl LicenseApi for HttpLicenseApi {
         endpoint_id: &str,
         request: RotateWorkspaceWebhookSecret,
     ) -> Result<WorkspaceWebhookSecretResult> {
+        validate_operation_id(&request.operation_id)?;
         let endpoint_id = canonical_resource_id(endpoint_id, "webhook_endpoint_")?;
         let url = self.endpoint(&format!(
             "v1/workspace/webhooks/{endpoint_id}/rotate-secret"
@@ -2535,6 +2552,7 @@ impl LicenseApi for HttpLicenseApi {
         endpoint_id: &str,
         request: DeleteWorkspaceWebhookEndpoint,
     ) -> Result<WorkspaceWebhookDeletion> {
+        validate_operation_id(&request.operation_id)?;
         let endpoint_id = canonical_resource_id(endpoint_id, "webhook_endpoint_")?;
         let url = self.endpoint(&format!("v1/workspace/webhooks/{endpoint_id}"))?;
         let response = self
@@ -2717,6 +2735,22 @@ async fn bounded_body(mut response: reqwest::Response, maximum_bytes: u64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutation_operation_ids_require_canonical_v4_uuids() {
+        assert!(validate_operation_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").is_ok());
+        for value in [
+            "not-a-uuid",
+            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+            "aaaaaaaa-aaaa-1aaa-8aaa-aaaaaaaaaaaa",
+            "aaaaaaaa-aaaa-4aaa-caaa-aaaaaaaaaaaa",
+        ] {
+            assert!(matches!(
+                validate_operation_id(value),
+                Err(LicensingError::InvalidRequest)
+            ));
+        }
+    }
 
     #[test]
     fn resource_path_identifiers_are_canonical_request_input() {
