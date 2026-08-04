@@ -15,6 +15,7 @@ const MAX_CONFIGURATION_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_AUDIT_EXPORT_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_TEAM_MEMBER_PAGE_SIZE: u32 = 100;
 const MAX_TEAM_MEMBER_PAGE_SIZE: u32 = 200;
+const DEFAULT_WORKSPACE_PAGE_SIZE: u32 = 50;
 const DEVICE_PROOF_HEADER: &str = "x-camellia-device-proof";
 
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -1690,6 +1691,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: SharedConfigurationPageRequest,
     ) -> Result<SharedConfigurationPage> {
+        let requested_limit = request.limit.unwrap_or(DEFAULT_WORKSPACE_PAGE_SIZE);
         let mut url = self.endpoint("v1/workspace/configurations")?;
         append_keyset_page_query(&mut url, request.cursor.as_deref(), request.limit, 200)?;
         url.query_pairs_mut()
@@ -1699,7 +1701,15 @@ impl LicenseApi for HttpLicenseApi {
             .send()
             .await
             .map_err(request_error)?;
-        Self::response(response).await
+        let page: SharedConfigurationPage = Self::response(response).await?;
+        validate_keyset_page(
+            page.configurations.len(),
+            page.next_cursor.as_deref(),
+            page.has_more,
+            request.cursor.as_deref(),
+            requested_limit,
+        )?;
+        Ok(page)
     }
 
     async fn shared_configuration_content(
@@ -1852,6 +1862,8 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: WorkspaceSyncFeedRequest,
     ) -> Result<WorkspaceSyncFeed> {
+        let requested_cursor = request.cursor.unwrap_or(0);
+        let requested_limit = request.limit.unwrap_or(DEFAULT_WORKSPACE_PAGE_SIZE);
         let mut url = self.endpoint("v1/workspace/sync/changes")?;
         {
             let mut query = url.query_pairs_mut();
@@ -1867,7 +1879,9 @@ impl LicenseApi for HttpLicenseApi {
             .send()
             .await
             .map_err(request_error)?;
-        Self::response(response).await
+        let page: WorkspaceSyncFeed = Self::response(response).await?;
+        validate_workspace_sync_feed(&page, requested_cursor, requested_limit)?;
+        Ok(page)
     }
 
     async fn workspace_checkpoint(
@@ -2293,6 +2307,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: WorkspaceAlertRulePageRequest,
     ) -> Result<WorkspaceAlertRulePage> {
+        let requested_limit = request.limit.unwrap_or(DEFAULT_WORKSPACE_PAGE_SIZE);
         let mut url = self.endpoint("v1/workspace/alerts/rules")?;
         append_keyset_page_query(&mut url, request.cursor.as_deref(), request.limit, 200)?;
         let response = self
@@ -2300,7 +2315,15 @@ impl LicenseApi for HttpLicenseApi {
             .send()
             .await
             .map_err(request_error)?;
-        Self::response(response).await
+        let page: WorkspaceAlertRulePage = Self::response(response).await?;
+        validate_keyset_page(
+            page.rules.len(),
+            page.next_cursor.as_deref(),
+            page.has_more,
+            request.cursor.as_deref(),
+            requested_limit,
+        )?;
+        Ok(page)
     }
 
     async fn create_workspace_alert_rule(
@@ -2364,6 +2387,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: WorkspaceIncidentPageRequest,
     ) -> Result<WorkspaceIncidentPage> {
+        let requested_limit = request.limit.unwrap_or(DEFAULT_WORKSPACE_PAGE_SIZE);
         let mut url = self.endpoint("v1/workspace/alerts/incidents")?;
         append_keyset_page_query(&mut url, request.cursor.as_deref(), request.limit, 200)?;
         {
@@ -2383,7 +2407,15 @@ impl LicenseApi for HttpLicenseApi {
             .send()
             .await
             .map_err(request_error)?;
-        Self::response(response).await
+        let page: WorkspaceIncidentPage = Self::response(response).await?;
+        validate_keyset_page(
+            page.incidents.len(),
+            page.next_cursor.as_deref(),
+            page.has_more,
+            request.cursor.as_deref(),
+            requested_limit,
+        )?;
+        Ok(page)
     }
 
     async fn acknowledge_workspace_alert_incident(
@@ -2434,6 +2466,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: WorkspaceAuditPageRequest,
     ) -> Result<WorkspaceAuditPage> {
+        let requested_limit = request.limit.unwrap_or(DEFAULT_WORKSPACE_PAGE_SIZE);
         let mut url = self.endpoint("v1/workspace/audit/events")?;
         append_audit_query(&mut url, &request, 200)?;
         let response = self
@@ -2441,7 +2474,15 @@ impl LicenseApi for HttpLicenseApi {
             .send()
             .await
             .map_err(request_error)?;
-        Self::response(response).await
+        let page: WorkspaceAuditPage = Self::response(response).await?;
+        validate_keyset_page(
+            page.events.len(),
+            page.next_cursor.as_deref(),
+            page.has_more,
+            request.cursor.as_deref(),
+            requested_limit,
+        )?;
+        Ok(page)
     }
 
     async fn workspace_audit_event_types(
@@ -2464,6 +2505,7 @@ impl LicenseApi for HttpLicenseApi {
         proof: &DeviceProof,
         request: WorkspaceAuditPageRequest,
     ) -> Result<WorkspaceAuditExport> {
+        let requested_limit = request.limit.unwrap_or(DEFAULT_WORKSPACE_PAGE_SIZE);
         let mut url = self.endpoint("v1/workspace/audit/export")?;
         append_audit_query(&mut url, &request, 5_000)?;
         let response = self
@@ -2471,7 +2513,16 @@ impl LicenseApi for HttpLicenseApi {
             .send()
             .await
             .map_err(request_error)?;
-        Self::response_with_limit(response, MAX_AUDIT_EXPORT_RESPONSE_BYTES).await
+        let export: WorkspaceAuditExport =
+            Self::response_with_limit(response, MAX_AUDIT_EXPORT_RESPONSE_BYTES).await?;
+        validate_keyset_page(
+            export.events.len(),
+            export.next_cursor.as_deref(),
+            export.truncated,
+            request.cursor.as_deref(),
+            requested_limit,
+        )?;
+        Ok(export)
     }
 
     async fn workspace_webhook_endpoints(
@@ -2590,7 +2641,11 @@ impl LicenseApi for HttpLicenseApi {
             .send()
             .await
             .map_err(request_error)?;
-        Self::response(response).await
+        let deliveries: Vec<WorkspaceWebhookDelivery> = Self::response(response).await?;
+        if deliveries.len() > usize::from(limit) {
+            return Err(LicensingError::InvalidServerResponse);
+        }
+        Ok(deliveries)
     }
 
     async fn logout(&self, session: RefreshSession) -> Result<()> {
@@ -2721,6 +2776,48 @@ fn validate_team_member_page(
     Ok(page)
 }
 
+fn validate_keyset_page(
+    item_count: usize,
+    next_cursor: Option<&str>,
+    has_more: bool,
+    requested_cursor: Option<&str>,
+    requested_limit: u32,
+) -> Result<()> {
+    if item_count > requested_limit as usize
+        || has_more != next_cursor.is_some()
+        || (has_more && item_count == 0)
+        || next_cursor.is_some_and(|cursor| {
+            cursor.is_empty()
+                || cursor.len() > 1_024
+                || requested_cursor.is_some_and(|requested| requested == cursor)
+        })
+    {
+        return Err(LicensingError::InvalidServerResponse);
+    }
+    Ok(())
+}
+
+fn validate_workspace_sync_feed(
+    page: &WorkspaceSyncFeed,
+    requested_cursor: u64,
+    requested_limit: u32,
+) -> Result<()> {
+    if page.changes.len() > requested_limit as usize || (page.has_more && page.changes.is_empty()) {
+        return Err(LicensingError::InvalidServerResponse);
+    }
+    let mut previous = requested_cursor;
+    for change in &page.changes {
+        if change.cursor <= previous {
+            return Err(LicensingError::InvalidServerResponse);
+        }
+        previous = change.cursor;
+    }
+    if page.next_cursor != previous {
+        return Err(LicensingError::InvalidServerResponse);
+    }
+    Ok(())
+}
+
 async fn bounded_body(mut response: reqwest::Response, maximum_bytes: u64) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(request_error)? {
@@ -2735,6 +2832,82 @@ async fn bounded_body(mut response: reqwest::Response, maximum_bytes: u64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sync_change(cursor: u64) -> WorkspaceSyncChange {
+        WorkspaceSyncChange {
+            cursor,
+            operation_id: "server_event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            change_kind: "alert_incident_opened".to_owned(),
+            resource_type: "alert_incident".to_owned(),
+            resource_id: "alert_incident_test".to_owned(),
+            row_version: 1,
+            occurred_at: 1_000,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn workspace_pages_reject_oversized_results_and_cursor_loops() {
+        assert!(validate_keyset_page(2, Some("next"), true, None, 2).is_ok());
+        for result in [
+            validate_keyset_page(3, None, false, None, 2),
+            validate_keyset_page(0, Some("next"), true, None, 2),
+            validate_keyset_page(1, None, true, None, 2),
+            validate_keyset_page(1, Some("same"), true, Some("same"), 2),
+        ] {
+            assert!(matches!(result, Err(LicensingError::InvalidServerResponse)));
+        }
+    }
+
+    #[test]
+    fn workspace_sync_feed_requires_strict_progress_and_matching_tail_cursor() {
+        let valid = WorkspaceSyncFeed {
+            changes: vec![sync_change(11), sync_change(12)],
+            next_cursor: 12,
+            has_more: false,
+        };
+        assert!(validate_workspace_sync_feed(&valid, 10, 2).is_ok());
+
+        let repeated = WorkspaceSyncFeed {
+            changes: vec![sync_change(11), sync_change(11)],
+            next_cursor: 11,
+            has_more: true,
+        };
+        assert!(matches!(
+            validate_workspace_sync_feed(&repeated, 10, 2),
+            Err(LicensingError::InvalidServerResponse)
+        ));
+
+        let wrong_tail = WorkspaceSyncFeed {
+            changes: vec![sync_change(11)],
+            next_cursor: 12,
+            has_more: false,
+        };
+        assert!(matches!(
+            validate_workspace_sync_feed(&wrong_tail, 10, 2),
+            Err(LicensingError::InvalidServerResponse)
+        ));
+
+        let oversized = WorkspaceSyncFeed {
+            changes: vec![sync_change(11), sync_change(12)],
+            next_cursor: 12,
+            has_more: false,
+        };
+        assert!(matches!(
+            validate_workspace_sync_feed(&oversized, 10, 1),
+            Err(LicensingError::InvalidServerResponse)
+        ));
+
+        let empty_with_more = WorkspaceSyncFeed {
+            changes: Vec::new(),
+            next_cursor: 10,
+            has_more: true,
+        };
+        assert!(matches!(
+            validate_workspace_sync_feed(&empty_with_more, 10, 2),
+            Err(LicensingError::InvalidServerResponse)
+        ));
+    }
 
     #[test]
     fn mutation_operation_ids_require_canonical_v4_uuids() {
