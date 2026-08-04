@@ -27,6 +27,7 @@ mod privilege_broker_identity;
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(120);
 const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(15);
 const BROKER_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+const BROKER_EVENT_QUEUE_CAPACITY: usize = 2;
 const FRAME_LIMIT: u64 = 1024 * 1024;
 static BROKER_SESSION: OnceLock<Mutex<Option<Arc<BrokerClient>>>> = OnceLock::new();
 static PRIVILEGED_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -213,7 +214,7 @@ fn ensure_authorization_mode(plan: &LaunchPlan) -> Result<()> {
 
 struct BrokerClient {
     writer: Mutex<WriteHalf<TcpStream>>,
-    processes: StdMutex<HashMap<ProgramId, mpsc::UnboundedSender<PrivilegeBrokerEvent>>>,
+    processes: StdMutex<HashMap<ProgramId, mpsc::Sender<PrivilegeBrokerEvent>>>,
     alive: AtomicBool,
     _launcher: StdMutex<BrokerLauncher>,
 }
@@ -223,10 +224,7 @@ impl BrokerClient {
         self.alive.load(Ordering::Acquire)
     }
 
-    fn register(
-        &self,
-        program_id: ProgramId,
-    ) -> Result<mpsc::UnboundedReceiver<PrivilegeBrokerEvent>> {
+    fn register(&self, program_id: ProgramId) -> Result<mpsc::Receiver<PrivilegeBrokerEvent>> {
         if !self.is_alive() {
             return Err(process_lost_error());
         }
@@ -236,7 +234,7 @@ impl BrokerClient {
                 "The privileged program already has an active broker registration",
             )),
             std::collections::hash_map::Entry::Vacant(entry) => {
-                let (sender, receiver) = mpsc::unbounded_channel();
+                let (sender, receiver) = mpsc::channel(BROKER_EVENT_QUEUE_CAPACITY);
                 entry.insert(sender);
                 Ok(receiver)
             }
@@ -267,12 +265,12 @@ impl BrokerClient {
         result
     }
 
-    fn dispatch(&self, program_id: &ProgramId, event: PrivilegeBrokerEvent) {
-        if let Ok(processes) = self.processes.lock()
-            && let Some(sender) = processes.get(program_id)
-        {
-            let _ = sender.send(event);
-        }
+    fn dispatch(&self, program_id: &ProgramId, event: PrivilegeBrokerEvent) -> Result<()> {
+        let processes = self.processes.lock().map_err(|_| process_lost_error())?;
+        let Some(sender) = processes.get(program_id) else {
+            return Ok(());
+        };
+        try_send_process_event(sender, event)
     }
 
     fn fail_all(&self, error: CamelliaNexusError) {
@@ -280,7 +278,7 @@ impl BrokerClient {
         PRIVILEGED_SESSION_ACTIVE.store(false, Ordering::Release);
         if let Ok(mut processes) = self.processes.lock() {
             for (_, sender) in processes.drain() {
-                let _ = sender.send(PrivilegeBrokerEvent::Failed {
+                let _ = sender.try_send(PrivilegeBrokerEvent::Failed {
                     request_id: String::new(),
                     program_id: None,
                     error: error.clone(),
@@ -301,7 +299,10 @@ async fn read_broker_events(broker: Arc<BrokerClient>, mut reader: BufReader<Rea
                     PrivilegeBrokerEvent::Hello { .. } => None,
                 };
                 if let Some(program_id) = program_id {
-                    broker.dispatch(&program_id, event);
+                    if let Err(error) = broker.dispatch(&program_id, event) {
+                        broker.fail_all(error);
+                        return;
+                    }
                     continue;
                 }
                 match event {
@@ -325,8 +326,20 @@ struct BrokeredProcess {
     program_id: ProgramId,
     pid: u32,
     broker: Arc<BrokerClient>,
-    receiver: mpsc::UnboundedReceiver<PrivilegeBrokerEvent>,
+    receiver: mpsc::Receiver<PrivilegeBrokerEvent>,
     exit: Option<ProcessExit>,
+}
+
+fn try_send_process_event(
+    sender: &mpsc::Sender<PrivilegeBrokerEvent>,
+    event: PrivilegeBrokerEvent,
+) -> Result<()> {
+    match sender.try_send(event) {
+        Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(_)) => Err(protocol_error(
+            "The privilege broker overflowed a process lifecycle event queue",
+        )),
+    }
 }
 
 #[async_trait]
@@ -969,11 +982,18 @@ mod tests {
     };
 
     use camellia_nexus_core::{
-        ErrorCode, LaunchPlan, PrivilegeBrokerRequest, PrivilegePolicy, ProgramId, ProgramKind,
+        ErrorCode, LaunchPlan, PrivilegeBrokerEvent, PrivilegeBrokerRequest, PrivilegePolicy,
+        ProgramId, ProgramKind,
     };
-    use tokio::{io::AsyncWrite, sync::Mutex};
+    use tokio::{
+        io::AsyncWrite,
+        sync::{Mutex, mpsc},
+    };
 
-    use super::{ensure_authorization_mode, send_request_with_timeout};
+    use super::{
+        BROKER_EVENT_QUEUE_CAPACITY, ensure_authorization_mode, send_request_with_timeout,
+        try_send_process_event,
+    };
 
     struct PendingWriter;
 
@@ -1039,6 +1059,24 @@ mod tests {
     fn unattended_standard_launch_does_not_require_authorization() {
         ensure_authorization_mode(&plan(PrivilegePolicy::Standard, false))
             .expect("standard launch");
+    }
+
+    #[test]
+    fn broker_lifecycle_event_queue_is_bounded() {
+        let (sender, _receiver) = mpsc::channel(BROKER_EVENT_QUEUE_CAPACITY);
+        let program_id = ProgramId::parse("bounded-event-queue").expect("program id");
+        let event = |request_id: usize| PrivilegeBrokerEvent::Started {
+            request_id: request_id.to_string(),
+            program_id: program_id.clone(),
+            pid: 42,
+        };
+
+        for request_id in 0..BROKER_EVENT_QUEUE_CAPACITY {
+            try_send_process_event(&sender, event(request_id)).expect("queue capacity");
+        }
+        let error = try_send_process_event(&sender, event(BROKER_EVENT_QUEUE_CAPACITY))
+            .expect_err("an extra lifecycle event must fail the broker session");
+        assert_eq!(error.code, ErrorCode::PrivilegeBrokerFailed);
     }
 
     #[tokio::test]
