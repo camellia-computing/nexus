@@ -5,7 +5,11 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -17,7 +21,11 @@ use sha2::{Digest, Sha256};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const COMMAND_LIMIT: usize = 1024 * 1024;
+const BROKER_COMMAND_QUEUE_CAPACITY: usize = 64;
 const STOP_GRACE: Duration = Duration::from_secs(10);
+const READER_ACTIVE: u8 = 0;
+const READER_CLOSED: u8 = 1;
+const READER_OVERFLOWED: u8 = 2;
 
 fn main() {
     if let Err(error) = run() {
@@ -54,17 +62,22 @@ fn run_broker(stream: TcpStream, nonce: String) -> camellia_nexus_core::Result<(
         },
     )?;
     let mut reader = BufReader::new(reader_stream);
-    let (command_tx, command_rx) = mpsc::channel();
+    let (command_tx, command_rx) = broker_command_channel();
+    let reader_state = Arc::new(AtomicU8::new(READER_ACTIVE));
+    let reader_state_task = Arc::clone(&reader_state);
     std::thread::spawn(move || {
         loop {
             match read_request(&mut reader) {
-                Ok(request) => {
-                    if command_tx.send(Some(request)).is_err() {
+                Ok(request) => match command_tx.try_send(request) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        reader_state_task.store(READER_OVERFLOWED, Ordering::Release);
                         break;
                     }
-                }
+                    Err(mpsc::TrySendError::Disconnected(_)) => break,
+                },
                 Err(_) => {
-                    let _ = command_tx.send(None);
+                    reader_state_task.store(READER_CLOSED, Ordering::Release);
                     break;
                 }
             }
@@ -87,12 +100,21 @@ fn run_broker(stream: TcpStream, nonce: String) -> camellia_nexus_core::Result<(
                 &PrivilegeBrokerEvent::Exited { program_id, exit },
             )?;
         }
-        match command_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Some(PrivilegeBrokerRequest::Launch {
+        let request = match receive_broker_command(&command_rx, &reader_state) {
+            Ok(request) => request,
+            Err(error) => {
+                for child in children.values_mut() {
+                    let _ = terminate_managed(child);
+                }
+                return Err(error);
+            }
+        };
+        match request {
+            Some(PrivilegeBrokerRequest::Launch {
                 protocol_version,
                 request_id,
                 plan,
-            })) => {
+            }) => {
                 let program_id = plan.program_id.clone();
                 let result = (|| {
                     if protocol_version != PRIVILEGE_BROKER_PROTOCOL_VERSION {
@@ -138,10 +160,10 @@ fn run_broker(stream: TcpStream, nonce: String) -> camellia_nexus_core::Result<(
                     )?,
                 }
             }
-            Ok(Some(PrivilegeBrokerRequest::Stop {
+            Some(PrivilegeBrokerRequest::Stop {
                 request_id,
                 program_id,
-            })) => {
+            }) => {
                 validate_request_id(&request_id)?;
                 let Some(mut child) = children.remove(&program_id) else {
                     write_event(
@@ -172,7 +194,7 @@ fn run_broker(stream: TcpStream, nonce: String) -> camellia_nexus_core::Result<(
                     }
                 }
             }
-            Ok(Some(PrivilegeBrokerRequest::Shutdown { request_id })) => {
+            Some(PrivilegeBrokerRequest::Shutdown { request_id }) => {
                 validate_request_id(&request_id)?;
                 while let Some(program_id) = children.keys().next().cloned() {
                     let mut child = children
@@ -201,17 +223,60 @@ fn run_broker(stream: TcpStream, nonce: String) -> camellia_nexus_core::Result<(
                 }
                 return Ok(());
             }
-            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                for child in children.values_mut() {
-                    let _ = terminate_managed(child);
-                }
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::PrivilegeBrokerConnectionLost,
-                    "Camellia Nexus disconnected from the privilege broker",
-                ));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            None => {}
         }
+    }
+}
+
+fn broker_command_channel() -> (
+    mpsc::SyncSender<PrivilegeBrokerRequest>,
+    mpsc::Receiver<PrivilegeBrokerRequest>,
+) {
+    mpsc::sync_channel(BROKER_COMMAND_QUEUE_CAPACITY)
+}
+
+fn receive_broker_command(
+    receiver: &mpsc::Receiver<PrivilegeBrokerRequest>,
+    reader_state: &AtomicU8,
+) -> camellia_nexus_core::Result<Option<PrivilegeBrokerRequest>> {
+    let initial_state = reader_state.load(Ordering::Acquire);
+    if initial_state != READER_ACTIVE {
+        return validate_command_after_reader_state(receiver.try_recv().ok(), initial_state);
+    }
+    let request = match receiver.recv_timeout(Duration::from_millis(100)) {
+        Ok(request) => Some(request),
+        Err(mpsc::RecvTimeoutError::Timeout) => None,
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(broker_reader_error(READER_CLOSED).expect("closed reader state"));
+        }
+    };
+    validate_command_after_reader_state(request, reader_state.load(Ordering::Acquire))
+}
+
+fn validate_command_after_reader_state(
+    request: Option<PrivilegeBrokerRequest>,
+    reader_state: u8,
+) -> camellia_nexus_core::Result<Option<PrivilegeBrokerRequest>> {
+    if reader_state == READER_ACTIVE
+        || (reader_state == READER_CLOSED
+            && matches!(&request, Some(PrivilegeBrokerRequest::Shutdown { .. })))
+    {
+        return Ok(request);
+    }
+    Err(broker_reader_error(reader_state).expect("failed reader state"))
+}
+
+fn broker_reader_error(state: u8) -> Option<CamelliaNexusError> {
+    match state {
+        READER_ACTIVE => None,
+        READER_OVERFLOWED => Some(CamelliaNexusError::new(
+            ErrorCode::PrivilegeBrokerFailed,
+            "The privilege broker command queue exceeded its safe capacity",
+        )),
+        _ => Some(CamelliaNexusError::new(
+            ErrorCode::PrivilegeBrokerConnectionLost,
+            "Camellia Nexus disconnected from the privilege broker",
+        )),
     }
 }
 
@@ -731,15 +796,22 @@ mod tests {
         io::{BufRead, BufReader, BufWriter, Write},
         net::{TcpListener, TcpStream},
         path::PathBuf,
+        sync::{
+            atomic::{AtomicU8, Ordering},
+            mpsc,
+        },
         time::Duration,
     };
 
     use camellia_nexus_core::{
-        LaunchPlan, PRIVILEGE_BROKER_PROTOCOL_VERSION, PrivilegeBrokerEvent,
+        ErrorCode, LaunchPlan, PRIVILEGE_BROKER_PROTOCOL_VERSION, PrivilegeBrokerEvent,
         PrivilegeBrokerRequest, PrivilegeConfigInput, PrivilegePolicy, ProgramId, ProgramKind,
     };
 
-    use super::{plan_fingerprint, run_broker, validate_plan, validate_request_id};
+    use super::{
+        BROKER_COMMAND_QUEUE_CAPACITY, READER_CLOSED, READER_OVERFLOWED, broker_command_channel,
+        plan_fingerprint, receive_broker_command, run_broker, validate_plan, validate_request_id,
+    };
 
     fn launch_plan(workspace: &std::path::Path) -> LaunchPlan {
         let executable = std::env::current_exe().expect("test executable");
@@ -792,6 +864,60 @@ mod tests {
         assert!(validate_request_id(&request_id).is_ok());
         assert!(validate_request_id(&request_id.to_uppercase()).is_err());
         assert!(validate_request_id("00000000-0000-0000-0000-000000000000").is_err());
+    }
+
+    #[test]
+    fn broker_command_queue_is_bounded() {
+        let (sender, _receiver) = broker_command_channel();
+        for _ in 0..BROKER_COMMAND_QUEUE_CAPACITY {
+            sender
+                .try_send(PrivilegeBrokerRequest::Shutdown {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                })
+                .expect("queue capacity");
+        }
+        assert!(matches!(
+            sender.try_send(PrivilegeBrokerRequest::Shutdown {
+                request_id: uuid::Uuid::new_v4().to_string(),
+            }),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+    }
+
+    #[test]
+    fn reader_failure_preempts_queued_broker_commands() {
+        for (state, expected) in [
+            (READER_CLOSED, ErrorCode::PrivilegeBrokerConnectionLost),
+            (READER_OVERFLOWED, ErrorCode::PrivilegeBrokerFailed),
+        ] {
+            let (sender, receiver) = broker_command_channel();
+            sender
+                .try_send(PrivilegeBrokerRequest::Stop {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    program_id: ProgramId::parse("queued-stop").expect("program id"),
+                })
+                .expect("queued request");
+            let reader_state = AtomicU8::new(state);
+            let error = receive_broker_command(&receiver, &reader_state)
+                .expect_err("reader failure must preempt queued commands");
+            assert_eq!(error.code, expected);
+            assert_eq!(reader_state.load(Ordering::Acquire), state);
+        }
+    }
+
+    #[test]
+    fn graceful_shutdown_frame_survives_peer_half_close() {
+        let (sender, receiver) = broker_command_channel();
+        sender
+            .try_send(PrivilegeBrokerRequest::Shutdown {
+                request_id: uuid::Uuid::new_v4().to_string(),
+            })
+            .expect("queued shutdown");
+        let reader_state = AtomicU8::new(READER_CLOSED);
+        assert!(matches!(
+            receive_broker_command(&receiver, &reader_state).expect("graceful shutdown"),
+            Some(PrivilegeBrokerRequest::Shutdown { .. })
+        ));
     }
 
     #[test]

@@ -71,6 +71,8 @@ const requiredPrivilegeBoundaryText = [
   ['broker registrations use the bounded event queue capacity', privilegeBoundarySources.broker, /mpsc::channel\(BROKER_EVENT_QUEUE_CAPACITY\)/],
   ['broker event dispatch detects a full queue without waiting', privilegeBoundarySources.broker, /sender\.try_send\(event\)[\s\S]*TrySendError::Full\(_\)[\s\S]*overflowed a process lifecycle event queue/],
   ['broker event overflow fails the session closed', privilegeBoundarySources.broker, /if let Err\(error\) = broker\.dispatch\([\s\S]*broker\.fail_all\(error\);\s*return;/],
+  ['broker command ingress has a bounded queue', privilegeBoundarySources.executable, /const BROKER_COMMAND_QUEUE_CAPACITY:\s*usize\s*=\s*64;[\s\S]*mpsc::sync_channel\(BROKER_COMMAND_QUEUE_CAPACITY\)/],
+  ['broker command overflow fails the session before backlog execution', privilegeBoundarySources.executable, /TrySendError::Full\(_\)[\s\S]*store\(READER_OVERFLOWED, Ordering::Release\)[\s\S]*receive_broker_command\(&command_rx, &reader_state\)/],
   ['Windows child uses suspended creation', privilegeBoundarySources.executable, /SUSPENDED/],
   ['Windows child enters its Job before resume', privilegeBoundarySources.executable, /WindowsJob::attach\(&child\)[\s\S]*resume_managed\(&child\)/],
   ['Windows broker handle terminates on abandonment', privilegeBoundarySources.broker, /TerminateProcess\(self\.0, 1\)/],
