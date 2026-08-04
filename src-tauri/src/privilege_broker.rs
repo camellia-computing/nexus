@@ -14,7 +14,9 @@ use camellia_nexus_core::{
     PrivilegeBrokerEvent, PrivilegeBrokerRequest, PrivilegePolicy, ProcessExit, ProgramId, Result,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
+    io::{
+        AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadHalf, WriteHalf,
+    },
     net::{TcpListener, TcpStream},
     sync::{Mutex, mpsc},
 };
@@ -24,6 +26,7 @@ mod privilege_broker_identity;
 
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(120);
 const BROKER_IO_TIMEOUT: Duration = Duration::from_secs(15);
+const BROKER_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const FRAME_LIMIT: u64 = 1024 * 1024;
 static BROKER_SESSION: OnceLock<Mutex<Option<Arc<BrokerClient>>>> = OnceLock::new();
 static PRIVILEGED_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -250,8 +253,18 @@ impl BrokerClient {
         if !self.is_alive() {
             return Err(process_lost_error());
         }
-        let mut writer = self.writer.lock().await;
-        write_request(&mut writer, request).await
+        let result =
+            send_request_with_timeout(&self.writer, &self.alive, request, BROKER_IO_TIMEOUT).await;
+        if let Err(error) = &result
+            && (!self.is_alive() || error.code == ErrorCode::PrivilegeBrokerConnectionLost)
+        {
+            self.fail_all(error.clone());
+            let _ = tokio::time::timeout(BROKER_CLOSE_TIMEOUT, async {
+                self.writer.lock().await.shutdown().await
+            })
+            .await;
+        }
+        result
     }
 
     fn dispatch(&self, program_id: &ProgramId, event: PrivilegeBrokerEvent) {
@@ -430,10 +443,41 @@ fn process_lost_error() -> CamelliaNexusError {
     )
 }
 
-async fn write_request(
-    writer: &mut WriteHalf<TcpStream>,
+async fn send_request_with_timeout<W>(
+    writer: &Mutex<W>,
+    alive: &AtomicBool,
     request: &PrivilegeBrokerRequest,
-) -> Result<()> {
+    timeout: Duration,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    match tokio::time::timeout(timeout, async {
+        let mut writer = writer.lock().await;
+        if !alive.load(Ordering::Acquire) {
+            return Err(process_lost_error());
+        }
+        write_request(&mut *writer, request).await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            // A cancelled write may already have emitted a partial JSON frame. Invalidate the
+            // session before releasing this call so no queued sender can reuse the stream.
+            alive.store(false, Ordering::Release);
+            Err(CamelliaNexusError::new(
+                ErrorCode::PrivilegeBrokerFailed,
+                "The privilege broker did not accept a command in time",
+            ))
+        }
+    }
+}
+
+async fn write_request<W>(writer: &mut W, request: &PrivilegeBrokerRequest) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     let mut bytes = serde_json::to_vec(request).map_err(CamelliaNexusError::storage)?;
     if bytes.len() as u64 > FRAME_LIMIT {
         return Err(CamelliaNexusError::new(
@@ -915,11 +959,47 @@ fn protocol_error(message: &'static str) -> CamelliaNexusError {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        path::PathBuf,
+        pin::Pin,
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Context, Poll},
+        time::Duration,
+    };
 
-    use camellia_nexus_core::{LaunchPlan, PrivilegePolicy, ProgramId, ProgramKind};
+    use camellia_nexus_core::{
+        ErrorCode, LaunchPlan, PrivilegeBrokerRequest, PrivilegePolicy, ProgramId, ProgramKind,
+    };
+    use tokio::{io::AsyncWrite, sync::Mutex};
 
-    use super::ensure_authorization_mode;
+    use super::{ensure_authorization_mode, send_request_with_timeout};
+
+    struct PendingWriter;
+
+    impl AsyncWrite for PendingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
 
     fn plan(policy: PrivilegePolicy, interactive: bool) -> LaunchPlan {
         LaunchPlan {
@@ -959,6 +1039,34 @@ mod tests {
     fn unattended_standard_launch_does_not_require_authorization() {
         ensure_authorization_mode(&plan(PrivilegePolicy::Standard, false))
             .expect("standard launch");
+    }
+
+    #[tokio::test]
+    async fn broker_command_write_is_bounded() {
+        let writer = Mutex::new(PendingWriter);
+        let alive = AtomicBool::new(true);
+        let request = PrivilegeBrokerRequest::Shutdown {
+            request_id: "bounded-write".into(),
+        };
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            send_request_with_timeout(&writer, &alive, &request, Duration::from_millis(10)),
+        )
+        .await
+        .expect("a broker write must settle within its I/O deadline")
+        .expect_err("a permanently blocked writer must fail");
+
+        assert_eq!(result.code, ErrorCode::PrivilegeBrokerFailed);
+        assert!(!alive.load(Ordering::Acquire));
+
+        let retry = tokio::time::timeout(
+            Duration::from_millis(100),
+            send_request_with_timeout(&writer, &alive, &request, Duration::from_millis(10)),
+        )
+        .await
+        .expect("an invalidated broker stream must reject queued commands")
+        .expect_err("the invalidated stream must not be reused");
+        assert_eq!(retry.code, ErrorCode::PrivilegeBrokerConnectionLost);
     }
 
     #[cfg(target_os = "linux")]
