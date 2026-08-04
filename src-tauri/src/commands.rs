@@ -4,7 +4,10 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -23,10 +26,48 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::AppState;
-use crate::license_session::{PendingAuthorizationError, PendingAuthorizationStore};
+use crate::license_session::{
+    AUTHORIZATION_SESSION_CAPACITY, PendingAuthorizationError, PendingAuthorizationStore,
+};
 use crate::settings::AppSettings;
 
 const LICENSE_AUTHORIZATION_CALLBACK_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+static AUTHORIZATION_CALLBACK_THREADS: CallbackThreadLimiter =
+    CallbackThreadLimiter::new(AUTHORIZATION_SESSION_CAPACITY);
+
+struct CallbackThreadLimiter {
+    active: AtomicUsize,
+    capacity: usize,
+}
+
+impl CallbackThreadLimiter {
+    const fn new(capacity: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            capacity,
+        }
+    }
+
+    fn try_acquire(&self) -> Option<CallbackThreadPermit<'_>> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.capacity).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| CallbackThreadPermit { limiter: self })
+    }
+}
+
+struct CallbackThreadPermit<'a> {
+    limiter: &'a CallbackThreadLimiter,
+}
+
+impl Drop for CallbackThreadPermit<'_> {
+    fn drop(&mut self) {
+        let previous = self.limiter.active.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "callback thread permit underflow");
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -380,6 +421,14 @@ pub async fn begin_license_authorization(
         .map_err(license_error)?;
     let request = session.request;
     let redirect_uri = session.redirect_uri;
+    let callback_thread = AUTHORIZATION_CALLBACK_THREADS
+        .try_acquire()
+        .ok_or_else(|| {
+            camellia_nexus_core::CamelliaNexusError::new(
+                camellia_nexus_core::ErrorCode::RateLimited,
+                "Too many device activation callbacks are already active",
+            )
+        })?;
     tracing::debug!(
         callback_mode = %request.callback_mode,
         "license authorization request prepared"
@@ -403,14 +452,18 @@ pub async fn begin_license_authorization(
             callbacks.remove(&evicted);
         }
     }
-    spawn_loopback_authorization_callback(
+    if let Err(error) = spawn_loopback_authorization_callback(
         app.clone(),
         state.license_authorization_callbacks.clone(),
         state.pending_license_authorizations.clone(),
         listener,
         request.state.clone(),
         redirect_uri,
-    );
+        callback_thread,
+    ) {
+        cancel_pending_authorization(&state, &request.state);
+        return Err(error);
+    }
     if open_browser {
         tracing::debug!("opening license authorization URL in system browser");
         if let Err(error) = open_system_url(&request.authorization_url) {
@@ -841,67 +894,97 @@ fn spawn_loopback_authorization_callback(
     listener: TcpListener,
     expected_state: String,
     redirect_uri: String,
+    callback_thread: CallbackThreadPermit<'static>,
+) -> Result<()> {
+    std::thread::Builder::new()
+        .name("camellia-license-callback".to_owned())
+        .spawn(move || {
+            let _callback_thread = callback_thread;
+            run_loopback_authorization_callback(
+                app,
+                callbacks,
+                pending,
+                listener,
+                expected_state,
+                redirect_uri,
+            );
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            camellia_nexus_core::CamelliaNexusError::new(
+                camellia_nexus_core::ErrorCode::SystemIntegration,
+                "The device activation callback could not be started",
+            )
+            .with_details(error.to_string())
+        })
+}
+
+fn run_loopback_authorization_callback(
+    app: AppHandle,
+    callbacks: Arc<Mutex<BTreeMap<String, SecretValue>>>,
+    pending: Arc<Mutex<PendingAuthorizationStore>>,
+    listener: TcpListener,
+    expected_state: String,
+    redirect_uri: String,
 ) {
-    std::thread::spawn(move || {
-        tracing::debug!("license loopback callback listener started");
-        let deadline = Instant::now() + LICENSE_AUTHORIZATION_CALLBACK_TIMEOUT;
-        loop {
-            if !pending
+    tracing::debug!("license loopback callback listener started");
+    let deadline = Instant::now() + LICENSE_AUTHORIZATION_CALLBACK_TIMEOUT;
+    loop {
+        if !pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_active(&expected_state)
+        {
+            tracing::debug!("license loopback callback listener stopped");
+            break;
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!("license loopback callback listener timed out");
+            if pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains_active(&expected_state)
+                .cancel(&expected_state)
             {
-                tracing::debug!("license loopback callback listener stopped");
-                break;
+                emit_license_authorization_failure(
+                    &app,
+                    &expected_state,
+                    "Device activation timed out before the browser returned to Camellia Nexus.",
+                );
             }
-            if Instant::now() >= deadline {
-                tracing::warn!("license loopback callback listener timed out");
-                if pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .cancel(&expected_state)
-                {
-                    emit_license_authorization_failure(
-                        &app,
-                        &expected_state,
-                        "Device activation timed out before the browser returned to Camellia Nexus.",
-                    );
-                }
-                break;
-            }
-            match listener.accept() {
-                Ok((mut stream, peer)) => {
-                    tracing::debug!(peer = %peer, "license loopback callback connection accepted");
-                    if handle_loopback_authorization_connection(
-                        &app,
-                        &callbacks,
-                        &pending,
-                        &mut stream,
-                        &expected_state,
-                        &redirect_uri,
-                    ) {
-                        break;
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "license loopback callback listener failed");
-                    emit_license_authorization_failure(
-                        &app,
-                        &expected_state,
-                        format!("The local activation callback failed: {error}"),
-                    );
-                    pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .cancel(&expected_state);
+            break;
+        }
+        match listener.accept() {
+            Ok((mut stream, peer)) => {
+                tracing::debug!(peer = %peer, "license loopback callback connection accepted");
+                if handle_loopback_authorization_connection(
+                    &app,
+                    &callbacks,
+                    &pending,
+                    &mut stream,
+                    &expected_state,
+                    &redirect_uri,
+                ) {
                     break;
                 }
             }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "license loopback callback listener failed");
+                emit_license_authorization_failure(
+                    &app,
+                    &expected_state,
+                    format!("The local activation callback failed: {error}"),
+                );
+                pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .cancel(&expected_state);
+                break;
+            }
         }
-    });
+    }
 }
 
 fn handle_loopback_authorization_connection(
@@ -1060,7 +1143,7 @@ fn loopback_request_target(request_line: &str) -> Option<&str> {
 mod loopback_callback_tests {
     use std::io::{Cursor, Read};
 
-    use super::{loopback_request_target, read_loopback_request_line};
+    use super::{CallbackThreadLimiter, loopback_request_target, read_loopback_request_line};
 
     struct FragmentedReader {
         inner: Cursor<Vec<u8>>,
@@ -1101,6 +1184,19 @@ mod loopback_callback_tests {
         ] {
             assert_eq!(loopback_request_target(invalid), None, "{invalid}");
         }
+    }
+
+    #[test]
+    fn callback_thread_limiter_releases_capacity() {
+        let limiter = CallbackThreadLimiter::new(2);
+        let first = limiter.try_acquire().expect("first callback");
+        let second = limiter.try_acquire().expect("second callback");
+        assert!(limiter.try_acquire().is_none());
+        drop(first);
+        let replacement = limiter.try_acquire().expect("released callback capacity");
+        assert!(limiter.try_acquire().is_none());
+        drop((second, replacement));
+        assert!(limiter.try_acquire().is_some());
     }
 }
 
