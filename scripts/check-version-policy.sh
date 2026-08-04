@@ -35,13 +35,13 @@ grep -Fxq "  '@napi-rs/wasm-runtime': 1.1.6" ui/pnpm-workspace.yaml ||
   fail 'the Rolldown WASI fallback must use the stable emnapi-compatible runtime'
 grep -Fxq '  serialize-javascript: 7.0.7' ui/pnpm-workspace.yaml ||
   fail 'the WebdriverIO Mocha graph must override serialize-javascript to its reviewed patched release'
-grep -Fxq '  brace-expansion: 5.0.8' ui/pnpm-workspace.yaml ||
+grep -Fxq '  brace-expansion: 5.0.9' ui/pnpm-workspace.yaml ||
   fail 'the WebdriverIO graph must use the reviewed current brace-expansion release'
-grep -Fxq '  brace-expansion@5.0.8: patches/brace-expansion@5.0.8.patch' ui/pnpm-workspace.yaml ||
+grep -Fxq '  brace-expansion@5.0.9: patches/brace-expansion@5.0.9.patch' ui/pnpm-workspace.yaml ||
   fail 'the reviewed brace-expansion compatibility patch is missing from the workspace policy'
-[[ -f ui/patches/brace-expansion@5.0.8.patch ]] ||
+[[ -f ui/patches/brace-expansion@5.0.9.patch ]] ||
   fail 'the reviewed brace-expansion compatibility patch file is missing'
-grep -Eq '^  brace-expansion@5\.0\.8: [0-9a-f]{64}$' ui/pnpm-lock.yaml ||
+grep -Eq '^  brace-expansion@5\.0\.9: [0-9a-f]{64}$' ui/pnpm-lock.yaml ||
   fail 'the frozen lockfile does not bind the reviewed brace-expansion patch'
 
 rust_toolchain="$(sed -nE 's/^channel = "([^"]+)"/\1/p' rust-toolchain.toml)"
@@ -211,6 +211,7 @@ grep -q '@wdio/native-utils' "$policy" || fail 'WebdriverIO native-utils overrid
 grep -q '@napi-rs/wasm-runtime' "$policy" || fail 'Rolldown WASI runtime override is undocumented'
 grep -q 'GHSA-5c6j-r48x-rmvq' "$policy" || fail 'serialize-javascript security override is undocumented'
 grep -q 'GHSA-mh99-v99m-4gvg' "$policy" || fail 'brace-expansion compatibility patch is undocumented'
+grep -q 'GHSA-rgw5-rvv9-x895' "$policy" || fail 'current brace-expansion security update is undocumented'
 grep -q 'TypeScript 7' "$policy" || fail 'the unsupported TypeScript major is undocumented'
 grep -q 'workflow_run' "$policy" || fail 'the reviewed release merge trigger is undocumented'
 

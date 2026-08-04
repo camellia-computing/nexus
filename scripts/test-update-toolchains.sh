@@ -17,7 +17,7 @@ cp \
   "$repository_root/ui/pnpm-lock.yaml" \
   "$repository_root/ui/pnpm-workspace.yaml" \
   "$fixture/ui/"
-cp "$repository_root/ui/patches/brace-expansion@5.0.8.patch" "$fixture/ui/patches/"
+cp "$repository_root/ui/patches/brace-expansion@5.0.9.patch" "$fixture/ui/patches/"
 cp \
   "$repository_root/scripts/check-version-policy.sh" \
   "$repository_root/scripts/ci-local.sh" \

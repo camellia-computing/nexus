@@ -9,7 +9,8 @@ assert.equal(
 
 await import('@wdio/tauri-service');
 // This import is also the executable contract for the temporary
-// GHSA-mh99-v99m-4gvg bridge in docs/dependency-management.md. It must remain
+// GHSA-mh99-v99m-4gvg / GHSA-rgw5-rvv9-x895 bridge in
+// docs/dependency-management.md. It must remain
 // until the WebdriverIO graph natively consumes the current brace-expansion API.
 await import('@wdio/cli');
 
