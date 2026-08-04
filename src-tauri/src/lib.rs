@@ -141,6 +141,17 @@ pub(crate) struct AppState {
 }
 
 #[cfg(feature = "desktop")]
+impl AppState {
+    pub(crate) fn request_shutdown(&self) -> bool {
+        if !self.shutdown.request() {
+            return false;
+        }
+        self.config_refreshes.begin_shutdown();
+        true
+    }
+}
+
+#[cfg(feature = "desktop")]
 pub fn open_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("main") {
         if window
@@ -176,6 +187,9 @@ pub fn open_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg(feature = "desktop")]
 pub(crate) async fn shutdown_and_exit(app: tauri::AppHandle, manager: Arc<ProgramManager>) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.config_refreshes.begin_shutdown();
+    }
     let report = manager.shutdown().await;
     if let Err(error) = privilege_broker::end_session().await {
         tracing::warn!(%error, "privilege broker session did not close cleanly");
@@ -553,7 +567,7 @@ pub fn run() {
                 && state.shutdown.should_prevent_exit()
             {
                 api.prevent_exit();
-                if state.shutdown.request() {
+                if state.request_shutdown() {
                     let manager = state.manager.clone();
                     let app = app.clone();
                     tauri::async_runtime::spawn(shutdown_and_exit(app, manager));

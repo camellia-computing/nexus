@@ -217,7 +217,7 @@ fn handle_menu(app: &AppHandle, event: tauri::menu::MenuEvent) {
         return;
     }
     if menu_id == "quit" {
-        if state.shutdown.request() {
+        if state.request_shutdown() {
             let manager = state.manager.clone();
             let app = app.clone();
             tauri::async_runtime::spawn(shutdown_and_exit(app, manager));
