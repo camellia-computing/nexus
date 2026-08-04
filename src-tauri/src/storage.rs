@@ -2,7 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock, mpsc},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -29,6 +29,56 @@ const PROGRAM_PACKAGE_NEXT_SPEC: &str = ".program-package-program.json.next";
 const CREATE_PENDING_MARKER: &[u8] = b"pending\n";
 const CREATE_COMMITTED_MARKER: &[u8] = b"committed\n";
 const DISCARDED_PACKAGE_PREFIX: &str = ".camellia-nexus-package-discard-";
+const DIRECTORY_CLEANUP_QUEUE_CAPACITY: usize = 16;
+
+struct DirectoryCleanupWorker {
+    sender: Option<mpsc::SyncSender<PathBuf>>,
+}
+
+static DIRECTORY_CLEANUP_WORKER: OnceLock<DirectoryCleanupWorker> = OnceLock::new();
+
+fn directory_cleanup_worker() -> &'static DirectoryCleanupWorker {
+    DIRECTORY_CLEANUP_WORKER.get_or_init(|| {
+        let (sender, receiver) =
+            mpsc::sync_channel::<PathBuf>(DIRECTORY_CLEANUP_QUEUE_CAPACITY);
+        let spawned = std::thread::Builder::new()
+            .name("camellia-directory-cleanup".to_owned())
+            .spawn(move || {
+                while let Ok(path) = receiver.recv() {
+                    if let Err(error) = fs::remove_dir_all(&path) {
+                        tracing::warn!(path = %path.display(), %error, "could not remove discarded directory");
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start the directory cleanup worker; cleanup will run inline");
+            DirectoryCleanupWorker { sender: None }
+        } else {
+            DirectoryCleanupWorker {
+                sender: Some(sender),
+            }
+        }
+    })
+}
+
+fn enqueue_directory_cleanup(
+    sender: &mpsc::SyncSender<PathBuf>,
+    path: PathBuf,
+) -> std::result::Result<(), PathBuf> {
+    sender.try_send(path).map_err(|error| match error {
+        mpsc::TrySendError::Full(path) | mpsc::TrySendError::Disconnected(path) => path,
+    })
+}
+
+fn remove_directory_bounded(path: PathBuf) {
+    let queued = directory_cleanup_worker()
+        .sender
+        .as_ref()
+        .is_some_and(|sender| enqueue_directory_cleanup(sender, path.clone()).is_ok());
+    if !queued && let Err(error) = fs::remove_dir_all(&path) {
+        tracing::warn!(path = %path.display(), %error, "could not remove discarded directory inline");
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -82,13 +132,11 @@ impl FileStore {
 
     fn clean_trash(&self) {
         let trash = self.programs_root().join(".trash");
-        std::thread::spawn(move || {
-            if let Ok(entries) = fs::read_dir(trash) {
-                for entry in entries.flatten() {
-                    let _ = fs::remove_dir_all(entry.path());
-                }
+        if let Ok(entries) = fs::read_dir(trash) {
+            for entry in entries.flatten() {
+                remove_directory_bounded(entry.path());
             }
-        });
+        }
     }
 }
 
@@ -257,9 +305,7 @@ impl ProgramStore for FileStore {
                     .join(".trash")
                     .join(format!("{id}-pending-{}", Uuid::new_v4()));
                 fs::rename(&root, &trash)?;
-                std::thread::spawn(move || {
-                    let _ = fs::remove_dir_all(trash);
-                });
+                remove_directory_bounded(trash);
                 if let Err(error) = sync_directory(&programs_root) {
                     tracing::warn!(path = %programs_root.display(), %error, "could not sync discarded pending program workspace");
                 }
@@ -753,9 +799,7 @@ impl ProgramStore for FileStore {
         ));
         blocking(move || {
             fs::rename(&root, &trash)?;
-            std::thread::spawn(move || {
-                let _ = fs::remove_dir_all(trash);
-            });
+            remove_directory_bounded(trash);
             Ok(())
         })
         .await
@@ -1305,9 +1349,7 @@ fn discard_directory_background(path: &Path) -> Result<()> {
     })?;
     let discarded = parent.join(format!("{DISCARDED_PACKAGE_PREFIX}{}", Uuid::new_v4()));
     fs::rename(path, &discarded)?;
-    std::thread::spawn(move || {
-        let _ = fs::remove_dir_all(discarded);
-    });
+    remove_directory_bounded(discarded);
     if let Err(error) = sync_directory(parent) {
         tracing::warn!(path = %parent.display(), %error, "could not sync discarded managed package directory");
     }
@@ -1325,10 +1367,7 @@ fn clean_discarded_package_directories(root: &Path) {
             .starts_with(DISCARDED_PACKAGE_PREFIX)
             && entry.file_type().is_ok_and(|kind| kind.is_dir())
         {
-            let path = entry.path();
-            std::thread::spawn(move || {
-                let _ = fs::remove_dir_all(path);
-            });
+            remove_directory_bounded(entry.path());
         }
     }
 }
@@ -1656,7 +1695,7 @@ pub(crate) fn read_with_overflow_byte(path: &Path, max_bytes: u64) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{collections::BTreeMap, path::PathBuf, sync::mpsc};
 
     use camellia_nexus_core::{
         ConfigStore, CreateAssets, ErrorCode, ExecutableSpec, MAX_CONFIG_BYTES, ProgramId,
@@ -1667,9 +1706,24 @@ mod tests {
         CREATE_COMMITTED_MARKER, FileStore, PROGRAM_CONFIG_TRANSACTION_MARKER,
         PROGRAM_PACKAGE_NEXT_SPEC, PROGRAM_PACKAGE_SPEC_BACKUP, PROGRAM_PACKAGE_TRANSACTION_MARKER,
         ProgramConfigTransactionMarker, ProgramPackageTransactionMarker, decode_program_spec,
-        load_program_config_transaction_marker, read_tail, read_with_overflow_byte,
-        replace_with_backup, suffixed_path, write_bytes_atomic, write_json_atomic,
+        enqueue_directory_cleanup, load_program_config_transaction_marker, read_tail,
+        read_with_overflow_byte, replace_with_backup, suffixed_path, write_bytes_atomic,
+        write_json_atomic,
     };
+
+    #[test]
+    fn directory_cleanup_queue_returns_backpressure_at_capacity() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let first = PathBuf::from("first");
+        let second = PathBuf::from("second");
+
+        assert_eq!(enqueue_directory_cleanup(&sender, first.clone()), Ok(()));
+        assert_eq!(
+            enqueue_directory_cleanup(&sender, second.clone()),
+            Err(second)
+        );
+        assert_eq!(receiver.try_recv(), Ok(first));
+    }
 
     fn generic_spec() -> ProgramSpec {
         let executable = std::env::current_exe().expect("current test executable");
