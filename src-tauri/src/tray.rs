@@ -217,10 +217,11 @@ fn handle_menu(app: &AppHandle, event: tauri::menu::MenuEvent) {
         return;
     }
     if menu_id == "quit" {
-        state.quitting.store(true, Ordering::Release);
-        let manager = state.manager.clone();
-        let app = app.clone();
-        tauri::async_runtime::spawn(shutdown_and_exit(app, manager));
+        if state.shutdown.request() {
+            let manager = state.manager.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(shutdown_and_exit(app, manager));
+        }
         return;
     }
     if matches!(menu_id.as_str(), "start-all" | "stop-all") {
