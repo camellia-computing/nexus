@@ -78,10 +78,9 @@ export { errorInfoOf, type ErrorInfo } from './errors';
 
 export const api = {
   logFrontendEvent: (
-    level: 'error' | 'warn' | 'info' | 'debug' | 'trace',
+    level: 'warn' | 'info' | 'debug',
     message: string,
-    fields?: Record<string, unknown>,
-  ) => invoke<void>('log_frontend_event', { level, message, fields: fields ?? null }),
+  ) => invoke<void>('log_frontend_event', { level, message }),
   getApplicationInfo: () => invoke<ApplicationInfo>('get_application_info'),
   getEntitlementState: () => invoke<EntitlementSnapshot>('get_entitlement_state'),
   getLocalLicenseDevice: () =>
