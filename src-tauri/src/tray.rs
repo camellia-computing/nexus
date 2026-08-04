@@ -1,4 +1,7 @@
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use camellia_nexus_core::{ProgramId, ProgramManager, ProgramState};
 use camellia_nexus_licensing::{ProtectedOperation, RestrictedOperation};
@@ -16,6 +19,28 @@ use crate::{
 const TRAY_ID: &str = "camellia-nexus-main";
 const TRAY_PROGRAM_LIMIT: usize = 20;
 const TRAY_ICON: tauri::image::Image<'_> = tauri::include_image!("./icons/tray-icon.png");
+static TRAY_BULK_ACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct TrayBulkActionPermit;
+
+impl TrayBulkActionPermit {
+    fn try_acquire() -> Option<Self> {
+        TRAY_BULK_ACTION_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+
+    fn is_active() -> bool {
+        TRAY_BULK_ACTION_ACTIVE.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for TrayBulkActionPermit {
+    fn drop(&mut self) {
+        TRAY_BULK_ACTION_ACTIVE.store(false, Ordering::Release);
+    }
+}
 
 pub fn create(app: &AppHandle, manager: Arc<ProgramManager>) -> tauri::Result<()> {
     let menu = tauri::async_runtime::block_on(build_menu(app, manager))?;
@@ -67,6 +92,7 @@ async fn build_menu(
     let chinese = uses_chinese(app);
     let programs = manager.list().await;
     let can_activate = license_can_activate(app);
+    let bulk_action_active = TrayBulkActionPermit::is_active();
     let running = programs
         .iter()
         .filter(|program| matches!(program.state, ProgramState::Running { .. }))
@@ -98,13 +124,17 @@ async fn build_menu(
             "start-all",
             tr(chinese, "Start all available", "启动全部可用程序"),
         )
-        .enabled(can_activate && programs.iter().any(|program| can_start(&program.state)))
+        .enabled(
+            !bulk_action_active
+                && can_activate
+                && programs.iter().any(|program| can_start(&program.state)),
+        )
         .build(app)?;
         let stop_all = MenuItemBuilder::with_id(
             "stop-all",
             tr(chinese, "Stop all active", "停止全部活动程序"),
         )
-        .enabled(programs.iter().any(|program| can_stop(&program.state)))
+        .enabled(!bulk_action_active && programs.iter().any(|program| can_stop(&program.state)))
         .build(app)?;
         builder = builder.item(&start_all).item(&stop_all).separator();
     }
@@ -277,9 +307,22 @@ fn handle_menu(app: &AppHandle, event: tauri::menu::MenuEvent) {
 }
 
 fn run_bulk_action(app: AppHandle, start: bool) {
+    if app
+        .try_state::<AppState>()
+        .is_none_or(|state| state.shutdown.is_requested())
+    {
+        return;
+    }
+    let Some(permit) = TrayBulkActionPermit::try_acquire() else {
+        tracing::debug!(
+            start,
+            "tray bulk action ignored while another batch is active"
+        );
+        return;
+    };
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let _license_operation = if start {
+        let license_operation = if start {
             let Some(operation) = acquire_tray_activation(&state, "tray_start_all").await else {
                 return;
             };
@@ -308,6 +351,11 @@ fn run_bulk_action(app: AppHandle, start: bool) {
                 Ok(Err(error)) => tracing::warn!(%error, "tray bulk action item failed"),
                 Err(error) => tracing::error!(%error, "tray bulk action task failed"),
             }
+        }
+        drop(license_operation);
+        drop(permit);
+        if let Err(error) = refresh(&app, manager).await {
+            tracing::warn!(%error, "tray menu did not refresh after bulk action");
         }
     });
 }
@@ -416,5 +464,21 @@ fn state_label(state: &ProgramState, chinese: bool) -> &'static str {
         ProgramState::Backoff { .. } => tr(chinese, "Backoff", "等待重试"),
         ProgramState::StopFailed { .. } => tr(chinese, "Stop failed", "停止失败"),
         ProgramState::Error { .. } => tr(chinese, "Error", "错误"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TrayBulkActionPermit;
+
+    #[test]
+    fn tray_bulk_actions_are_single_flight_and_release_capacity() {
+        assert!(!TrayBulkActionPermit::is_active());
+        let permit = TrayBulkActionPermit::try_acquire().expect("first bulk action");
+        assert!(TrayBulkActionPermit::is_active());
+        assert!(TrayBulkActionPermit::try_acquire().is_none());
+        drop(permit);
+        assert!(!TrayBulkActionPermit::is_active());
+        assert!(TrayBulkActionPermit::try_acquire().is_some());
     }
 }
