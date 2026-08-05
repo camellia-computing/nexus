@@ -75,8 +75,11 @@ fn remove_directory_bounded(path: PathBuf) {
         .sender
         .as_ref()
         .is_some_and(|sender| enqueue_directory_cleanup(sender, path.clone()).is_ok());
-    if !queued && let Err(error) = fs::remove_dir_all(&path) {
-        tracing::warn!(path = %path.display(), %error, "could not remove discarded directory inline");
+    if !queued {
+        tracing::warn!(
+            path = %path.display(),
+            "directory cleanup is unavailable or saturated; leaving discarded directory for a later cleanup pass"
+        );
     }
 }
 

@@ -1039,7 +1039,7 @@ mod tests {
                 .expect("parallel stop program id");
             plan.stdout_log = directory.path().join(format!("stdout-{index}.log"));
             plan.stderr_log = directory.path().join(format!("stderr-{index}.log"));
-            let ready = directory.path().join(format!("ready-{index}"));
+            let ready = plan.stdout_log.clone();
             plan.environment = BTreeMap::from([
                 (
                     "CAMELLIA_NEXUS_PRIVILEGED_CHILD_FIXTURE".to_owned(),
@@ -1048,10 +1048,6 @@ mod tests {
                 (
                     "CAMELLIA_NEXUS_PRIVILEGED_CHILD_IGNORE_TERM".to_owned(),
                     "1".to_owned(),
-                ),
-                (
-                    "CAMELLIA_NEXUS_PRIVILEGED_CHILD_READY".to_owned(),
-                    ready.display().to_string(),
                 ),
             ]);
             let request_id = uuid::Uuid::new_v4().to_string();
@@ -1065,10 +1061,15 @@ mod tests {
             );
             expect_started(read_test_event(&mut reader), &request_id, &plan.program_id);
             let ready_deadline = Instant::now() + Duration::from_secs(2);
-            while !ready.exists() && Instant::now() < ready_deadline {
+            while !std::fs::read_to_string(&ready).is_ok_and(|value| value.contains("ready"))
+                && Instant::now() < ready_deadline
+            {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            assert!(ready.exists(), "slow child must finish its signal setup");
+            assert!(
+                std::fs::read_to_string(&ready).is_ok_and(|value| value.contains("ready")),
+                "slow child must finish its signal setup"
+            );
             program_ids.insert(plan.program_id);
         }
 
@@ -1229,9 +1230,10 @@ mod tests {
                 libc::signal(libc::SIGTERM, libc::SIG_IGN);
             }
         }
-        if let Some(ready) = std::env::var_os("CAMELLIA_NEXUS_PRIVILEGED_CHILD_READY") {
-            std::fs::write(ready, b"ready").expect("write readiness marker");
-        }
+        std::io::stdout()
+            .write_all(b"ready\n")
+            .expect("write readiness marker");
+        std::io::stdout().flush().expect("flush readiness marker");
         std::thread::sleep(Duration::from_secs(60));
     }
 
