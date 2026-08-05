@@ -43,11 +43,21 @@ impl std::fmt::Debug for PkceVerifier {
     }
 }
 
-#[derive(Debug)]
 pub struct AuthorizationRequest {
     pub url: Url,
     pub state: String,
     pub verifier: PkceVerifier,
+}
+
+impl std::fmt::Debug for AuthorizationRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizationRequest")
+            .field("url", &"[REDACTED]")
+            .field("state", &"[REDACTED]")
+            .field("verifier", &self.verifier)
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -173,7 +183,7 @@ fn valid_state(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "flow", rename_all = "camelCase")]
 pub enum AuthenticationFlow {
     BrowserPkce,
@@ -183,6 +193,25 @@ pub enum AuthenticationFlow {
         expires_at: i64,
         poll_interval_seconds: u64,
     },
+}
+
+impl std::fmt::Debug for AuthenticationFlow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BrowserPkce => formatter.write_str("BrowserPkce"),
+            Self::DeviceCode {
+                expires_at,
+                poll_interval_seconds,
+                ..
+            } => formatter
+                .debug_struct("DeviceCode")
+                .field("verification_uri", &"[REDACTED]")
+                .field("user_code", &"[REDACTED]")
+                .field("expires_at", expires_at)
+                .field("poll_interval_seconds", poll_interval_seconds)
+                .finish(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +236,32 @@ mod tests {
         let code = complete_authorization_callback(&callback, &request.state, &config.redirect_uri)
             .expect("callback");
         assert_eq!(code.code, "a".repeat(43));
+    }
+
+    #[test]
+    fn authorization_diagnostics_redact_browser_and_device_secrets() {
+        let config = OAuthConfig {
+            authorization_endpoint: Url::parse("https://login.example/authorize").unwrap(),
+            client_id: "desktop".into(),
+            redirect_uri: Url::parse("camellia-nexus://auth/callback").unwrap(),
+        };
+        let request = begin_authorization(&config).expect("request");
+        let request_debug = format!("{request:?}");
+        assert!(request_debug.contains("AuthorizationRequest"));
+        assert!(request_debug.contains("[REDACTED]"));
+        assert!(!request_debug.contains(&request.state));
+        assert!(!request_debug.contains("code_challenge="));
+
+        let flow = AuthenticationFlow::DeviceCode {
+            verification_uri: "https://login.example/device?code=uri-secret".into(),
+            user_code: "device-user-code-secret".into(),
+            expires_at: 1_800_000_000,
+            poll_interval_seconds: 5,
+        };
+        let flow_debug = format!("{flow:?}");
+        assert!(flow_debug.contains("[REDACTED]"));
+        assert!(!flow_debug.contains("uri-secret"));
+        assert!(!flow_debug.contains("device-user-code-secret"));
     }
 
     #[test]

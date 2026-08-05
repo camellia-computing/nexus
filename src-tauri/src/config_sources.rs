@@ -12,6 +12,7 @@ use tokio::io::AsyncReadExt;
 const MAX_SOURCE_BYTES: usize = MAX_CONFIG_BYTES;
 const MAX_TOTAL_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONCURRENT_SOURCES: usize = 4;
+const MAX_SOURCE_REDIRECTS: usize = 5;
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(25);
 
 struct ResolvedSource {
@@ -140,7 +141,8 @@ async fn resolve_sources(
 ) -> Result<Vec<ResolvedSource>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let client = Client::builder()
-        .redirect(Policy::limited(5))
+        .https_only(true)
+        .redirect(remote_source_redirect_policy())
         .timeout(SOURCE_TIMEOUT)
         .user_agent(concat!("camellia-nexus/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -185,6 +187,29 @@ async fn resolve_sources(
             })
         })
         .collect()
+}
+
+fn remote_source_redirect_policy() -> Policy {
+    Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_SOURCE_REDIRECTS {
+            return attempt.error(std::io::Error::other(
+                "remote configuration redirect limit exceeded",
+            ));
+        }
+        if !valid_remote_source_url(attempt.url()) {
+            return attempt.error(std::io::Error::other(
+                "remote configuration redirect target is not secure",
+            ));
+        }
+        attempt.follow()
+    })
+}
+
+fn valid_remote_source_url(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
 }
 
 async fn resolve_source(
@@ -302,11 +327,7 @@ async fn fetch_remote_source(
         CamelliaNexusError::invalid_spec("Invalid remote configuration URL")
             .with_details(error.to_string())
     })?;
-    if parsed.scheme() != "https"
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.host_str().is_none()
-    {
+    if !valid_remote_source_url(&parsed) {
         return Err(CamelliaNexusError::invalid_spec(
             "Remote configuration URLs must use HTTPS without embedded credentials",
         ));
@@ -472,6 +493,60 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn remote_source_redirect_rejects_insecure_target_before_connecting() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let destination = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind redirect destination");
+        let destination_address = destination
+            .local_addr()
+            .expect("redirect destination address");
+        let origin = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind redirect origin");
+        let origin_address = origin.local_addr().expect("redirect origin address");
+        let origin_task = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.expect("accept redirect request");
+            let mut request = [0_u8; 1024];
+            let _ = stream
+                .read(&mut request)
+                .await
+                .expect("read redirect request");
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: http://{destination_address}/leak\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write redirect response");
+        });
+        let client = Client::builder()
+            .redirect(remote_source_redirect_policy())
+            .build()
+            .expect("build redirect test client");
+
+        let result = client
+            .get(format!("http://{origin_address}/source"))
+            .send()
+            .await;
+
+        assert!(
+            result.is_err(),
+            "an insecure redirect must fail the request"
+        );
+        origin_task.await.expect("join redirect origin");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), destination.accept())
+                .await
+                .is_err(),
+            "the insecure redirect target must never receive a connection"
+        );
+    }
 
     fn sing_box_spec(dashboard: Option<camellia_nexus_core::SingBoxDashboardSpec>) -> ProgramSpec {
         ProgramSpec {

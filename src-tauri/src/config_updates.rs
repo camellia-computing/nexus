@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -33,6 +36,7 @@ struct AutomaticConfigUpdateEvent {
 pub struct RefreshCoordinator {
     active: Mutex<HashSet<ProgramId>>,
     completed: Mutex<HashMap<ProgramId, Instant>>,
+    shutdown_requested: AtomicBool,
 }
 
 pub(crate) struct RefreshLease<'a> {
@@ -46,6 +50,12 @@ impl RefreshCoordinator {
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::InvalidState,
+                "Application shutdown is in progress",
+            ));
+        }
         if !active.insert(id.clone()) {
             return Err(CamelliaNexusError::new(
                 ErrorCode::ProgramBusy,
@@ -56,6 +66,18 @@ impl RefreshCoordinator {
             coordinator: self,
             id: id.clone(),
         })
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        let _active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_requested.store(true, Ordering::Release);
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
     }
 
     fn mark_completed(&self, id: &ProgramId) {
@@ -328,6 +350,9 @@ pub fn spawn_scheduler(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
+            if coordinator.is_shutting_down() {
+                return;
+            }
             let mut policies = Vec::new();
             for summary in manager.list().await {
                 let Ok((spec, _)) = manager.get(&summary.id).await else {
@@ -350,6 +375,9 @@ pub fn spawn_scheduler(
             let active: HashSet<_> = policies.iter().map(|(id, _, _)| id.clone()).collect();
             coordinator.retain_completed(&active);
             for program_id in schedule.due(policies, Instant::now()) {
+                if coordinator.is_shutting_down() {
+                    return;
+                }
                 let Some(state) = app.try_state::<crate::AppState>() else {
                     return;
                 };
@@ -372,6 +400,9 @@ pub fn spawn_scheduler(
                         );
                     }
                     Err(error) => {
+                        if coordinator.is_shutting_down() {
+                            return;
+                        }
                         tracing::warn!(program = %program_id, %error, "automatic configuration update failed");
                         schedule.retry_soon(&program_id, Instant::now());
                         let _ = app.emit(
@@ -386,4 +417,34 @@ pub fn spawn_scheduler(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use camellia_nexus_core::{ErrorCode, ProgramId};
+
+    use super::RefreshCoordinator;
+
+    #[test]
+    fn shutdown_prevents_new_configuration_refresh_leases() {
+        let coordinator = RefreshCoordinator::default();
+        let active_id = ProgramId::parse("active-refresh").expect("active id");
+        let next_id = ProgramId::parse("next-refresh").expect("next id");
+        let active = coordinator.try_acquire(&active_id).expect("active refresh");
+
+        coordinator.begin_shutdown();
+        assert!(coordinator.is_shutting_down());
+        let error = coordinator
+            .try_acquire(&next_id)
+            .err()
+            .expect("shutdown must reject a new refresh");
+        assert_eq!(error.code, ErrorCode::InvalidState);
+
+        drop(active);
+        let error = coordinator
+            .try_acquire(&active_id)
+            .err()
+            .expect("dropping an in-flight lease must not reopen scheduling");
+        assert_eq!(error.code, ErrorCode::InvalidState);
+    }
 }

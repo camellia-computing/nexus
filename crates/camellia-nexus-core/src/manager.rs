@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast, watch};
 
 use crate::{
     ActionDescriptor, ActionResult, AdapterRegistry, CamelliaNexusError, ConfigDocument,
@@ -45,6 +45,64 @@ pub struct ProgramManager {
     auto_start_reconciliation: Mutex<()>,
     pending_auto_starts: Mutex<HashSet<ProgramId>>,
     package_preparations: Mutex<HashMap<ProgramId, Arc<Mutex<()>>>>,
+    lifecycle: ManagerLifecycle,
+}
+
+struct ManagerLifecycle {
+    gate: Arc<RwLock<()>>,
+    shutdown_started: AtomicBool,
+    shutdown_signal: watch::Sender<bool>,
+}
+
+impl Default for ManagerLifecycle {
+    fn default() -> Self {
+        let (shutdown_signal, _) = watch::channel(false);
+        Self {
+            gate: Arc::new(RwLock::new(())),
+            shutdown_started: AtomicBool::new(false),
+            shutdown_signal,
+        }
+    }
+}
+
+impl ManagerLifecycle {
+    async fn mutation_permit(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>> {
+        let permit = self.gate.clone().read_owned().await;
+        if self.shutdown_started.load(Ordering::Acquire) {
+            return Err(manager_shutting_down_error());
+        }
+        Ok(permit)
+    }
+
+    async fn begin_shutdown(&self) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        if self.shutdown_started.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        // Publish closing before waiting for existing readers so long-lived mutations can
+        // quiesce themselves instead of preventing the shutdown writer from ever arriving.
+        self.shutdown_signal.send_replace(true);
+        Some(self.gate.clone().write_owned().await)
+    }
+
+    fn is_shutdown_started(&self) -> bool {
+        self.shutdown_started.load(Ordering::Acquire)
+    }
+
+    async fn shutdown_requested(&self) {
+        let mut shutdown = self.shutdown_signal.subscribe();
+        loop {
+            if *shutdown.borrow_and_update() {
+                return;
+            }
+            if shutdown.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+fn manager_shutting_down_error() -> CamelliaNexusError {
+    CamelliaNexusError::new(ErrorCode::InvalidState, "Program manager is shutting down")
 }
 
 #[derive(Debug)]
@@ -131,10 +189,14 @@ impl ProgramManager {
             auto_start_reconciliation: Mutex::new(()),
             pending_auto_starts: Mutex::new(HashSet::new()),
             package_preparations: Mutex::new(HashMap::new()),
+            lifecycle: ManagerLifecycle::default(),
         })
     }
 
     pub async fn set_automatic_restarts_enabled(&self, enabled: bool) {
+        let Ok(_mutation) = self.lifecycle.mutation_permit().await else {
+            return;
+        };
         let _exclusive = self.automatic_lifecycle_gate.write().await;
         self.automatic_restarts_enabled
             .store(enabled, Ordering::Release);
@@ -146,6 +208,9 @@ impl ProgramManager {
     /// Linearizes license fail-closed with automatic starts/restarts before stopping processes.
     /// Once this returns, no automatic lifecycle task that observed the old policy can remain.
     pub async fn disable_automatic_restarts_and_stop_active(&self) -> StopActiveReport {
+        let Ok(_mutation) = self.lifecycle.mutation_permit().await else {
+            return StopActiveReport::default();
+        };
         {
             // Taking the writer drains every automatic start/restart that entered
             // under the previous policy. Release it before sending Stop commands:
@@ -155,7 +220,7 @@ impl ProgramManager {
                 .store(false, Ordering::Release);
             self.pending_auto_starts.lock().await.clear();
         }
-        self.stop_active().await
+        self.stop_active_inner().await
     }
 
     pub async fn initialize(self: &Arc<Self>) -> Result<LoadReport> {
@@ -172,6 +237,7 @@ impl ProgramManager {
     }
 
     pub async fn initialize_without_auto_start(self: &Arc<Self>) -> Result<LoadReport> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         let mut report = self.program_store.load_all().await?;
         report
             .valid
@@ -338,6 +404,13 @@ impl ProgramManager {
     }
 
     pub async fn commit_create(self: &Arc<Self>, prepared: PreparedProgramCreate) -> Result<()> {
+        let _mutation = match self.lifecycle.mutation_permit().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let _ = self.program_store.discard_pending(&prepared.spec.id).await;
+                return Err(error);
+            }
+        };
         let _registry = self.registry_mutations.lock().await;
         if let Err(error) = self
             .ensure_external_profile_compatible(&prepared.spec)
@@ -416,6 +489,7 @@ impl ProgramManager {
         prepared: PreparedProgramUpdate,
         restart: bool,
     ) -> Result<()> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         let _registry = self.registry_mutations.lock().await;
         self.ensure_external_profile_compatible(&prepared.next_spec)
             .await?;
@@ -447,6 +521,7 @@ impl ProgramManager {
     }
 
     pub async fn remove(&self, id: &ProgramId) -> Result<()> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         self.pending_auto_starts.lock().await.remove(id);
         let _registry = self.registry_mutations.lock().await;
         let handle = self.handle_unchecked(id).await?;
@@ -465,6 +540,7 @@ impl ProgramManager {
     }
 
     pub async fn start(&self, id: &ProgramId) -> Result<()> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         let handle = self.handle(id).await?;
         let _lease = handle.operation_lease().await?;
         handle.mutate(Mutation::Start { interactive: true }).await?;
@@ -472,6 +548,7 @@ impl ProgramManager {
     }
 
     pub async fn stop(&self, id: &ProgramId) -> Result<()> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         self.pending_auto_starts.lock().await.remove(id);
         let handle = self.handle(id).await?;
         let _lease = handle.operation_lease().await?;
@@ -480,6 +557,13 @@ impl ProgramManager {
     }
 
     pub async fn stop_active(&self) -> StopActiveReport {
+        let Ok(_mutation) = self.lifecycle.mutation_permit().await else {
+            return StopActiveReport::default();
+        };
+        self.stop_active_inner().await
+    }
+
+    async fn stop_active_inner(&self) -> StopActiveReport {
         let handles: Vec<_> = self.controllers.read().await.values().cloned().collect();
         let mut tasks = tokio::task::JoinSet::new();
         let mut report = StopActiveReport::default();
@@ -492,7 +576,7 @@ impl ProgramManager {
             report.attempted += 1;
             let program_id = handle.spec().await.id;
             active_handles.push((program_id.clone(), handle.clone()));
-            tasks.spawn(async move { (program_id, handle.mutate(Mutation::Stop).await) });
+            tasks.spawn(async move { (program_id, handle.stop_or_join().await) });
         }
         while let Some(result) = tasks.join_next().await {
             match result {
@@ -525,6 +609,7 @@ impl ProgramManager {
     }
 
     pub async fn restart(&self, id: &ProgramId) -> Result<()> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         let handle = self.handle(id).await?;
         let _lease = handle.operation_lease().await?;
         handle
@@ -615,6 +700,13 @@ impl ProgramManager {
     }
 
     pub async fn commit_package(&self, prepared: PreparedPackageGuard) -> Result<()> {
+        let _mutation = match self.lifecycle.mutation_permit().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let _ = self.discard_prepared_package(prepared).await;
+                return Err(error);
+            }
+        };
         let program_id = prepared.expected_spec.id.clone();
         let handle = match self.handle(&program_id).await {
             Ok(handle) => handle,
@@ -775,6 +867,13 @@ impl ProgramManager {
         prepared: PreparedConfigGuard,
         interactive: bool,
     ) -> Result<String> {
+        let _mutation = match self.lifecycle.mutation_permit().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let _ = self.config_service.discard(prepared).await;
+                return Err(error);
+            }
+        };
         let handle = match self.handle(id).await {
             Ok(handle) => handle,
             Err(error) => {
@@ -815,6 +914,13 @@ impl ProgramManager {
         prepared: PreparedConfigGuard,
         interactive: bool,
     ) -> Result<String> {
+        let _mutation = match self.lifecycle.mutation_permit().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let _ = self.config_service.discard(prepared).await;
+                return Err(error);
+            }
+        };
         let _registry = self.registry_mutations.lock().await;
         if let Err(error) = self
             .ensure_external_profile_compatible(&update.next_spec)
@@ -874,6 +980,7 @@ impl ProgramManager {
         content: String,
         base_hash: String,
     ) -> Result<ActionResult> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         let handle = self.handle(id).await?;
         let _lease = handle.operation_lease().await?;
         let spec = handle.spec().await;
@@ -915,6 +1022,7 @@ impl ProgramManager {
     }
 
     pub async fn clear_logs(&self, id: &ProgramId) -> Result<()> {
+        let _mutation = self.lifecycle.mutation_permit().await?;
         let handle = self.handle(id).await?;
         let _lease = handle.operation_lease().await?;
         let spec = handle.spec().await;
@@ -948,6 +1056,15 @@ impl ProgramManager {
     }
 
     pub async fn shutdown(&self) -> ShutdownReport {
+        let Some(_shutdown) = self.lifecycle.begin_shutdown().await else {
+            return ShutdownReport::default();
+        };
+        {
+            let _automatic = self.automatic_lifecycle_gate.write().await;
+            self.automatic_restarts_enabled
+                .store(false, Ordering::Release);
+            self.pending_auto_starts.lock().await.clear();
+        }
         let handles: Vec<_> = self
             .controllers
             .read()
@@ -1027,7 +1144,15 @@ impl ProgramManager {
     }
 
     pub async fn reconcile_auto_start_programs(&self, startup_delay: Duration) -> AutoStartReport {
-        let _reconciliation = self.auto_start_reconciliation.lock().await;
+        // Do not hold a mutation permit while another reconciliation owns the queue. Otherwise
+        // queued background work would itself delay the shutdown writer.
+        let _reconciliation = tokio::select! {
+            reconciliation = self.auto_start_reconciliation.lock() => reconciliation,
+            () = self.lifecycle.shutdown_requested() => return AutoStartReport::default(),
+        };
+        let Ok(_mutation) = self.lifecycle.mutation_permit().await else {
+            return AutoStartReport::default();
+        };
         let handles: Vec<_> = self.controllers.read().await.values().cloned().collect();
         let mut scheduled = Vec::new();
         for handle in handles {
@@ -1049,7 +1174,13 @@ impl ProgramManager {
         }
         for (id, handle) in scheduled {
             if !startup_delay.is_zero() {
-                tokio::time::sleep(startup_delay).await;
+                tokio::select! {
+                    () = tokio::time::sleep(startup_delay) => {}
+                    () = self.lifecycle.shutdown_requested() => break,
+                }
+            }
+            if self.lifecycle.is_shutdown_started() {
+                break;
             }
             let _automatic_start = self.automatic_lifecycle_gate.read().await;
             if !self.automatic_restarts_enabled.load(Ordering::Acquire) {
@@ -1258,13 +1389,63 @@ fn creation_context(error: CamelliaNexusError, message: &str) -> CamelliaNexusEr
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
     use super::*;
     use crate::{
         ExecutableSpec, ManagedConfigSpec, MihomoDashboardSpec, ProgramId, ProgramType,
         RestartPolicy, SCHEMA_VERSION,
     };
+
+    #[tokio::test]
+    async fn shutdown_gate_drains_mutations_and_rejects_late_work() {
+        let lifecycle = Arc::new(ManagerLifecycle::default());
+        let active = lifecycle.mutation_permit().await.expect("active mutation");
+        let requested = lifecycle.shutdown_requested();
+        tokio::pin!(requested);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut requested)
+                .await
+                .is_err(),
+            "the lifecycle must not report shutdown before it is requested"
+        );
+        let closing = lifecycle.begin_shutdown();
+        tokio::pin!(closing);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut closing)
+                .await
+                .is_err(),
+            "shutdown must wait for an active mutation"
+        );
+        assert!(
+            lifecycle.shutdown_started.load(Ordering::Acquire),
+            "shutdown must be observable while active mutations drain"
+        );
+        tokio::time::timeout(Duration::from_millis(100), &mut requested)
+            .await
+            .expect("shutdown notification deadline");
+        drop(active);
+        let shutdown = tokio::time::timeout(Duration::from_millis(100), &mut closing)
+            .await
+            .expect("shutdown gate deadline")
+            .expect("first shutdown");
+
+        let late = lifecycle.mutation_permit();
+        tokio::pin!(late);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut late)
+                .await
+                .is_err(),
+            "the shutdown writer must exclude new mutations"
+        );
+        drop(shutdown);
+        let error = tokio::time::timeout(Duration::from_millis(100), &mut late)
+            .await
+            .expect("late mutation deadline")
+            .expect_err("late mutation must be rejected");
+        assert_eq!(error.code, ErrorCode::InvalidState);
+    }
 
     #[test]
     fn mihomo_dashboard_participates_in_shared_port_ownership() {

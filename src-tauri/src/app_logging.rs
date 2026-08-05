@@ -54,6 +54,9 @@ impl Write for LogHandle {
         if state.bytes > 0 && state.bytes.saturating_add(buffer.len() as u64) > MAX_LOG_BYTES {
             state.rotate()?;
         }
+        let available =
+            usize::try_from(MAX_LOG_BYTES.saturating_sub(state.bytes)).unwrap_or(usize::MAX);
+        let buffer = &buffer[..buffer.len().min(available)];
         let written = state
             .file
             .as_mut()
@@ -150,6 +153,27 @@ mod tests {
                 .path()
                 .join(format!("app.log.{}", RETAINED_ARCHIVES + 1))
                 .exists()
+        );
+    }
+
+    #[test]
+    fn oversized_single_write_never_exceeds_the_file_limit() {
+        let directory = tempfile::tempdir().expect("temporary log directory");
+        let writer = RotatingLogWriter::new(directory.path().to_path_buf(), "app.log");
+        let content = vec![b'x'; MAX_LOG_BYTES as usize + 1_024];
+        writer
+            .make_writer()
+            .write_all(&content)
+            .expect("write oversized log entry");
+
+        let current = directory.path().join("app.log");
+        let archive = directory.path().join("app.log.1");
+        assert!(current.metadata().expect("current metadata").len() <= MAX_LOG_BYTES);
+        assert!(archive.metadata().expect("archive metadata").len() <= MAX_LOG_BYTES);
+        assert_eq!(
+            current.metadata().expect("current metadata").len()
+                + archive.metadata().expect("archive metadata").len(),
+            content.len() as u64
         );
     }
 }

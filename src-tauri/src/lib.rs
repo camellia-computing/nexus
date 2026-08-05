@@ -88,12 +88,38 @@ impl RuntimeAuthorizationCoordinator {
 }
 
 #[cfg(feature = "desktop")]
+#[derive(Default)]
+pub(crate) struct ShutdownState {
+    requested: AtomicBool,
+    complete: AtomicBool,
+}
+
+#[cfg(feature = "desktop")]
+impl ShutdownState {
+    pub(crate) fn request(&self) -> bool {
+        !self.requested.swap(true, Ordering::AcqRel)
+    }
+
+    pub(crate) fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    fn complete(&self) {
+        self.complete.store(true, Ordering::Release);
+    }
+
+    fn should_prevent_exit(&self) -> bool {
+        !self.complete.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(feature = "desktop")]
 pub(crate) struct AppState {
     pub(crate) manager: Arc<ProgramManager>,
     pub(crate) tool_runner: camellia_nexus_core::DynToolRunner,
     pub(crate) invalid_programs: std::sync::Mutex<Vec<camellia_nexus_core::InvalidProgram>>,
     pub(crate) data_dir: std::path::PathBuf,
-    pub(crate) quitting: AtomicBool,
+    pub(crate) shutdown: ShutdownState,
     pub(crate) ui_ready: AtomicBool,
     pub(crate) pending_ui_intent: std::sync::Mutex<Option<commands::UiIntent>>,
     pub(crate) license_authorization_callbacks: Arc<
@@ -112,6 +138,17 @@ pub(crate) struct AppState {
     pub(crate) config_refreshes: Arc<config_updates::RefreshCoordinator>,
     pub(crate) config_credentials: Arc<config_credentials::ConfigCredentialVault>,
     pub(crate) authorization: Arc<camellia_nexus_licensing::AuthorizationService>,
+}
+
+#[cfg(feature = "desktop")]
+impl AppState {
+    pub(crate) fn request_shutdown(&self) -> bool {
+        if !self.shutdown.request() {
+            return false;
+        }
+        self.config_refreshes.begin_shutdown();
+        true
+    }
 }
 
 #[cfg(feature = "desktop")]
@@ -150,6 +187,9 @@ pub fn open_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg(feature = "desktop")]
 pub(crate) async fn shutdown_and_exit(app: tauri::AppHandle, manager: Arc<ProgramManager>) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.config_refreshes.begin_shutdown();
+    }
     let report = manager.shutdown().await;
     if let Err(error) = privilege_broker::end_session().await {
         tracing::warn!(%error, "privilege broker session did not close cleanly");
@@ -160,6 +200,9 @@ pub(crate) async fn shutdown_and_exit(app: tauri::AppHandle, manager: Arc<Progra
     }
     if report.timed_out {
         tracing::error!("application shutdown exceeded the 25-second safety window");
+    }
+    if let Some(state) = app.try_state::<AppState>() {
+        state.shutdown.complete();
     }
     app.exit(exit_code);
 }
@@ -264,7 +307,7 @@ pub fn run() {
                 tool_runner,
                 invalid_programs: std::sync::Mutex::new(report.invalid),
                 data_dir: data_dir.clone(),
-                quitting: AtomicBool::new(false),
+                shutdown: ShutdownState::default(),
                 ui_ready: AtomicBool::new(false),
                 pending_ui_intent: std::sync::Mutex::new(None),
                 license_authorization_callbacks: Arc::new(std::sync::Mutex::new(
@@ -327,7 +370,7 @@ pub fn run() {
                 loop {
                     if license_monitor_app
                         .try_state::<AppState>()
-                        .is_some_and(|state| state.quitting.load(Ordering::Acquire))
+                        .is_some_and(|state| state.shutdown.is_requested())
                     {
                         break;
                     }
@@ -349,7 +392,7 @@ pub fn run() {
                 loop {
                     if app_handle
                         .try_state::<AppState>()
-                        .is_some_and(|state| state.quitting.load(Ordering::Acquire))
+                        .is_some_and(|state| state.shutdown.is_requested())
                     {
                         break;
                     }
@@ -509,7 +552,7 @@ pub fn run() {
                 (app.get_webview_window("main"), app.try_state::<AppState>())
             {
                 window_state::save(&window, &state.data_dir, &state.window_state);
-                if !state.quitting.load(Ordering::Acquire) {
+                if !state.shutdown.is_requested() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -521,12 +564,14 @@ pub fn run() {
                 window_state::save(&window, &state.data_dir, &state.window_state);
             }
             if let Some(state) = state
-                && !state.quitting.swap(true, Ordering::AcqRel)
+                && state.shutdown.should_prevent_exit()
             {
                 api.prevent_exit();
-                let manager = state.manager.clone();
-                let app = app.clone();
-                tauri::async_runtime::spawn(shutdown_and_exit(app, manager));
+                if state.request_shutdown() {
+                    let manager = state.manager.clone();
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(shutdown_and_exit(app, manager));
+                }
             }
         }
         _ => {}
@@ -584,13 +629,28 @@ fn randomized_delay(base_seconds: u64, spread_seconds: u64) -> std::time::Durati
 
 #[cfg(all(test, feature = "desktop"))]
 mod startup_contract_tests {
-    use super::{AUTOSTART_ARGUMENT, has_autostart_argument};
+    use super::{AUTOSTART_ARGUMENT, ShutdownState, has_autostart_argument};
 
     #[test]
     fn recognizes_only_the_canonical_autostart_argument() {
         assert_eq!(AUTOSTART_ARGUMENT, "--autostart");
         assert!(has_autostart_argument(["--quiet", AUTOSTART_ARGUMENT]));
         assert!(!has_autostart_argument(["--quiet", "--startup-bridge"]));
+    }
+
+    #[test]
+    fn shutdown_is_single_flight_and_blocks_exit_until_cleanup_completes() {
+        let shutdown = ShutdownState::default();
+        assert!(!shutdown.is_requested());
+        assert!(shutdown.should_prevent_exit());
+
+        assert!(shutdown.request());
+        assert!(!shutdown.request());
+        assert!(shutdown.is_requested());
+        assert!(shutdown.should_prevent_exit());
+
+        shutdown.complete();
+        assert!(!shutdown.should_prevent_exit());
     }
 }
 

@@ -1282,6 +1282,11 @@
     background: color-mix(in srgb, var(--ui-warning-soft) 52%, transparent);
   }
 
+  .editor :global(.cm-panel.cm-panel-lint ul:focus [aria-selected]) {
+    background: color-mix(in srgb, var(--ui-brand-soft) 78%, var(--ui-surface-2));
+    color: var(--ui-text-primary);
+  }
+
   .editor :global(.cm-diagnosticSource) {
     color: var(--ui-text-tertiary);
     font: 500 var(--ui-font-size-xs)/1.3 var(--ui-font-mono, "SFMono-Regular", "Cascadia Code", monospace);

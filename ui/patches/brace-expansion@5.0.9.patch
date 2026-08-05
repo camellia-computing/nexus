@@ -1,5 +1,4 @@
 diff --git a/dist/commonjs/index.d.ts b/dist/commonjs/index.d.ts
-index f3e2de9d87e1ce462517e49f35733bed8bdf85af..6c84d87835182d0670981dc15f488c2a7d061c98 100644
 --- a/dist/commonjs/index.d.ts
 +++ b/dist/commonjs/index.d.ts
 @@ -5,4 +5,5 @@ export type BraceExpansionOptions = {
@@ -8,11 +7,11 @@ index f3e2de9d87e1ce462517e49f35733bed8bdf85af..6c84d87835182d0670981dc15f488c2a
  export declare function expand(str: string, options?: BraceExpansionOptions): string[];
 +export default expand;
  //# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
 diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
-index be9df86be09c7655787a65c55ae6da01858894c3..31207eb0b9f75583e2455895aad2200a7204bb8b 100644
 --- a/dist/commonjs/index.js
 +++ b/dist/commonjs/index.js
-@@ -260,4 +260,8 @@ function expand_(str, max, maxLength, isTop) {
+@@ -286,4 +286,8 @@ function expand_(str, max, maxLength, isTop) {
      }
      return acc;
  }
@@ -21,8 +20,8 @@ index be9df86be09c7655787a65c55ae6da01858894c3..31207eb0b9f75583e2455895aad2200a
 +expand.EXPANSION_MAX_LENGTH = exports.EXPANSION_MAX_LENGTH;
 +module.exports = expand;
  //# sourceMappingURL=index.js.map
+\ No newline at end of file
 diff --git a/dist/esm/index.d.ts b/dist/esm/index.d.ts
-index f3e2de9d87e1ce462517e49f35733bed8bdf85af..6c84d87835182d0670981dc15f488c2a7d061c98 100644
 --- a/dist/esm/index.d.ts
 +++ b/dist/esm/index.d.ts
 @@ -5,4 +5,5 @@ export type BraceExpansionOptions = {
@@ -31,13 +30,14 @@ index f3e2de9d87e1ce462517e49f35733bed8bdf85af..6c84d87835182d0670981dc15f488c2a
  export declare function expand(str: string, options?: BraceExpansionOptions): string[];
 +export default expand;
  //# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
 diff --git a/dist/esm/index.js b/dist/esm/index.js
-index 6dc0392fc0feedb811e63d70a30be2736af17a3a..81ea182fa5dbc3c60fa4cec4cb549fa256a903e4 100644
 --- a/dist/esm/index.js
 +++ b/dist/esm/index.js
-@@ -256,4 +256,5 @@ function expand_(str, max, maxLength, isTop) {
+@@ -282,4 +282,5 @@ function expand_(str, max, maxLength, isTop) {
      }
      return acc;
  }
 +export default expand;
  //# sourceMappingURL=index.js.map
+\ No newline at end of file

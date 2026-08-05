@@ -1213,11 +1213,10 @@
   }
 
   function logLicenseFlow(
-    level: 'error' | 'warn' | 'info' | 'debug' | 'trace',
+    level: 'warn' | 'info' | 'debug',
     message: string,
-    fields: Record<string, unknown> = {},
   ) {
-    void api.logFrontendEvent(level, `license.${message}`, fields).catch(() => null);
+    void api.logFrontendEvent(level, `license.${message}`).catch(() => null);
   }
 
   function licenseStateIsActive(state: EntitlementState | null) {
@@ -1285,13 +1284,13 @@
     try {
       await reconcileEntitlementState(reason);
     } catch {
-      logLicenseFlow('warn', 'state-reconcile-failed', { reason });
+      logLicenseFlow('warn', 'state-reconcile-failed');
     }
   }
 
   async function applyEntitlementState(
     nextState: EntitlementState,
-    reason = 'state-sync',
+    _reason = 'state-sync',
   ) {
     const generation = ++licenseStateEffectGeneration;
     const wasActive = licenseStateIsActive(entitlementState);
@@ -1314,11 +1313,7 @@
     if (isActive && notification?.code === 'LICENSE_REQUIRED') dismissNotification();
     if (!isActive) {
       if (runtimeImpact === 'hardInactive' || wasActive || runtimeActiveCount > 0) {
-        logLicenseFlow('info', 'runtime-sync', {
-          reason,
-          status: nextState.status,
-          runtimeImpact,
-        });
+        logLicenseFlow('info', 'runtime-sync');
         stopXrayDashboardPolling();
         xrayDashboardSnapshot = null;
         xrayDashboardError = null;
@@ -1400,7 +1395,7 @@
   }
 
   function failLicenseAuthorization(request: LicenseAuthorizationRequest, message: string, flowEvent: string) {
-    logLicenseFlow('warn', flowEvent, { state: request.state });
+    logLicenseFlow('warn', flowEvent);
     licenseError = {
       title: 'Device activation',
       message,
@@ -1436,7 +1431,7 @@
     try {
       const event = await api.takeLicenseAuthorizationCallback(request.state);
       if (event && licenseAuthorizationRequest?.state === request.state) {
-        logLicenseFlow('info', 'callback-polled', { state: request.state });
+        logLicenseFlow('info', 'callback-polled');
         await handleLicenseAuthorizationCallback(event);
       }
     } finally {
@@ -3659,17 +3654,14 @@
     licenseAuthorizationCompletingStates = new Set<string>();
     clearLicenseAuthorizationTimeout();
     const generation = ++licenseAuthorizationGeneration;
-    logLicenseFlow('info', 'begin', { generation });
+    logLicenseFlow('info', 'begin');
     const ok = await mutate(
       'license-authorize',
       async () => {
         const request = await api.beginLicenseAuthorization(import.meta.env.MODE !== 'e2e');
         if (generation !== licenseAuthorizationGeneration) return;
         licenseAuthorizationRequest = request;
-        logLicenseFlow('info', 'request-ready', {
-          state: request.state,
-          callbackMode: request.callbackMode,
-        });
+        logLicenseFlow('info', 'request-ready');
         scheduleLicenseAuthorizationTimeout(request, generation);
         if (!licenseAuthorizationDisplayName.trim()) {
           licenseAuthorizationDisplayName = request.suggestedDeviceName;
@@ -3677,7 +3669,7 @@
       },
       (value) => {
         if (generation === licenseAuthorizationGeneration) {
-          logLicenseFlow('warn', 'begin-failed', { generation });
+          logLicenseFlow('warn', 'begin-failed');
           licenseError = errorInfoOf(value);
         }
       },
@@ -3689,17 +3681,10 @@
 
   async function handleLicenseAuthorizationCallback(event: LicenseAuthorizationCallbackEvent) {
     const request = licenseAuthorizationRequest;
-    logLicenseFlow('info', 'callback-received-by-ui', {
-      state: event.state,
-      hasRequest: !!request,
-      busy: busy || null,
-    });
+    logLicenseFlow('info', 'callback-received-by-ui');
     if (!request || event.state !== request.state || licenseAuthorizationCompletingState === request.state) return;
     if (busy && busy !== 'license-complete') {
-      logLicenseFlow('debug', 'callback-waiting-for-idle', {
-        state: request.state,
-        busy,
-      });
+      logLicenseFlow('debug', 'callback-waiting-for-idle');
       return;
     }
     licenseAuthorizationCompletingState = request.state;
@@ -3726,7 +3711,7 @@
   async function cancelLicenseAuthorization() {
     const state = licenseAuthorizationRequest?.state;
     if (state) {
-      logLicenseFlow('info', 'cancel', { state });
+      logLicenseFlow('info', 'cancel');
       await api.cancelLicenseAuthorization(state).catch(() => null);
     }
     resetLicenseAuthorizationProgress();
@@ -3740,30 +3725,20 @@
   }, generation = licenseAuthorizationGeneration) {
     licenseError = null;
     if (licenseAuthorizationCompletingStates.has(request.expectedState)) {
-      logLicenseFlow('debug', 'complete-duplicate-ignored', {
-        state: request.expectedState,
-        busy: busy || null,
-      });
+      logLicenseFlow('debug', 'complete-duplicate-ignored');
       return;
     }
     licenseAuthorizationCompletingStates = new Set([
       ...licenseAuthorizationCompletingStates,
       request.expectedState,
     ]);
-    logLicenseFlow('info', 'complete-start', {
-      state: request.expectedState,
-      generation,
-      busy: busy || null,
-    });
+    logLicenseFlow('info', 'complete-start');
     await mutate(
       'license-complete',
       async () => {
-        logLicenseFlow('debug', 'complete-invoke', { state: request.expectedState });
+        logLicenseFlow('debug', 'complete-invoke');
         const snapshot = await api.completeLicenseAuthorization(request);
-        logLicenseFlow('info', 'complete-success', {
-          state: request.expectedState,
-          status: snapshot.entitlementState.status,
-        });
+        logLicenseFlow('info', 'complete-success');
         if (generation !== licenseAuthorizationGeneration) return;
         await applyEntitlementSnapshot(snapshot, 'authorization-complete');
         resetLicenseAuthorizationProgress();
@@ -3772,7 +3747,7 @@
       },
       (value) => {
         if (generation === licenseAuthorizationGeneration) {
-          logLicenseFlow('warn', 'complete-failed', { state: request.expectedState });
+          logLicenseFlow('warn', 'complete-failed');
           const error = errorInfoOf(value);
           licenseError = error;
           const state = licenseAuthorizationRequest?.state;
