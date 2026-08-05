@@ -3,6 +3,13 @@
 All notable changes to Camellia Nexus will be recorded here from the first
 commercial release onward.
 
+## [1.0.2] - 2026-08-05
+
+### Fixed
+
+- harden Nexus client runtime boundaries (#18)
+
+
 ## [1.0.1] - 2026-07-31
 
 ### Fixed
