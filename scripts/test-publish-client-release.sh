@@ -37,7 +37,7 @@ grep -Fxq \
 
 workflow_asset_templates() {
   awk '
-    /cat > "\$RUNNER_TEMP\/expected-build-assets" <<EOF/ { capture = 1; next }
+    /cat > "\$RUNNER_TEMP\/expected-product-assets" <<EOF/ { capture = 1; next }
     capture && /^[[:space:]]*EOF$/ { exit }
     capture { sub(/^[[:space:]]+/, ""); print }
   ' .github/workflows/publish-release.yml
@@ -151,14 +151,6 @@ gh() {
   fi
 }
 
-# Invoked by the publisher subprocess through the exported function.
-# shellcheck disable=SC2329
-cosign() {
-  [[ "$1" == verify-blob && -f "$2" ]] || {
-    echo "Verification-only recovery attempted an unexpected Cosign operation: $*" >&2
-    return 1
-  }
-}
 gpg() {
   if [[ " $* " == *' --with-colons '* && " $* " == *' --list-keys '* ]]; then
     printf 'pub:-:255:22:0000000000000000:0:0::::::scESC:::::ed25519:::0:\n'
@@ -167,8 +159,7 @@ gpg() {
     printf '[GNUPG:] VALIDSIG %s 2026-01-01 0 0 0 0 0 0 0\n' "$MOCK_GPG_FINGERPRINT"
   fi
 }
-export -f gh cosign gpg
-export MOCK_REMOTE="$remote"
+export -f gh gpg
 export MOCK_GPG_FINGERPRINT="$linux_signing_fingerprint"
 
 run_verification() {
@@ -188,52 +179,70 @@ run_verification() {
     bash scripts/publish-client-release.sh
 }
 
+public_remote="$root/public-remote"
+mkdir "$public_remote"
+for name in "${raw_assets[@]}"; do
+  cp "$remote/$name" "$public_remote/$name"
+done
+(
+  cd "$public_remote"
+  printf '%s\n' "${raw_assets[@]}" | LC_ALL=C sort |
+    xargs sha256sum > SHA256SUMS
+)
+export MOCK_REMOTE="$public_remote"
 run_verification >/dev/null
-cp "$remote/NATIVE-SIGNING.md" "$root/native-signing-original"
-printf 'tampered report\n' >> "$remote/NATIVE-SIGNING.md"
-(
-  cd "$remote"
-  find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name '*.sigstore.json' -print0 |
-    LC_ALL=C sort -z |
-    xargs -0 sha256sum > SHA256SUMS
-)
-if run_verification >/dev/null 2>&1; then
-  echo "Published release verification accepted a report that disagrees with metadata" >&2
-  exit 1
-fi
-cp "$root/native-signing-original" "$remote/NATIVE-SIGNING.md"
-(
-  cd "$remote"
-  find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name '*.sigstore.json' -print0 |
-    LC_ALL=C sort -z |
-    xargs -0 sha256sum > SHA256SUMS
-)
 
-rm "$remote/SHA256SUMS.sigstore.json"
+printf 'forbidden public evidence\n' > "$public_remote/release-evidence.json"
 if run_verification >/dev/null 2>&1; then
-  echo "Published release verification accepted an incomplete asset set" >&2
+  echo "Published release verification accepted forbidden internal evidence" >&2
   exit 1
 fi
+rm "$public_remote/release-evidence.json"
+
+printf 'unrelated OpenPGP material\n' > "$public_remote/ci-evidence.asc"
+if run_verification >/dev/null 2>&1; then
+  echo "Published release verification accepted an unrelated .asc asset" >&2
+  exit 1
+fi
+rm "$public_remote/ci-evidence.asc"
 
 draft_local="$root/draft-local"
 draft_remote="$root/draft-remote"
 mkdir "$draft_local" "$draft_remote"
 while IFS= read -r -d '' subject; do
   cp "$subject" "$draft_local/"
-  cp "$subject" "$draft_remote/"
 done < <(find "$remote" -maxdepth 1 -type f ! -name '*.sigstore.json' -print0)
+
+(
+  cd "$draft_local"
+  printf '%s\n' "${raw_assets[@]}" | LC_ALL=C sort |
+    xargs sha256sum > SHA256SUMS
+)
+for name in "${raw_assets[@]}"; do
+  cp "$draft_local/$name" "$draft_remote/$name"
+done
+cp "$draft_local/SHA256SUMS" "$draft_remote/SHA256SUMS"
+for name in \
+  camellia-nexus-1.2.3-linux-x64.AppImage.asc \
+  camellia-nexus-1.2.3-linux-x64.deb.asc \
+  camellia-nexus-1.2.3-linux-x64.tar.gz.asc
+do
+  cp "$draft_local/$name" "$draft_remote/$name"
+done
+cp "$draft_local/camellia-nexus-1.2.3-linux-x64.signing-key.asc" \
+  "$draft_remote/RELEASE-SIGNING-KEY.asc"
 
 write_bundle() {
   local subject="$1"
   sha256sum "$subject" | awk '{print $1}' > "$subject.sigstore.json"
 }
-for subject in "$draft_local"/* "$draft_remote"/*; do
+for subject in "$draft_local"/*; do
   [[ "$subject" == *.sigstore.json ]] || write_bundle "$subject"
 done
 
 conflicting_asset=camellia-nexus-1.2.3-windows-x64-portable.zip
 printf 'conflicting draft bytes\n' > "$draft_remote/$conflicting_asset"
-printf 'invalid bundle\n' > "$draft_remote/SHA256SUMS.sigstore.json"
+printf 'conflicting checksum manifest\n' > "$draft_remote/SHA256SUMS"
 replacement_log="$root/draft-replacements"
 
 gh() {
@@ -311,6 +320,6 @@ fi
   exit 1
 }
 cmp "$draft_local/$conflicting_asset" "$draft_remote/$conflicting_asset"
-cmp "$draft_local/SHA256SUMS.sigstore.json" "$draft_remote/SHA256SUMS.sigstore.json"
+cmp "$draft_local/SHA256SUMS" "$draft_remote/SHA256SUMS"
 
-echo "Published client release recovery tests passed"
+echo "Published client release asset tests passed"

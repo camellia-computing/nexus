@@ -20,6 +20,8 @@ Privilege-capable packages bind the privilege broker's normalized executable con
 
 Optional Linux OpenPGP detached signatures authenticate artifacts only to users who independently trust the recorded full fingerprint; they do not replace package ownership checks or create operating-system executable trust. A formal release always retains SHA-256 and keyless Sigstore/Cosign verification, whether optional native or detached signing is enabled or not.
 
+OpenPGP Release signing status: **disabled**. There is currently no trusted Camellia Nexus Release-signing fingerprint, and no `.asc` signature or `RELEASE-SIGNING-KEY.asc` file is expected in a new Release. Before this status can change to enabled, this policy must publish the complete 40- or 64-hexadecimal fingerprint and activation date. Key rotations must append the new fingerprint and activation date while retaining every public-key record required to verify immutable published Releases. A public key downloaded from the same Release as its signatures is a convenience copy, not an independent trust root.
+
 Program isolation separates lifecycle state, managed files, logs, and process trees. It is not a security sandbox and does not restrict access to resources available to the application account.
 
 Configuration files, environment variables, and logs may contain sensitive data. Protect the application data directory and sanitize diagnostic material before distribution.

@@ -137,9 +137,12 @@ assets_json="$work_directory/assets.json"
 expected_names="$work_directory/expected-assets"
 expected_raw_names="$work_directory/expected-raw-assets"
 expected_product_names="$work_directory/expected-product-assets"
+expected_public_names="$work_directory/expected-public-assets"
 remote_names="$work_directory/remote-assets"
-configure_expected_assets() {
-  local metadata="$1" artifact_signing
+public_assets_directory="$work_directory/public-assets"
+artifact_signing_mode=""
+configure_expected_assets_for_mode() {
+  local artifact_signing="$1"
   cat > "$expected_product_names" <<EOF
 camellia-nexus-$VERSION-linux-x64.AppImage
 camellia-nexus-$VERSION-linux-x64.deb
@@ -161,7 +164,6 @@ SBOM.spdx.json
 SHA256SUMS
 release-evidence.json
 EOF
-  artifact_signing="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.scheme // empty' "$metadata")"
   if [[ "$artifact_signing" == openpgp-detached ]]; then
     cat >> "$expected_raw_names" <<EOF
 camellia-nexus-$VERSION-linux-x64.AppImage.asc
@@ -173,12 +175,73 @@ EOF
     echo "Unsupported Linux artifact signing mode: $artifact_signing" >&2
     return 1
   fi
+  artifact_signing_mode="$artifact_signing"
   LC_ALL=C sort -o "$expected_product_names" "$expected_product_names"
   LC_ALL=C sort -o "$expected_raw_names" "$expected_raw_names"
   {
     cat "$expected_raw_names"
     sed 's/$/.sigstore.json/' "$expected_raw_names"
   } | LC_ALL=C sort > "$expected_names"
+  {
+    cat "$expected_product_names"
+    echo SHA256SUMS
+    if [[ "$artifact_signing" == openpgp-detached ]]; then
+      printf '%s\n' \
+        "camellia-nexus-$VERSION-linux-x64.AppImage.asc" \
+        "camellia-nexus-$VERSION-linux-x64.deb.asc" \
+        "camellia-nexus-$VERSION-linux-x64.tar.gz.asc" \
+        RELEASE-SIGNING-KEY.asc
+    fi
+  } | LC_ALL=C sort > "$expected_public_names"
+}
+
+configure_expected_assets() {
+  local metadata="$1" artifact_signing
+  artifact_signing="$(jq -r '.builds[] | select(.platform == "linux") | .artifactSigning.scheme // empty' "$metadata")"
+  configure_expected_assets_for_mode "$artifact_signing"
+}
+
+configure_published_assets() {
+  configure_expected_assets_for_mode none
+  if diff -u "$expected_public_names" "$remote_names" >/dev/null; then
+    return 0
+  fi
+  configure_expected_assets_for_mode openpgp-detached
+  diff -u "$expected_public_names" "$remote_names"
+}
+
+stage_public_assets() {
+  local name key_source
+  mkdir "$public_assets_directory"
+  while IFS= read -r name; do
+    case "$name" in
+      RELEASE-SIGNING-KEY.asc)
+        key_source="$assets_directory/camellia-nexus-$VERSION-linux-x64.signing-key.asc"
+        [[ -f "$key_source" && ! -L "$key_source" ]] || {
+          echo 'The verified OpenPGP release key is unavailable' >&2
+          return 1
+        }
+        cp -- "$key_source" "$public_assets_directory/$name"
+        ;;
+      *)
+        [[ -f "$assets_directory/$name" && ! -L "$assets_directory/$name" ]] || {
+          echo "Selected public Release asset is unavailable or unsafe: $name" >&2
+          return 1
+        }
+        cp -- "$assets_directory/$name" "$public_assets_directory/$name"
+        ;;
+    esac
+  done < "$expected_public_names"
+  find "$public_assets_directory" -maxdepth 1 -type f -printf '%f\n' |
+    LC_ALL=C sort > "$work_directory/staged-public-assets"
+  diff -u "$expected_public_names" "$work_directory/staged-public-assets"
+  (cd "$public_assets_directory" && sha256sum --check SHA256SUMS)
+  {
+    echo 'Files selected for GitHub Release:'
+    sed 's/^/  /' "$expected_public_names"
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  echo 'Files selected for GitHub Release:'
+  sed 's/^/  /' "$expected_public_names"
 }
 
 refresh_release() {
@@ -229,39 +292,77 @@ delete_asset() {
     "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >/dev/null
 }
 
-refresh_release
-if [[ "$verify_published_only" == true || "$(jq -r '.draft' "$release_json")" == false ]]; then
-  metadata_bootstrap="$work_directory/metadata-bootstrap.json"
-  metadata_bundle="$metadata_bootstrap.sigstore.json"
-  download_asset RELEASE-METADATA.json "$metadata_bootstrap"
-  download_asset RELEASE-METADATA.json.sigstore.json "$metadata_bundle"
-  verify_bundle "$metadata_bootstrap" "$metadata_bundle"
-  configure_expected_assets "$metadata_bootstrap"
-else
-  configure_expected_assets "$assets_directory/RELEASE-METADATA.json"
-fi
-verify_remote_release() {
+verify_public_openpgp() {
+  local directory="$1" artifact status fingerprint current
+  local keyring="$work_directory/public-openpgp-keyring"
+  mkdir -p "$keyring"
+  chmod 700 "$keyring"
+  GNUPGHOME="$keyring" gpg --batch --quiet --import \
+    "$directory/RELEASE-SIGNING-KEY.asc" >/dev/null 2>&1
+  fingerprint=""
+  for artifact in \
+    "camellia-nexus-$VERSION-linux-x64.AppImage" \
+    "camellia-nexus-$VERSION-linux-x64.deb" \
+    "camellia-nexus-$VERSION-linux-x64.tar.gz"
+  do
+    status="$(GNUPGHOME="$keyring" gpg --batch --status-fd 1 \
+      --verify "$directory/$artifact.asc" "$directory/$artifact" 2>/dev/null)"
+    current="$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" {print toupper($3)}' <<< "$status")"
+    [[ "$current" =~ ^[0-9A-F]+$ && ( ${#current} -eq 40 || ${#current} -eq 64 ) ]] || {
+      echo "Public OpenPGP signature did not produce one full fingerprint: $artifact" >&2
+      return 1
+    }
+    [[ -z "$fingerprint" || "$fingerprint" == "$current" ]] || {
+      echo 'Public OpenPGP signatures do not share one release key' >&2
+      return 1
+    }
+    fingerprint="$current"
+  done
+  echo "Public OpenPGP release material verified with $fingerprint"
+}
+
+verify_public_release() {
   local destination="$1" name
-  diff -u "$expected_names" "$remote_names"
+  configure_published_assets
   mkdir "$destination"
   while IFS= read -r name; do
     download_asset "$name" "$destination/$name"
-  done < "$expected_names"
-  verify_asset_directory "$destination"
-  jq -r '.files[].name' "$destination/release-evidence.json" |
-    LC_ALL=C sort > "$work_directory/evidence-product-assets"
-  diff -u "$expected_product_names" "$work_directory/evidence-product-assets"
+    [[ -f "$destination/$name" && ! -L "$destination/$name" ]] || {
+      echo "Downloaded public Release asset is unsafe: $name" >&2
+      return 1
+    }
+  done < "$expected_public_names"
+  (cd "$destination" && sha256sum --check SHA256SUMS)
+  while IFS= read -r name; do
+    GH_TOKEN="$GH_TOKEN" gh attestation verify "$destination/$name" \
+      --repo "$GITHUB_REPOSITORY" >/dev/null || {
+      echo "GitHub provenance verification failed: $name" >&2
+      return 1
+    }
+    GH_TOKEN="$GH_TOKEN" gh attestation verify "$destination/$name" \
+      --repo "$GITHUB_REPOSITORY" \
+      --predicate-type https://spdx.dev/Document/v2.3 >/dev/null || {
+      echo "GitHub SBOM attestation verification failed: $name" >&2
+      return 1
+    }
+  done < "$expected_product_names"
+  if [[ "$artifact_signing_mode" == openpgp-detached ]]; then
+    verify_public_openpgp "$destination"
+  fi
 }
 
+refresh_release
 if [[ "$verify_published_only" == true || "$(jq -r '.draft' "$release_json")" == false ]]; then
   [[ "$(jq -r '.draft' "$release_json")" == false ]] || {
     echo "Verification-only mode requires an already published release" >&2
     exit 1
   }
-  verify_remote_release "$work_directory/published-existing"
-  echo "Verified existing published $tag by API, checksum and Sigstore readback"
+  verify_public_release "$work_directory/published-existing"
+  echo "Verified published $tag by public asset, checksum and attestation readback"
   exit 0
 fi
+configure_expected_assets "$assets_directory/RELEASE-METADATA.json"
+
 [[ "$verify_published_only" == false ]] || { echo "VERIFY_PUBLISHED_ONLY must be true or false" >&2; exit 1; }
 
 find "$assets_directory" -maxdepth 1 -type f ! -name '*.sigstore.json' -printf '%f\n' | LC_ALL=C sort > "$work_directory/local-raw-assets"
@@ -273,14 +374,16 @@ for subject in "${subjects[@]}"; do
 done
 find "$assets_directory" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$work_directory/local-assets"
 diff -u "$expected_names" "$work_directory/local-assets"
+verify_asset_directory "$assets_directory"
+stage_public_assets
 
 refresh_release
 if [[ "$(jq -r '.draft' "$release_json")" == false ]]; then
-  verify_remote_release "$work_directory/published-during-signing"
-  echo "Release $tag was published concurrently and passed complete readback"
+  verify_public_release "$work_directory/published-during-signing"
+  echo "Release $tag was published concurrently and passed public readback"
   exit 0
 fi
-LC_ALL=C comm -13 "$expected_names" "$remote_names" > "$work_directory/unexpected-assets"
+LC_ALL=C comm -13 "$expected_public_names" "$remote_names" > "$work_directory/unexpected-assets"
 if [[ -s "$work_directory/unexpected-assets" ]]; then
   echo "Release contains unexpected assets:" >&2
   sed 's/^/  /' "$work_directory/unexpected-assets" >&2
@@ -289,17 +392,11 @@ fi
 
 draft="$(jq -r '.draft' "$release_json")"
 while IFS= read -r name; do
-  local_path="$assets_directory/$name"
+  local_path="$public_assets_directory/$name"
   if grep -Fxq "$name" "$remote_names"; then
     remote_path="$work_directory/existing-$name"
     download_asset "$name" "$remote_path"
-    if [[ "$name" == *.sigstore.json ]]; then
-      if ! verify_bundle "$assets_directory/${name%.sigstore.json}" "$remote_path"; then
-        echo "Replacing invalid draft signature bundle: $name"
-        delete_asset "$name"
-        GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release upload "$tag" "$local_path" --repo "$GITHUB_REPOSITORY"
-      fi
-    elif ! cmp -s "$local_path" "$remote_path"; then
+    if ! cmp -s "$local_path" "$remote_path"; then
       echo "Replacing conflicting draft asset: $name"
       delete_asset "$name"
       GH_TOKEN="$RELEASE_POLICY_TOKEN" gh release upload "$tag" "$local_path" --repo "$GITHUB_REPOSITORY"
@@ -310,12 +407,12 @@ while IFS= read -r name; do
     echo "Published release is missing asset: $name" >&2
     exit 1
   fi
-done < "$expected_names"
+done < "$expected_public_names"
 
 refresh_release
-diff -u "$expected_names" "$remote_names"
+diff -u "$expected_public_names" "$remote_names"
 verified_draft="$work_directory/verified-draft"
-verify_remote_release "$verified_draft"
+verify_public_release "$verified_draft"
 
 # Asset signing and upload can take long enough for managed state to change.
 # Repeat the complete PR/tag/Release authorization at the publication boundary.
@@ -329,7 +426,7 @@ fi
 # Re-read the public state and bytes after the publication mutation.
 refresh_release
 [[ "$(jq -r '.draft' "$release_json")" == false ]] || { echo "Release $tag remained a draft" >&2; exit 1; }
-diff -u "$expected_names" "$remote_names"
+diff -u "$expected_public_names" "$remote_names"
 published="$work_directory/published"
-verify_remote_release "$published"
-echo "Published and independently re-read $tag with verified checksums and Sigstore bundles"
+verify_public_release "$published"
+echo "Published and independently re-read $tag with the reviewed public asset set"

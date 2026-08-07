@@ -205,8 +205,11 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
 - Release PRs require a current write/admin human approval of the exact head and a successful focused
   gate, then the Release App performs the SHA-guarded squash merge. Do not manually create/move tags
   or edit the generated branch.
-- Formal tags build four native packages. Native signing is optional according to the documented
-  configuration; SHA-256 and keyless Cosign bundles plus public-byte readback are mandatory.
+- Formal tags build four native package groups. Native signing is optional according to the
+  documented configuration; package-only SHA-256, retained internal keyless Cosign bundles and
+  public-byte readback are mandatory. GitHub Release Assets contain only final packages and
+  `SHA256SUMS`, plus the three exact Linux detached signatures and fixed public-key filename only
+  when OpenPGP is actually enabled; supply-chain evidence remains in CI/attestations.
 - Candidate packages are short-lived, commit-addressed, and intentionally unsigned. Never interpret
   candidate `unsigned` metadata as evidence about a formal release.
 - A public release is accepted only when tag, commit, version, managed Release metadata, assets,
