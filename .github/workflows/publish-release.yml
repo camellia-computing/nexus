@@ -226,7 +226,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/expected-build-assets" <<EOF
+          cat > "$RUNNER_TEMP/expected-product-assets" <<EOF
           camellia-nexus-$VERSION-linux-x64.AppImage
           camellia-nexus-$VERSION-linux-x64.deb
           camellia-nexus-$VERSION-linux-x64.tar.gz
@@ -237,6 +237,7 @@ jobs:
           camellia-nexus-$VERSION-windows-x64.msi
           camellia-nexus-$VERSION-windows-x64-portable.zip
           EOF
+          cp "$RUNNER_TEMP/expected-product-assets" "$RUNNER_TEMP/expected-build-assets"
           linux_metadata="$(find release-inputs -type f -path '*/build-metadata/linux-x64.json' -print -quit)"
           [[ -n "$linux_metadata" ]] || { echo 'Linux build metadata is unavailable' >&2; exit 1; }
           linux_artifact_signing="$(jq -r '.artifactSigning.scheme // empty' "$linux_metadata")"
@@ -295,10 +296,9 @@ jobs:
                 "release-assets/camellia-nexus-$VERSION-linux-x64.deb" \
                 "release-assets/camellia-nexus-$VERSION-linux-x64.tar.gz"
           fi
-          find release-assets -maxdepth 1 -type f \( \
-            -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o \
-            -name '*.msi' -o -name '*.tar.gz' -o -name '*-portable.zip' \
-          \) -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > release-subjects.sha256
+          while IFS= read -r name; do
+            sha256sum -- "release-assets/$name"
+          done < "$RUNNER_TEMP/expected-product-assets" > release-subjects.sha256
       - name: SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -347,9 +347,10 @@ jobs:
             release-assets/release-evidence.json
           (
             cd release-assets
-            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
-              LC_ALL=C sort -z |
-              xargs -0 sha256sum > "$RUNNER_TEMP/release-checksums"
+            while IFS= read -r name; do
+              sha256sum -- "$name"
+            done < "$RUNNER_TEMP/expected-product-assets" \
+              > "$RUNNER_TEMP/release-checksums"
             mv "$RUNNER_TEMP/release-checksums" SHA256SUMS
             sha256sum --check SHA256SUMS
           )
