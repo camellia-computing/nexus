@@ -1146,6 +1146,12 @@
     margin: 0;
   }
 
+  .editor :global(.cm-panel.cm-search)::before,
+  .editor :global(.cm-panel.cm-search)::after {
+    display: none;
+    content: '';
+  }
+
   .editor :global(.cm-panel.cm-search input[name='search']),
   .editor :global(.cm-panel.cm-search input[name='replace']) {
     width: clamp(180px, 28cqi, 280px);
@@ -1469,6 +1475,53 @@
     .editor-format-status,
     .editor-status-bar > span:nth-last-of-type(2) {
       display: none;
+    }
+  }
+
+  @container configuration-editor (min-width: 541px) and (max-width: 900px) {
+    .editor :global(.cm-panel.cm-search) {
+      row-gap: 4px;
+    }
+
+    .editor :global(.cm-panel.cm-search)::before,
+    .editor :global(.cm-panel.cm-search)::after {
+      display: block;
+      width: 100%;
+      height: 0;
+      flex: 0 0 100%;
+    }
+
+    .editor :global(.cm-panel.cm-search)::before {
+      order: 2;
+    }
+
+    .editor :global(.cm-panel.cm-search input[name='search']),
+    .editor :global(.cm-panel.cm-search button[name='next']),
+    .editor :global(.cm-panel.cm-search button[name='prev']),
+    .editor :global(.cm-panel.cm-search button[name='select']) {
+      order: 1;
+    }
+
+    .editor :global(.cm-panel.cm-search label) {
+      order: 3;
+    }
+
+    .editor :global(.cm-panel.cm-search)::after {
+      order: 4;
+    }
+
+    .editor :global(.cm-panel.cm-search br) {
+      display: none;
+    }
+
+    .editor :global(.cm-panel.cm-search input[name='replace']),
+    .editor :global(.cm-panel.cm-search button[name='replace']),
+    .editor :global(.cm-panel.cm-search button[name='replaceAll']) {
+      order: 5;
+    }
+
+    .editor :global(.cm-panel.cm-search button[name='close']) {
+      order: 6;
     }
   }
 

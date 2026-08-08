@@ -2829,8 +2829,17 @@ test('the JSON configuration editor supports diagnostics, formatting and command
       'input[name="search"], input[name="replace"]',
     )).filter(visible);
     const optionLabels = Array.from(element.querySelectorAll<HTMLElement>('label')).filter(visible);
+    const searchRowControls = Array.from(element.querySelectorAll<HTMLElement>(
+      'input[name="search"], button[name="next"], button[name="prev"], button[name="select"]',
+    )).filter(visible);
+    const replaceRowControls = Array.from(element.querySelectorAll<HTMLElement>(
+      'input[name="replace"], button[name="replace"], button[name="replaceAll"]',
+    )).filter(visible);
+    const rowSpread = (rowControls: HTMLElement[]) => {
+      const tops = rowControls.map((control) => control.getBoundingClientRect().top);
+      return tops.length ? Math.max(...tops) - Math.min(...tops) : 0;
+    };
     const bounds = element.getBoundingClientRect();
-    const searchBounds = textInputs[0]!.getBoundingClientRect();
     return {
       overflow: element.scrollWidth - element.clientWidth,
       panelHeight: Math.round(bounds.height),
@@ -2841,13 +2850,11 @@ test('the JSON configuration editor supports diagnostics, formatting and command
       heights: controls.map((control) => Math.round(control.getBoundingClientRect().height)),
       fontSizes: controls.map((control) => getComputedStyle(control).fontSize),
       inputWidths: textInputs.map((input) => Math.round(input.getBoundingClientRect().width)),
-      optionRowOffsets: optionLabels.map((label) => {
-        const labelBounds = label.getBoundingClientRect();
-        return Math.abs(
-          (searchBounds.top + searchBounds.height / 2)
-            - (labelBounds.top + labelBounds.height / 2),
-        );
-      }),
+      searchRowCount: searchRowControls.length,
+      searchRowSpread: rowSpread(searchRowControls),
+      optionRowSpread: rowSpread(optionLabels),
+      replaceRowCount: replaceRowControls.length,
+      replaceRowSpread: rowSpread(replaceRowControls),
       checkboxCenterOffsets: optionLabels.map((label) => {
         const checkbox = label.querySelector<HTMLElement>('input[type="checkbox"]')!;
         const labelBounds = label.getBoundingClientRect();
@@ -2866,8 +2873,11 @@ test('the JSON configuration editor supports diagnostics, formatting and command
   expect(new Set(searchLayout.fontSizes).size).toBe(1);
   expect(searchLayout.inputWidths.length).toBeGreaterThan(0);
   expect(searchLayout.inputWidths.every((width) => width >= 180 && width <= 280)).toBe(true);
-  expect(searchLayout.optionRowOffsets).toHaveLength(3);
-  expect(Math.max(...searchLayout.optionRowOffsets)).toBeLessThanOrEqual(1);
+  expect(searchLayout.searchRowCount).toBe(4);
+  expect(searchLayout.searchRowSpread).toBeLessThanOrEqual(1);
+  expect(searchLayout.optionRowSpread).toBeLessThanOrEqual(1);
+  expect(searchLayout.replaceRowCount).toBe(3);
+  expect(searchLayout.replaceRowSpread).toBeLessThanOrEqual(1);
   expect(searchLayout.checkboxCenterOffsets).toHaveLength(3);
   expect(Math.max(...searchLayout.checkboxCenterOffsets)).toBeLessThanOrEqual(1);
   await searchPanel.locator('button[name="close"]').click();
