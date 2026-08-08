@@ -3,6 +3,13 @@
 All notable changes to Camellia Nexus will be recorded here from the first
 commercial release onward.
 
+## [1.0.5] - 2026-08-08
+
+### Fixed
+
+- compact editor search controls (#24)
+
+
 ## [1.0.4] - 2026-08-08
 
 ### Fixed
