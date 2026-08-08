@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -149,15 +150,26 @@ impl ProgramStore for FileStore {
         let root = self.programs_root();
         blocking(move || {
             fs::create_dir_all(&root)?;
+            let canonical_root = fs::canonicalize(&root)?;
             let mut report = LoadReport::default();
             for entry in fs::read_dir(&root)? {
                 let entry = entry?;
-                let path = entry.path();
-                if !entry.file_type()?.is_dir()
-                    || entry.file_name().to_string_lossy().starts_with('.')
-                {
+                let file_name = entry.file_name();
+                if !entry.file_type()?.is_dir() || file_name.to_string_lossy().starts_with('.') {
                     continue;
                 }
+                let observed_path = root.join(&file_name);
+                let (workspace_id, path) =
+                    match validated_program_workspace(&root, &canonical_root, &file_name) {
+                        Ok(workspace) => workspace,
+                        Err(error) => {
+                            report.invalid.push(InvalidProgram {
+                                path: observed_path,
+                                error: error.to_string(),
+                            });
+                            continue;
+                        }
+                    };
                 let create_marker = path.join(".pending");
                 if create_marker.exists() {
                     let committed = read_with_overflow_byte(&create_marker, 64)
@@ -186,7 +198,7 @@ impl ProgramStore for FileStore {
                     }
                     let (spec, migrated) = decode_program_spec(&content)?;
                     spec.validate()?;
-                    if path.file_name().and_then(|v| v.to_str()) != Some(spec.id.as_str()) {
+                    if spec.id != workspace_id {
                         return Err(CamelliaNexusError::invalid_spec(
                             "Workspace name does not match Program id",
                         ));
@@ -1106,6 +1118,33 @@ fn safe_path(root: &Path, relative: &Path) -> Result<PathBuf> {
     Ok(joined)
 }
 
+fn validated_program_workspace(
+    root: &Path,
+    canonical_root: &Path,
+    file_name: &OsStr,
+) -> Result<(ProgramId, PathBuf)> {
+    let file_name = file_name
+        .to_str()
+        .ok_or_else(|| CamelliaNexusError::invalid_spec("Workspace name is not valid Unicode"))?;
+    let id = ProgramId::parse(file_name.to_owned())?;
+    let path = root.join(id.as_str());
+    let metadata = fs::symlink_metadata(&path)?;
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::InvalidPath,
+            "Program workspace must be a real directory",
+        ));
+    }
+    let canonical_path = fs::canonicalize(&path)?;
+    if canonical_path.parent() != Some(canonical_root) {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::InvalidPath,
+            "Program workspace must remain directly under the programs directory",
+        ));
+    }
+    Ok((id, path))
+}
+
 fn config_path_in_root(root: &Path, spec: &ProgramSpec) -> Result<PathBuf> {
     let relative = spec.program_type.main_config().ok_or_else(|| {
         CamelliaNexusError::new(
@@ -1341,8 +1380,16 @@ fn load_program_package_transaction_marker(
 }
 
 fn discard_directory_background(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::InvalidPath,
+            "Managed package cleanup target must be a real directory",
+        ));
     }
     let parent = path.parent().ok_or_else(|| {
         CamelliaNexusError::new(
@@ -2004,6 +2051,33 @@ mod tests {
         let report = store.load_all().await.expect("load report");
         assert_eq!(report.valid.len(), 1);
         assert_eq!(report.invalid.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_workspace_name_is_rejected_before_transaction_recovery() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let workspace = directory.path().join("programs/INVALID");
+        let backup_package = workspace.join("bin.old");
+        std::fs::create_dir_all(&backup_package).expect("backup package");
+        std::fs::write(backup_package.join("sentinel"), b"preserve").expect("sentinel");
+        write_json_atomic(&workspace.join("program.json"), &generic_spec())
+            .expect("program metadata");
+        write_json_atomic(
+            &workspace.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
+            &ProgramPackageTransactionMarker {
+                version: super::PROGRAM_PACKAGE_TRANSACTION_VERSION,
+                committed: true,
+            },
+        )
+        .expect("committed marker");
+
+        let report = store.load_all().await.expect("load report");
+
+        assert!(report.valid.is_empty());
+        assert_eq!(report.invalid.len(), 1);
+        assert!(backup_package.join("sentinel").is_file());
+        assert!(workspace.join(PROGRAM_PACKAGE_TRANSACTION_MARKER).is_file());
     }
 
     #[tokio::test]
