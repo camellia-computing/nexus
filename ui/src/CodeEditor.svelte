@@ -1130,9 +1130,9 @@
     min-width: 0;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--ui-gap-sm);
+    gap: 6px;
     box-sizing: border-box;
-    padding: 10px calc(var(--ui-control-sm) + 18px) 10px 10px;
+    padding: 7px calc(var(--ui-control-sm) + 15px) 7px 8px;
     color: var(--ui-text-primary);
     font-family: var(--ui-font-body, system-ui, sans-serif);
   }
@@ -1146,17 +1146,18 @@
   }
 
   .editor :global(.cm-panel.cm-search input[type='text']) {
-    width: auto;
+    width: clamp(180px, 36cqi, 300px);
+    max-width: 100%;
     min-width: 0;
     min-height: var(--ui-control-sm);
-    flex: 1 1 240px;
+    flex: 0 1 clamp(180px, 36cqi, 300px);
     margin: 0;
     border: 1px solid var(--ui-border-default);
     border-radius: var(--ui-radius-xs);
     background: var(--ui-input);
-    padding: 5px 12px;
+    padding: 4px 9px;
     color: var(--ui-text-primary);
-    font: var(--ui-font-size-xs)/1.3 var(--ui-font-mono, "SFMono-Regular", "Cascadia Code", Consolas, monospace);
+    font: var(--ui-font-size-sm)/1.25 var(--ui-font-mono, "SFMono-Regular", "Cascadia Code", Consolas, monospace);
   }
 
   .editor :global(.cm-panel.cm-search input[type='text']::placeholder) {
@@ -1462,6 +1463,14 @@
     .editor-format-status,
     .editor-status-bar > span:nth-last-of-type(2) {
       display: none;
+    }
+  }
+
+  @container configuration-editor (max-width: 540px) {
+    .editor :global(.cm-panel.cm-search input[type='text']) {
+      width: 100%;
+      max-width: none;
+      flex-basis: 100%;
     }
   }
 
