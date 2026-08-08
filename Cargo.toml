@@ -18,7 +18,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
-base64 = "0.22.1"
+base64 = "0.23.0"
 jsonwebtoken = { version = "10.4.0", default-features = false, features = ["use_pem"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
 serde = { version = "1.0.228", features = ["derive"] }
