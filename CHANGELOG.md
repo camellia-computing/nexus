@@ -3,6 +3,13 @@
 All notable changes to Camellia Nexus will be recorded here from the first
 commercial release onward.
 
+## [1.0.4] - 2026-08-08
+
+### Fixed
+
+- validate workspace paths before recovery (#22)
+
+
 ## [1.0.3] - 2026-08-07
 
 ### Fixed
