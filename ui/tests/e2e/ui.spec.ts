@@ -2821,24 +2821,65 @@ test('the JSON configuration editor supports diagnostics, formatting and command
   await expect(searchInput).toBeFocused();
   await expect(shell.locator('.cm-panels-bottom .cm-search')).toHaveCount(0);
   const searchLayout = await searchPanel.evaluate((element) => {
+    const visible = (control: HTMLElement) => getComputedStyle(control).display !== 'none';
     const controls = Array.from(element.querySelectorAll<HTMLElement>(
-      'input[type="text"], button:not([name="close"]), label',
-    ));
+      'input[name="search"], input[name="replace"], button:not([name="close"]), label',
+    )).filter(visible);
+    const textInputs = Array.from(element.querySelectorAll<HTMLElement>(
+      'input[name="search"], input[name="replace"]',
+    )).filter(visible);
+    const optionLabels = Array.from(element.querySelectorAll<HTMLElement>('label')).filter(visible);
+    const searchRowControls = Array.from(element.querySelectorAll<HTMLElement>(
+      'input[name="search"], button[name="next"], button[name="prev"], button[name="select"]',
+    )).filter(visible);
+    const replaceRowControls = Array.from(element.querySelectorAll<HTMLElement>(
+      'input[name="replace"], button[name="replace"], button[name="replaceAll"]',
+    )).filter(visible);
+    const rowSpread = (rowControls: HTMLElement[]) => {
+      const tops = rowControls.map((control) => control.getBoundingClientRect().top);
+      return tops.length ? Math.max(...tops) - Math.min(...tops) : 0;
+    };
     const bounds = element.getBoundingClientRect();
     return {
       overflow: element.scrollWidth - element.clientWidth,
+      panelHeight: Math.round(bounds.height),
       outside: controls.some((control) => {
         const controlBounds = control.getBoundingClientRect();
         return controlBounds.left < bounds.left - 1 || controlBounds.right > bounds.right + 1;
       }),
       heights: controls.map((control) => Math.round(control.getBoundingClientRect().height)),
       fontSizes: controls.map((control) => getComputedStyle(control).fontSize),
+      inputWidths: textInputs.map((input) => Math.round(input.getBoundingClientRect().width)),
+      searchRowCount: searchRowControls.length,
+      searchRowSpread: rowSpread(searchRowControls),
+      optionRowSpread: rowSpread(optionLabels),
+      replaceRowCount: replaceRowControls.length,
+      replaceRowSpread: rowSpread(replaceRowControls),
+      checkboxCenterOffsets: optionLabels.map((label) => {
+        const checkbox = label.querySelector<HTMLElement>('input[type="checkbox"]')!;
+        const labelBounds = label.getBoundingClientRect();
+        const checkboxBounds = checkbox.getBoundingClientRect();
+        return Math.abs(
+          (labelBounds.top + labelBounds.height / 2)
+            - (checkboxBounds.top + checkboxBounds.height / 2),
+        );
+      }),
     };
   });
   expect(searchLayout.overflow).toBeLessThanOrEqual(1);
   expect(searchLayout.outside).toBe(false);
+  expect(searchLayout.panelHeight).toBeLessThanOrEqual(120);
   expect(Math.max(...searchLayout.heights) - Math.min(...searchLayout.heights)).toBeLessThanOrEqual(1);
   expect(new Set(searchLayout.fontSizes).size).toBe(1);
+  expect(searchLayout.inputWidths.length).toBeGreaterThan(0);
+  expect(searchLayout.inputWidths.every((width) => width >= 180 && width <= 280)).toBe(true);
+  expect(searchLayout.searchRowCount).toBe(4);
+  expect(searchLayout.searchRowSpread).toBeLessThanOrEqual(1);
+  expect(searchLayout.optionRowSpread).toBeLessThanOrEqual(1);
+  expect(searchLayout.replaceRowCount).toBe(3);
+  expect(searchLayout.replaceRowSpread).toBeLessThanOrEqual(1);
+  expect(searchLayout.checkboxCenterOffsets).toHaveLength(3);
+  expect(Math.max(...searchLayout.checkboxCenterOffsets)).toBeLessThanOrEqual(1);
   await searchPanel.locator('button[name="close"]').click();
 
   await page.getByRole('button', { name: 'Replace', exact: true }).click();

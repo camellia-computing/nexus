@@ -1130,7 +1130,8 @@
     min-width: 0;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    column-gap: 6px;
+    row-gap: 7px;
     box-sizing: border-box;
     padding: 7px calc(var(--ui-control-sm) + 15px) 7px 8px;
     color: var(--ui-text-primary);
@@ -1145,12 +1146,19 @@
     margin: 0;
   }
 
-  .editor :global(.cm-panel.cm-search input[type='text']) {
-    width: clamp(180px, 36cqi, 300px);
+  .editor :global(.cm-panel.cm-search)::before,
+  .editor :global(.cm-panel.cm-search)::after {
+    display: none;
+    content: '';
+  }
+
+  .editor :global(.cm-panel.cm-search input[name='search']),
+  .editor :global(.cm-panel.cm-search input[name='replace']) {
+    width: clamp(180px, 28cqi, 280px);
     max-width: 100%;
     min-width: 0;
     min-height: var(--ui-control-sm);
-    flex: 0 1 clamp(180px, 36cqi, 300px);
+    flex: 0 1 clamp(180px, 28cqi, 280px);
     margin: 0;
     border: 1px solid var(--ui-border-default);
     border-radius: var(--ui-radius-xs);
@@ -1160,7 +1168,8 @@
     font: var(--ui-font-size-sm)/1.25 var(--ui-font-mono, "SFMono-Regular", "Cascadia Code", Consolas, monospace);
   }
 
-  .editor :global(.cm-panel.cm-search input[type='text']::placeholder) {
+  .editor :global(.cm-panel.cm-search input[name='search']::placeholder),
+  .editor :global(.cm-panel.cm-search input[name='replace']::placeholder) {
     color: var(--ui-text-tertiary);
     font-family: var(--ui-font-body, system-ui, sans-serif);
     font-weight: var(--ui-weight-regular, 400);
@@ -1168,7 +1177,8 @@
     opacity: .88;
   }
 
-  .editor :global(.cm-panel.cm-search input[type='text']:focus) {
+  .editor :global(.cm-panel.cm-search input[name='search']:focus),
+  .editor :global(.cm-panel.cm-search input[name='replace']:focus) {
     border-color: var(--ui-focus-ring);
     outline: 0;
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-focus-ring) 34%, transparent);
@@ -1186,7 +1196,7 @@
     padding: 5px 10px;
     color: var(--ui-text-secondary);
     box-shadow: none;
-    font: var(--ui-weight-semibold, 600) var(--ui-font-size-xs)/1.2 var(--ui-font-body, system-ui, sans-serif);
+    font: var(--ui-weight-semibold, 600) var(--ui-font-size-sm)/1.2 var(--ui-font-body, system-ui, sans-serif);
     white-space: nowrap;
   }
 
@@ -1207,13 +1217,15 @@
     align-items: center;
     gap: 6px;
     margin: 0;
+    padding-inline: 3px;
     color: var(--ui-text-secondary);
-    font: var(--ui-weight-medium, 500) var(--ui-font-size-xs)/1.2 var(--ui-font-body, system-ui, sans-serif);
+    font: var(--ui-weight-medium, 500) var(--ui-font-size-sm)/1.2 var(--ui-font-body, system-ui, sans-serif);
     white-space: nowrap;
   }
 
   .editor :global(.cm-panel.cm-search input[type='checkbox']) {
     width: 16px;
+    height: 16px;
     min-height: 16px;
     flex: 0 0 16px;
     margin: 0;
@@ -1221,8 +1233,8 @@
   }
 
   .editor :global(.cm-panel.cm-search button[name='close']) {
-    top: 10px;
-    right: 10px;
+    top: 7px;
+    right: 8px;
     display: grid;
     width: var(--ui-control-sm);
     min-height: var(--ui-control-sm);
@@ -1466,8 +1478,56 @@
     }
   }
 
+  @container configuration-editor (min-width: 541px) and (max-width: 900px) {
+    .editor :global(.cm-panel.cm-search) {
+      row-gap: 4px;
+    }
+
+    .editor :global(.cm-panel.cm-search)::before,
+    .editor :global(.cm-panel.cm-search)::after {
+      display: block;
+      width: 100%;
+      height: 0;
+      flex: 0 0 100%;
+    }
+
+    .editor :global(.cm-panel.cm-search)::before {
+      order: 2;
+    }
+
+    .editor :global(.cm-panel.cm-search input[name='search']),
+    .editor :global(.cm-panel.cm-search button[name='next']),
+    .editor :global(.cm-panel.cm-search button[name='prev']),
+    .editor :global(.cm-panel.cm-search button[name='select']) {
+      order: 1;
+    }
+
+    .editor :global(.cm-panel.cm-search label) {
+      order: 3;
+    }
+
+    .editor :global(.cm-panel.cm-search)::after {
+      order: 4;
+    }
+
+    .editor :global(.cm-panel.cm-search br) {
+      display: none;
+    }
+
+    .editor :global(.cm-panel.cm-search input[name='replace']),
+    .editor :global(.cm-panel.cm-search button[name='replace']),
+    .editor :global(.cm-panel.cm-search button[name='replaceAll']) {
+      order: 5;
+    }
+
+    .editor :global(.cm-panel.cm-search button[name='close']) {
+      order: 6;
+    }
+  }
+
   @container configuration-editor (max-width: 540px) {
-    .editor :global(.cm-panel.cm-search input[type='text']) {
+    .editor :global(.cm-panel.cm-search input[name='search']),
+    .editor :global(.cm-panel.cm-search input[name='replace']) {
       width: 100%;
       max-width: none;
       flex-basis: 100%;
