@@ -37,6 +37,10 @@ pub trait ProgramStore: Send + Sync {
     async fn save(&self, spec: &ProgramSpec) -> Result<()>;
     async fn workspace(&self, id: &ProgramId) -> Result<PathBuf>;
     async fn executable_metadata(&self, spec: &ProgramSpec) -> Result<ExecutableMetadata>;
+    async fn configuration_validation_evidence(
+        &self,
+        spec: &ProgramSpec,
+    ) -> Result<Option<crate::CoreValidationEvidence>>;
     async fn stage_package(&self, spec: &ProgramSpec, source: &Path) -> Result<StagedPackage>;
     async fn commit_package(
         &self,

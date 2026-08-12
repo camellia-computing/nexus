@@ -6,6 +6,9 @@
   import ArgumentPreview from './ArgumentPreview.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ConfigSourceEditor from './ConfigSourceEditor.svelte';
+  import GuidedConfigurationEditor from './GuidedConfigurationEditor.svelte';
+  import ShareImportPreviewDialog from './ShareImportPreview.svelte';
+  import RawConfigurationConflictPanel from './RawConfigurationConflictPanel.svelte';
   import EnvironmentEditor from './EnvironmentEditor.svelte';
   import ErrorNotice from './ErrorNotice.svelte';
   import HomeDashboard from './features/home/HomeDashboard.svelte';
@@ -27,6 +30,10 @@
   import { setLanguage, t, translate, uiLanguage } from './i18n';
   import ProgramContextMenu from './ProgramContextMenu.svelte';
   import { managedWorkingDirectory } from './paths';
+  import {
+    semanticPathSegments,
+    type ConfigurationEditorMarker,
+  } from './editor/configurationMarkerModel';
   import MihomoDashboardEditor from './programs/mihomo/MihomoDashboardEditor.svelte';
   import SingBoxDashboardEditor from './programs/sing-box/SingBoxDashboardEditor.svelte';
   import XrayDashboardEditor from './programs/xray/XrayDashboardEditor.svelte';
@@ -47,6 +54,7 @@
   } from './programs/shared/configuration';
   import { isRuntimeActive } from './programState';
   import { api, errorInfoOf, type ErrorInfo } from './api';
+  import { PROGRAM_SPEC_SCHEMA_VERSION } from './types';
   import {
     applyAppearancePreferences,
     loadAppearancePreferences,
@@ -86,9 +94,11 @@
     AppSettings,
     AutomaticConfigUpdateEvent,
     ConfigDocument,
+    ConfigurationStateView,
     ConfigurationSchemaDocument,
     ConfigSource,
-    ConfigUpdateResult,
+    CoreCompatibilityPreference,
+    CoreTargetIdentity,
     CreateTeamInvitation,
     TeamInvitation,
     TeamProfile,
@@ -117,6 +127,9 @@
     PrivilegeAssessment,
     PrivilegePolicy,
     RegisteredLicenseDevice,
+    ShareImportPreview,
+    RawDraftSession,
+    RawConflictResolution,
     TransferWorkspaceOwnership,
     ValidationResult,
     XrayBalancerInfo,
@@ -341,11 +354,21 @@
   let uiScale: UiScale = initialAppearance.scale;
 
   let configDocument: ConfigDocument | null = null;
+  let configurationState: ConfigurationStateView | null = null;
+  let configurationStateLoadingId = '';
+  let configurationStateLoadError = false;
+  let configurationStateRequestProgramId = '';
+  let configurationStateRequest: Promise<ConfigurationStateView> | null = null;
   let configurationSchemaDocument: ConfigurationSchemaDocument | null = null;
   let configurationSchemaLoading = false;
   let configurationSchemaError = false;
   let configurationSchemaGeneration = 0;
   let configurationSchemaScope = '';
+  let shareImportPreview: ShareImportPreview | null = null;
+  let rawDraftSession: RawDraftSession | null = null;
+  let activeRawConflictId = '';
+  let rawDraftAutosaveTimer: number | undefined;
+  let rawDraftAutosaveContent = '';
   let configContent = '';
   let configDirty = false;
   let configSaveRequiresRestart = false;
@@ -354,6 +377,89 @@
   let configOutputMessage = '';
   let configOutputTruncated = false;
   let actions: ActionDescriptor[] = [];
+
+  $: configurationEditorMarkers = buildConfigurationEditorMarkers(
+    configurationState,
+    rawDraftSession,
+    $uiLanguage,
+  );
+  $: rawDraftConflicts = unresolvedDraftConflicts(rawDraftSession);
+  $: if (
+    rawDraftConflicts.length
+    && !rawDraftConflicts.some((conflict) => conflict.conflictId === activeRawConflictId)
+  ) {
+    activeRawConflictId = rawDraftConflicts[0].conflictId;
+  } else if (!rawDraftConflicts.length && activeRawConflictId) {
+    activeRawConflictId = '';
+  }
+
+  $: if (configDirty && rawDraftSession && selectedId && rawDraftAutosaveContent !== configContent) {
+    rawDraftAutosaveContent = configContent;
+    if (rawDraftAutosaveTimer !== undefined) window.clearTimeout(rawDraftAutosaveTimer);
+    const draftId = selectedId;
+    const draft = structuredClone(rawDraftSession);
+    draft.userContent = configContent;
+    draft.workingContent = configContent;
+    rawDraftAutosaveTimer = window.setTimeout(() => {
+      rawDraftAutosaveTimer = undefined;
+      void api.saveConfigurationDraft(draftId, draft, draft.draftRevision)
+        .then((saved) => {
+          if (selectedId === draftId) rawDraftSession = saved;
+        })
+        .catch((error) => reportConfigError(error));
+    }, 750);
+  }
+
+  function buildConfigurationEditorMarkers(
+    state: ConfigurationStateView | null,
+    draft: RawDraftSession | null,
+    _language: string,
+  ): ConfigurationEditorMarker[] {
+    const editorMarkers: ConfigurationEditorMarker[] = [];
+    for (const conflict of unresolvedDraftConflicts(draft)) {
+      editorMarkers.push({
+        id: conflict.conflictId,
+        kind: 'conflict',
+        severity: conflict.severity,
+        message: `${translate('The source changed while you were editing. Resolve each highlighted semantic path before applying.')} (${conflict.conflictType})`,
+        semanticPath: conflict.displayPath,
+        segments: conflict.segments,
+        resolvable: true,
+        canCombine: conflict.canCombine,
+      });
+    }
+    for (const [index, conflict] of (state?.desired.conflicts ?? []).entries()) {
+      editorMarkers.push({
+        id: `desired-conflict:${index}:${conflict.semanticPath}`,
+        kind: conflict.severity === 'error' ? 'validation' : 'warning',
+        severity: conflict.severity,
+        message: conflict.reason,
+        semanticPath: conflict.semanticPath || '/',
+        segments: semanticPathSegments(conflict.semanticPath),
+      });
+    }
+    for (const [index, diagnostic] of (state?.desired.diagnostics ?? []).entries()) {
+      editorMarkers.push({
+        id: `desired-diagnostic:${index}:${diagnostic.code}`,
+        kind: state?.desired.validation === 'invalid' ? 'validation' : 'warning',
+        severity: state?.desired.validation === 'invalid' ? 'error' : 'warning',
+        message: diagnostic.message,
+        semanticPath: '/',
+        segments: [],
+      });
+    }
+    return editorMarkers;
+  }
+
+  function unresolvedDraftConflicts(draft: RawDraftSession | null) {
+    if (!draft) return [];
+    const unresolved = new Set(draft.unresolvedConflictIds);
+    return draft.conflicts.filter((conflict) => unresolved.has(conflict.conflictId));
+  }
+
+  function firstUnresolvedConflictId(draft: RawDraftSession): string {
+    return unresolvedDraftConflicts(draft)[0]?.conflictId ?? '';
+  }
 
   let logView: LogView = 'both';
   let logFilter = '';
@@ -475,7 +581,7 @@
     runtimeArgumentParse,
     detail?.spec.type.kind ?? 'generic',
     !!detail?.spec.managedConfig,
-    detail?.spec.type.kind !== 'generic' && !!detail?.spec.type.mainConfig,
+    detail?.spec.type.kind !== 'generic',
   );
   $: createArgumentView = enrichArgumentResult(
     createArgumentParse,
@@ -497,7 +603,13 @@
       savedSettingsFingerprint;
   $: managedConfigChanged =
     !!detail && managedConfigFingerprint(detail.spec) !== savedManagedConfigFingerprint;
-  $: configDirty = configDocument !== null && configContent !== configDocument.content;
+  $: configDirty = configDocument !== null && (
+    configContent !== configDocument.content
+    || (configurationState !== null && (
+      configurationState.appliedRevision?.generation !== configurationState.desired.revision.generation
+      || configurationState.appliedRevision?.contentHash !== configurationState.desired.revision.contentHash
+    ))
+  );
   $: configSaveRequiresRestart = !!detail && isRuntimeActive(detail.state);
   $: createDashboardOptionsValue = dashboardOptionsFromDraft(createDraft);
   $: detailDashboardOptionsValue = dashboardOptionsFromManagedConfig(
@@ -1021,6 +1133,11 @@
     panelError = null;
     configError = null;
     configDocument = null;
+    configurationState = null;
+    configurationStateLoadingId = '';
+    configurationStateLoadError = false;
+    rawDraftSession = null;
+    activeRawConflictId = '';
     resetConfigurationSchemaState();
     configContent = '';
     configResult = null;
@@ -1059,6 +1176,43 @@
     savedMihomoDashboardValue = detail.spec.managedConfig?.mihomoDashboard;
     loadingProgramId = '';
     void loadSelectedPrivilegeAssessment(id);
+    if (nextDetail.spec.type.kind !== 'generic') void loadConfigurationStateSummary(id);
+  }
+
+  function requestConfigurationState(programId: string): Promise<ConfigurationStateView> {
+    if (
+      configurationStateRequest
+      && configurationStateRequestProgramId === programId
+    ) {
+      return configurationStateRequest;
+    }
+    const request = api.getConfigurationState(programId);
+    configurationStateRequestProgramId = programId;
+    configurationStateRequest = request;
+    void request.finally(() => {
+      if (configurationStateRequest === request) {
+        configurationStateRequest = null;
+        configurationStateRequestProgramId = '';
+      }
+    }).catch(() => undefined);
+    return request;
+  }
+
+  async function loadConfigurationStateSummary(programId: string): Promise<void> {
+    if (selectedId !== programId || detail?.spec.type.kind === 'generic') return;
+    configurationStateLoadingId = programId;
+    configurationStateLoadError = false;
+    try {
+      const state = await requestConfigurationState(programId);
+      if (selectedId !== programId || detail?.spec.id !== programId) return;
+      configurationState = state;
+    } catch {
+      if (selectedId === programId && detail?.spec.id === programId) {
+        configurationStateLoadError = true;
+      }
+    } finally {
+      if (configurationStateLoadingId === programId) configurationStateLoadingId = '';
+    }
   }
 
   async function loadSelectedPrivilegeAssessment(id: string) {
@@ -1102,6 +1256,11 @@
     panelError = null;
     configError = null;
     configDocument = null;
+    configurationState = null;
+    configurationStateLoadingId = '';
+    configurationStateLoadError = false;
+    rawDraftSession = null;
+    activeRawConflictId = '';
     resetConfigurationSchemaState();
     configContent = '';
     configResult = null;
@@ -1613,7 +1772,11 @@
     environment: EnvironmentEntry[],
   ) {
     return JSON.stringify({
-      executable: { mode: spec.executable.mode, path: spec.executable.path },
+      executable: {
+        mode: spec.executable.mode,
+        path: spec.executable.path,
+        compatibility: spec.executable.compatibility,
+      },
       args,
       environment: environment.filter((entry) => entry.key || entry.value),
       privilegePolicy: spec.privilegePolicy,
@@ -1630,6 +1793,7 @@
       autoStart: spec.autoStart,
       restartPolicy: spec.restartPolicy,
       privilegePolicy: spec.privilegePolicy,
+      compatibility: spec.executable.compatibility,
       managedConfig: spec.managedConfig ?? null,
       runtime: JSON.parse(runtimeFingerprint(spec, args, environment)),
     });
@@ -1773,6 +1937,52 @@
       default:
         return localize(state.status[0].toUpperCase() + state.status.slice(1));
     }
+  }
+
+  function coreTargetLabel(identity?: CoreTargetIdentity) {
+    if (!identity) return null;
+    if (identity.reportedVersion) return identity.reportedVersion;
+    if (identity.coordinate.kind === 'release') return identity.coordinate.tag;
+    if (identity.coordinate.kind === 'commit') {
+      return `${identity.coordinate.branch ?? 'commit'}@${identity.coordinate.commitSha.slice(0, 12)}`;
+    }
+    if (identity.coordinate.kind === 'uncatalogued') {
+      return identity.coordinate.normalizedVersion ?? identity.coordinate.reason;
+    }
+    return 'Unknown compatibility';
+  }
+
+  function coreCoordinateLabel(identity?: CoreTargetIdentity) {
+    if (!identity) return 'Not detected';
+    switch (identity.coordinate.kind) {
+      case 'release':
+        return `${identity.coordinate.tag} · ${identity.coordinate.commitSha.slice(0, 12)}`;
+      case 'commit':
+        return `${identity.coordinate.branch ?? 'commit'} · ${identity.coordinate.commitSha.slice(0, 12)}`;
+      case 'uncatalogued':
+        return `${identity.coordinate.normalizedVersion ?? 'Unknown'} · ${identity.coordinate.reason}`;
+      default:
+        return 'Unknown';
+    }
+  }
+
+  function updateCompatibilityPreference(preference: CoreCompatibilityPreference) {
+    if (!detail) return;
+    detail = {
+      ...detail,
+      spec: {
+        ...detail.spec,
+        executable: { ...detail.spec.executable, compatibility: preference },
+      },
+    };
+  }
+
+  function changeCompatibilityMode(event: Event) {
+    const mode = (event.currentTarget as HTMLSelectElement).value;
+    if (mode === 'release') updateCompatibilityPreference({ mode, tag: '' });
+    else if (mode === 'commit') updateCompatibilityPreference({ mode, commitSha: '' });
+    else if (mode === 'unknown') updateCompatibilityPreference({ mode });
+    else updateCompatibilityPreference({ mode: 'automatic' });
   }
 
   function stateNameKey(state: ProgramState) {
@@ -2136,6 +2346,11 @@
       reportPanelError(value);
       return false;
     }
+    const compatibilityChanged = JSON.stringify(spec.executable.compatibility) !==
+      JSON.stringify(detail.spec.executable.compatibility);
+    // Compatibility changes are only editable while stopped. They must pass
+    // the explicit retarget -> native validation -> apply path below and must
+    // not start a previously stopped program as a side effect.
     const restartAfterSave = saveRequiresStop;
     const updateManagedConfiguration =
       applyManagedConfiguration && managedConfigChanged && !!spec.managedConfig;
@@ -2163,11 +2378,58 @@
               stoppedForSave = true;
             }
             if (updateManagedConfiguration) {
-              const result = await api.updateProgramAndRefreshConfig(spec);
-              configDocument = result.document;
-              configContent = result.document.content;
+              const requestedSources = spec.managedConfig?.sources ?? [];
+              const requestedRemoteUpdate = spec.managedConfig?.remoteUpdate;
+              const nonSourceSpec = structuredClone(spec) as ProgramSpec;
+              if (nonSourceSpec.managedConfig) {
+                nonSourceSpec.managedConfig.sources = structuredClone(
+                  detail?.spec.managedConfig?.sources ?? [],
+                );
+                nonSourceSpec.managedConfig.remoteUpdate = structuredClone(
+                  detail?.spec.managedConfig?.remoteUpdate,
+                );
+              }
+              await api.updateProgram(nonSourceSpec);
+              const currentState = await api.getConfigurationState(id);
+              const state = await api.updateConfigurationSources(
+                id,
+                requestedSources,
+                requestedRemoteUpdate,
+                currentState.generation,
+              );
+              configurationState = state;
+              if (state.desired.validation !== 'valid') {
+                throw new Error(
+                  [
+                    ...state.desired.diagnostics.map((diagnostic) => diagnostic.message),
+                    ...state.desired.conflicts.map((conflict) => conflict.reason),
+                  ].join('\n') || 'Configuration validation failed.',
+                );
+              }
+              configDocument = {
+                content: state.desired.content,
+                baseHash: state.desired.revision.contentHash,
+                language: state.format,
+                documentationUrl: configDocument?.documentationUrl ?? '',
+              };
+              configContent = state.desired.content;
             } else {
               await api.updateProgram(spec);
+              if (compatibilityChanged && spec.type.kind !== 'generic') {
+                const retargeted = await api.getConfigurationState(id);
+                if (retargeted.desired.validation !== 'valid') {
+                  throw new Error(
+                    [
+                      ...retargeted.desired.diagnostics.map((diagnostic) => diagnostic.message),
+                      ...retargeted.desired.conflicts.map((conflict) => conflict.reason),
+                    ].join('\n') || 'The selected compatibility target could not validate the candidate.',
+                  );
+                }
+                configurationState = await api.applyConfigurationCandidate(
+                  id,
+                  retargeted.generation,
+                );
+              }
             }
             if (stoppedForSave) {
               stoppedForSave = false;
@@ -2284,7 +2546,7 @@
   }
 
   function hasEditableConfig(spec: ProgramSpec) {
-    return spec.type.kind !== 'generic' && !!spec.type.mainConfig;
+    return spec.type.kind !== 'generic';
   }
 
   function privilegePolicyValue(policy: PrivilegePolicy) {
@@ -2322,7 +2584,7 @@
   }
 
   function enableManagedConfiguration() {
-    if (!detail || detail.spec.type.kind === 'generic' || !detail.spec.type.mainConfig) return;
+    if (!detail || detail.spec.type.kind === 'generic') return;
     detail.spec.managedConfig ??= { sources: [] };
     detail = { ...detail, spec: { ...detail.spec } };
   }
@@ -2428,13 +2690,13 @@
       'refresh-config-sources',
       async () => {
         let stoppedForUpdate = false;
-        let result: ConfigUpdateResult;
+        let result: import('./types').ConfigurationStateView;
         try {
           if (stopBeforeUpdate) {
             await api.stopProgram(id);
             stoppedForUpdate = true;
           }
-          result = await api.refreshConfigSources(id);
+          result = await api.refreshConfigurationSources(id);
           if (stoppedForUpdate) {
             stoppedForUpdate = false;
             await api.startProgram(id);
@@ -2444,12 +2706,20 @@
           throw value;
         }
         if (selectedId !== id) return;
-        configDocument = result.document;
-        configContent = result.document.content;
-        configResult = { valid: true, stdout: '', stderr: '' };
+        configContent = result.desired.content;
+        configDocument = {
+          content: result.desired.content,
+          baseHash: result.desired.revision.contentHash,
+          language: result.format,
+          documentationUrl: configDocument?.documentationUrl ?? '',
+        };
+        configResult = result.desired.validation === 'valid'
+          ? { valid: true, stdout: '', stderr: '' }
+          : { valid: false, stdout: '', stderr: result.desired.diagnostics.map((item) => item.message).join('\n') };
         clearConfigOutput();
-        configUpdateStatus = result.sourceCount
-          ? { message: 'sources updated', sourceCount: result.sourceCount }
+        const sourceCount = result.sourceStatuses.filter((source) => source.freshness === 'fresh').length;
+        configUpdateStatus = sourceCount
+          ? { message: 'sources updated', sourceCount }
           : { message: 'Managed configuration applied' };
         const nextDetail = await api.getProgram(id);
         if (selectedId === id) detail = nextDetail;
@@ -2459,6 +2729,73 @@
     );
   }
 
+  async function previewShareImport(content: string) {
+    if (!selectedId || !content.trim()) return;
+    busy = 'preview-share-import';
+    configError = null;
+    try {
+      shareImportPreview = await api.previewConfigurationImport(selectedId, content);
+    } catch (error) {
+      reportConfigError(error);
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function rebaseRawDraft() {
+    if (!selectedId) return;
+    busy = 'rebase-raw-draft';
+    try {
+      const draft = await api.rebaseConfigurationDraft(selectedId);
+      rawDraftSession = draft;
+      configContent = draft.workingContent;
+      rawDraftAutosaveContent = draft.workingContent;
+      activeRawConflictId = firstUnresolvedConflictId(draft);
+    } catch (error) {
+      reportConfigError(error);
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function resolveRawConflict(event: CustomEvent<{ conflictId: string; resolution: RawConflictResolution }>) {
+    if (!selectedId) return;
+    busy = 'resolve-raw-conflict';
+    try {
+      const draft = await api.resolveConfigurationConflict(
+        selectedId,
+        event.detail.conflictId,
+        event.detail.resolution,
+      );
+      rawDraftSession = draft;
+      configContent = draft.workingContent;
+      rawDraftAutosaveContent = draft.workingContent;
+      activeRawConflictId = firstUnresolvedConflictId(draft);
+    } catch (error) {
+      reportConfigError(error);
+    } finally {
+      busy = '';
+    }
+  }
+
+  function navigateRawConflict(event: CustomEvent<{ conflictId: string }>) {
+    activeRawConflictId = event.detail.conflictId;
+  }
+
+  async function discardRawDraft() {
+    if (!selectedId) return;
+    try {
+      await api.discardConfigurationDraft(selectedId);
+      const draft = await api.getConfigurationEditorSession(selectedId);
+      rawDraftSession = draft;
+      configContent = draft.workingContent;
+      rawDraftAutosaveContent = draft.workingContent;
+      activeRawConflictId = '';
+    } catch (error) {
+      reportConfigError(error);
+    }
+  }
+
   async function handleAutomaticConfigUpdate(event: AutomaticConfigUpdateEvent) {
     if (selectedId !== event.programId) return;
     configUpdateStatus = {
@@ -2466,10 +2803,19 @@
     };
     if (!event.succeeded || !configDocument || configDirty) return;
     try {
-      const document = await api.loadConfig(event.programId);
+      const [state, document] = await Promise.all([
+        api.getConfigurationState(event.programId),
+        api.loadConfig(event.programId),
+      ]);
       if (selectedId !== event.programId || configDirty) return;
-      configDocument = document;
-      configContent = document.content;
+      configurationState = state;
+      configDocument = {
+        ...document,
+        content: state.desired.content,
+        baseHash: state.desired.revision.contentHash,
+        language: state.format,
+      };
+      configContent = state.desired.content;
     } catch {
       // The next automatic or manual refresh can update the editor.
     }
@@ -2494,14 +2840,6 @@
   }
 
   function configModeKey(spec: ProgramSpec, args = programArgs(spec)) {
-    if (
-      hasExplicitConfig(spec.type.kind, args) &&
-      spec.type.kind !== 'generic' &&
-      spec.type.mainConfig &&
-      !spec.managedConfig
-    ) {
-      return 'Arguments with manual override';
-    }
     if (hasExplicitConfig(spec.type.kind, args)) return 'Explicit argument';
     if (spec.managedConfig) return 'Managed configuration';
     return 'Manual configuration';
@@ -2512,6 +2850,9 @@
   }
 
   function normalizeConfigSource(source: ConfigSource): ConfigSource {
+    if (source.mode === 'inline') {
+      return { ...source, name: source.name.trim() };
+    }
     return source.mode === 'local'
       ? { ...source, name: source.name.trim(), path: normalizeHostPath(source.path.trim()) }
       : {
@@ -2629,17 +2970,22 @@
           errors.configSources = 'Configuration source identifiers must be unique.';
           break;
         }
-        sourceIds.add(source.id);
-        if (!source.enabled) continue;
-        if (
-          source.mode === 'local' &&
+      sourceIds.add(source.id);
+      if (!source.enabled) continue;
+      if (source.mode === 'inline') {
+        const byteLength = new TextEncoder().encode(source.content).length;
+        if (!source.content.trim() || byteLength > 4 * 1024 * 1024) {
+          throw new Error('Inline configuration content must be non-empty and no larger than 4 MiB.');
+        }
+      } else if (
+        source.mode === 'local' &&
           !isAbsoluteHostPath(source.path.trim()) &&
           !safeRelativePath(source.path, false)
         ) {
           errors.configSources = 'Use an absolute path or a path relative to the working folder.';
           break;
         }
-        if (source.mode === 'remote' && !validHttpsUrl(source.url.trim())) {
+      if (source.mode === 'remote' && !validHttpsUrl(source.url.trim())) {
           errors.configSources = 'Remote configuration sources must use HTTPS without embedded credentials';
           break;
         }
@@ -2718,7 +3064,6 @@
       const draft = structuredClone(createDraft) as CreateDraft;
       if (createArgumentView.error) throw new Error(createArgumentView.error);
       const args = [...createArgumentParse.args];
-      const definition = programDefinition(draft.kind);
       const initialConfig = createHasStoredConfig
         ? draft.managedConfiguration
           ? undefined
@@ -2729,11 +3074,6 @@
           ? { kind: 'generic' as const, args }
           : {
               kind: draft.kind,
-              mainConfig: createHasStoredConfig
-                ? draft.managedConfiguration
-                  ? definition.configuration?.managedConfigPath
-                  : definition.configuration?.manualConfigPath
-                : undefined,
               extraArgs: args,
             };
       const executablePath =
@@ -2742,12 +3082,13 @@
           : normalizeHostPath(draft.executable.trim());
       const spec: ProgramSpec = {
         // ProgramSpec has its own storage schema; this is unrelated to entitlement schema v3.
-        schemaVersion: 3,
+        schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
         id: draft.id,
         name: draft.name.trim(),
         executable: {
           mode: draft.mode,
           path: executablePath,
+          compatibility: { mode: 'automatic' },
         },
         type,
         managedConfig: draft.managedConfiguration
@@ -2901,10 +3242,27 @@
       await mutate(
         'load-config',
         async () => {
-          const [document] = await Promise.all([api.loadConfig(id), editor]);
+          const [state, document, draft] = await Promise.all([
+            requestConfigurationState(id),
+            api.loadConfig(id),
+            api.getConfigurationEditorSession(id),
+            editor,
+          ]);
           if (selectedId !== id || activeTab !== 'configuration') return;
-          configDocument = document;
-          configContent = document.content;
+          configurationState = state;
+          configurationStateLoadError = false;
+          rawDraftSession = draft;
+          activeRawConflictId = firstUnresolvedConflictId(draft);
+          configDocument = {
+            ...document,
+            content: state.desired.content,
+            baseHash: state.desired.revision.contentHash,
+            language: state.format,
+          };
+          configContent = draft.draftRevision > 0 && draft.basedOnGeneration === state.generation
+            ? draft.workingContent
+            : state.desired.content;
+          rawDraftAutosaveContent = configContent;
           void loadConfigurationSchemaForEditor(id, document.configurationSchema);
         },
         reportConfigError,
@@ -3037,14 +3395,109 @@
     configError = null;
     const id = selectedId;
     const content = configContent;
-    const baseHash = configDocument.baseHash;
     await mutate(
       'validate',
       async () => {
-        const result = await api.validateConfig(id, content, baseHash);
+        const state = await commitRawEditorDraft(id, content);
         if (selectedId !== id || activeTab !== 'configuration') return;
-        configResult = result;
-        setConfigOutput(result.stdout, result.stderr);
+        configurationState = state;
+        configDocument = {
+          ...configDocument,
+          content: state.desired.content,
+          baseHash: state.desired.revision.contentHash,
+          language: state.format,
+          documentationUrl: configDocument?.documentationUrl ?? '',
+        };
+        configResult = {
+          valid: state.desired.validation === 'valid',
+          stdout: state.desired.validation === 'valid' ? 'Configuration is valid.' : '',
+          stderr: state.desired.diagnostics.map((item) => item.message).join('\n'),
+        };
+        setConfigOutput(configResult.stdout, configResult.stderr);
+      },
+      reportConfigError,
+    );
+  }
+
+  async function commitRawEditorDraft(id: string, content: string) {
+    if (rawDraftAutosaveTimer !== undefined) {
+      window.clearTimeout(rawDraftAutosaveTimer);
+      rawDraftAutosaveTimer = undefined;
+    }
+    let draft = rawDraftSession ?? await api.getConfigurationEditorSession(id);
+    draft = structuredClone(draft);
+    draft.userContent = content;
+    draft.workingContent = content;
+    draft = await api.saveConfigurationDraft(id, draft, draft.draftRevision);
+    if (selectedId === id) {
+      rawDraftSession = draft;
+      rawDraftAutosaveContent = draft.workingContent;
+      if (draft.workingContent !== configContent) configContent = draft.workingContent;
+    }
+    if (draft.unresolvedConflictIds.length > 0) {
+      const count = draft.unresolvedConflictIds.length;
+      throw new Error(`Resolve ${count} configuration conflict${count === 1 ? '' : 's'} before saving.`);
+    }
+    if (configurationState && draft.basedOnGeneration !== configurationState.generation) {
+      throw new Error('Configuration sources changed while this draft contained invalid syntax. Repair the draft and rebase before saving.');
+    }
+    const state = await api.commitConfigurationDraft(id);
+    if (selectedId === id && state.desired.validation !== 'invalid') {
+      rawDraftSession = await api.getConfigurationEditorSession(id);
+      rawDraftAutosaveContent = state.desired.content;
+    }
+    return state;
+  }
+
+  async function changeGuidedSetting(
+    event: CustomEvent<{
+      settingId: string;
+      value?: unknown;
+      replaceRawOverride: boolean;
+    }>,
+  ) {
+    if (!selectedId || configDirty || !canEditConfigurationByLicense) return;
+    const id = selectedId;
+    if (
+      event.detail.replaceRawOverride
+      && !(await askConfirmation(
+        translate('Replace the overlapping Raw override?'),
+        translate('Only the Raw operation that overlaps this Guided setting will be removed.'),
+        translate('Use Guided setting'),
+      ))
+    ) {
+      return;
+    }
+    configError = null;
+    await mutate(
+      'guided-setting',
+      async () => {
+        let state = configurationState ?? await api.getConfigurationState(id);
+        state = await api.setGuidedIntent(id, {
+          settingId: event.detail.settingId,
+          value: event.detail.value,
+          expectedGeneration: state.generation,
+          replaceRawOverride: event.detail.replaceRawOverride,
+        });
+        if (state.desired.validation === 'valid') {
+          state = await api.applyConfigurationCandidate(id, state.generation);
+        }
+        if (selectedId !== id || activeTab !== 'configuration') return;
+        configurationState = state;
+        if (configDocument) {
+          configDocument = {
+            ...configDocument,
+            content: state.desired.content,
+            baseHash: state.desired.revision.contentHash,
+            language: state.format,
+          };
+        }
+        configContent = state.desired.content;
+        configResult = {
+          valid: state.desired.validation === 'valid',
+          stdout: state.desired.validation === 'valid' ? 'Configuration is valid.' : '',
+          stderr: state.desired.diagnostics.map((diagnostic) => diagnostic.message).join('\n'),
+        };
       },
       reportConfigError,
     );
@@ -3065,7 +3518,6 @@
     configError = null;
     const id = selectedId;
     const content = configContent;
-    const baseHash = configDocument.baseHash;
     const restartsProgram = !!detail && isRuntimeActive(detail.state);
     const stopBeforeApply = restartsProgram && detail?.state.status !== 'running';
     return mutate(
@@ -3077,7 +3529,14 @@
             await api.stopProgram(id);
             stoppedForApply = true;
           }
-          await api.applyConfig(id, content, baseHash);
+          let state = await commitRawEditorDraft(id, content);
+          if (state.desired.validation !== 'valid') {
+            configurationState = state;
+            throw new Error(state.desired.diagnostics.map((item) => item.message).join('\n') || 'Configuration validation failed.');
+          }
+          state = await api.applyConfigurationCandidate(id, state.generation);
+          configurationState = state;
+          rawDraftSession = await api.getConfigurationEditorSession(id);
           if (stoppedForApply) {
             stoppedForApply = false;
             await api.startProgram(id);
@@ -3087,10 +3546,15 @@
           throw value;
         }
         if (selectedId !== id || activeTab !== 'configuration' || !configDocument) return;
-        const savedDocument = await api.loadConfig(id);
-        if (selectedId !== id || activeTab !== 'configuration') return;
-        configDocument = savedDocument;
-        configContent = savedDocument.content;
+        if (configurationState) {
+          configDocument = {
+            ...configDocument,
+            content: configurationState.desired.content,
+            baseHash: configurationState.desired.revision.contentHash,
+            language: configurationState.format,
+          } as ConfigDocument;
+          configContent = configurationState.desired.content;
+        }
         configResult = { valid: true, stdout: '', stderr: '' };
         setConfigOutputMessage(
           restartsProgram
@@ -4682,7 +5146,7 @@
             </div>
           </section>
 
-          {#if detail.spec.type.kind !== 'generic' && detail.spec.type.mainConfig}
+          {#if detail.spec.type.kind !== 'generic'}
             <section class="detail-section managed-detail-section">
               <div class="section-heading managed-heading"><div><h2>{$t('Managed configuration')}</h2><p>{$t(programDefinition(detail.spec.type.kind).configuration?.language === 'yaml' ? 'Combine ordered native YAML sources into the active configuration' : 'Combine ordered native JSON sources into the active configuration')}</p></div>{#if !detail.spec.managedConfig}<button type="button" on:click={enableManagedConfiguration}>{$t('Enable')}</button>{/if}</div>
               {#if detail.spec.managedConfig}
@@ -4693,6 +5157,7 @@
                   maxSources={maxConfigSourcesLimit}
                   remoteUpdate={detail.spec.managedConfig.remoteUpdate}
                   on:remoteUpdate={(event) => updateDetailRemoteUpdate(event.detail)}
+                  on:preview={(event) => void previewShareImport(event.detail)}
                 />
                 {#if detail.spec.type.kind === 'singBox'}
                   <SingBoxDashboardEditor
@@ -4734,10 +5199,110 @@
               <EnvironmentEditor bind:entries={environmentEntries} />
             </details>
 
+            {#if detail.spec.type.kind !== 'generic'}
+              <section class="compatibility-card" aria-labelledby="core-compatibility-heading">
+                <div class="compatibility-card-heading">
+                  <div>
+                    <h3 id="core-compatibility-heading">{$t('Core compatibility')}</h3>
+                    <p>{$t('Compatibility is resolved separately from binary origin and verified again against the exact executable before activation.')}</p>
+                  </div>
+                  <span class:warning={detail.spec.executable.metadata?.coreTarget?.basis !== 'verifiedOfficialArtifact' && detail.spec.executable.metadata?.coreTarget?.basis !== 'trustedPackage'} class="compatibility-badge">
+                    {$t(detail.spec.executable.metadata?.coreTarget?.basis ?? 'unknown')}
+                  </span>
+                </div>
+                <div class="compatibility-grid">
+                  <label>
+                    <span>{$t('Compatibility baseline')}</span>
+                    <select value={detail.spec.executable.compatibility.mode} on:change={changeCompatibilityMode} disabled={!!busy || isRuntimeActive(detail.state)}>
+                      <option value="automatic">{$t('Automatic from binary report')}</option>
+                      <option value="release">{$t('Catalogued release')}</option>
+                      <option value="commit">{$t('Catalogued commit')}</option>
+                      <option value="unknown">{$t('Unknown / custom build')}</option>
+                    </select>
+                  </label>
+                  {#if detail.spec.executable.compatibility.mode === 'release'}
+                    <label>
+                      <span>{$t('Exact release tag')}</span>
+                      <input
+                        value={detail.spec.executable.compatibility.tag}
+                        on:input={(event) => updateCompatibilityPreference({ mode: 'release', tag: (event.currentTarget as HTMLInputElement).value.trim() })}
+                        placeholder="v1.13.18"
+                        disabled={!!busy || isRuntimeActive(detail.state)}
+                      />
+                    </label>
+                  {:else if detail.spec.executable.compatibility.mode === 'commit'}
+                    <label>
+                      <span>{$t('Exact commit SHA')}</span>
+                      <input
+                        value={detail.spec.executable.compatibility.commitSha}
+                        on:input={(event) => updateCompatibilityPreference({ mode: 'commit', commitSha: (event.currentTarget as HTMLInputElement).value.trim().toLowerCase() })}
+                        placeholder="40-character commit SHA"
+                        maxlength="40"
+                        disabled={!!busy || isRuntimeActive(detail.state)}
+                      />
+                    </label>
+                  {/if}
+                  <div class="compatibility-fact">
+                    <span>{$t('Resolved target')}</span>
+                    <strong>{coreTargetLabel(detail.spec.executable.metadata?.coreTarget) ?? $t('Not reported')}</strong>
+                    <small>{coreCoordinateLabel(detail.spec.executable.metadata?.coreTarget)}</small>
+                  </div>
+                  <div class="compatibility-fact">
+                    <span>{$t('Binary fingerprint')}</span>
+                    <strong>{detail.spec.executable.metadata?.fingerprint.sha256.slice(0, 16) ?? $t('Not available')}</strong>
+                    <small>{detail.spec.executable.metadata ? `${detail.spec.executable.metadata.fingerprint.size.toLocaleString()} bytes` : $t('The executable has not been probed yet.')}</small>
+                  </div>
+                  <div class="compatibility-fact">
+                    <span>{$t('Feature decisions')}</span>
+                    {#if configurationState}
+                      <strong>{configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'supported').length} {$t('supported')}</strong>
+                      <small>{configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'unknown').length} {$t('unknown')} · {configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'unsupported').length} {$t('unsupported')}</small>
+                    {:else if configurationStateLoadingId === detail.spec.id}
+                      <strong>{$t('Loading')}…</strong>
+                      <small>{$t('Loading compatibility profile')}</small>
+                    {:else}
+                      <strong>{$t('Unavailable')}</strong>
+                      <small>{$t('Compatibility state could not be loaded.')}</small>
+                    {/if}
+                  </div>
+                  <div class:warning={!!configurationState && !configurationState.desired.validationEvidence?.nativeAccepted} class="compatibility-fact">
+                    <span>{$t('Native evidence')}</span>
+                    {#if configurationState}
+                      <strong>{configurationState.desired.validationEvidence?.nativeAccepted ? $t('Accepted for this candidate') : $t('Validation required')}</strong>
+                      <small>{$t('Evidence is valid only for this fingerprint, profile, and configuration hash.')}</small>
+                    {:else if configurationStateLoadingId === detail.spec.id}
+                      <strong>{$t('Loading')}…</strong>
+                      <small>{$t('Loading candidate validation evidence')}</small>
+                    {:else}
+                      <strong>{$t('Unavailable')}</strong>
+                      <small>{$t('Candidate validation evidence could not be loaded.')}</small>
+                    {/if}
+                  </div>
+                </div>
+                {#if configurationStateLoadError}
+                  <div class="compatibility-load-error" role="alert">
+                    <span>{$t('Compatibility state could not be loaded.')}</span>
+                    <button type="button" on:click={() => void loadConfigurationStateSummary(selectedId)} disabled={configurationStateLoadingId === selectedId}>{$t('Retry')}</button>
+                  </div>
+                {/if}
+                {#if detail.spec.executable.metadata?.coreTarget?.basis === 'binaryReported'}
+                  <p class="compatibility-notice" role="status">{$t('The reported version is used as a compatibility baseline, but the binary source is not verified.')}</p>
+                {/if}
+                {#if detail.spec.executable.metadata?.coreTarget?.coordinate.kind === 'uncatalogued' && detail.spec.executable.metadata.coreTarget.coordinate.reason === 'futureVersion'}
+                  <p class="compatibility-notice" role="status">{$t('This reported version is newer than the local compatibility catalog. Features remain attemptable and require validation by the exact binary.')}</p>
+                {:else if detail.spec.executable.metadata?.coreTarget?.coordinate.kind === 'uncatalogued'}
+                  <p class="compatibility-notice" role="status">{$t('This version is not uniquely catalogued. All features remain attemptable and the exact native validator is authoritative for the candidate.')}</p>
+                {/if}
+                {#if configurationState && !configurationState.desired.validationEvidence?.nativeAccepted}
+                  <p class="compatibility-notice" role="status">{$t('Native validation evidence is missing or stale. Validate this candidate again before activation.')}</p>
+                {/if}
+              </section>
+            {/if}
+
             <div class="metadata">
               <span>{$t('Executable')}</span><code>{detail.spec.executable.mode === 'managed' ? detail.spec.executable.path.replace(/^bin[\\/]/, '') : detail.spec.executable.path}</code>
               <span>{$t('Working folder')}</span><code>{detail.workingDirectory}</code>
-              <span>{$t('Version')}</span><code>{detail.spec.executable.metadata?.detectedVersion ?? $t('Not reported')}</code>
+              <span>{$t('Version')}</span><code>{coreTargetLabel(detail.spec.executable.metadata?.coreTarget) ?? $t('Not reported')}</code>
             </div>
 
             {#if detail.spec.executable.mode === 'managed'}
@@ -4778,7 +5343,24 @@
         <div id="program-panel-configuration" role="tabpanel" tabindex="0" aria-labelledby="program-tab-configuration" class="panel configuration">
           {#if configError}<ErrorNotice error={configError} />{/if}
           {#if configDocument}
-            {#if detail.spec.managedConfig}<div class="generated-config-note"><strong>{$t('Managed configuration')}</strong><span>{$t(detail.spec.managedConfig.sources.some((source) => source.enabled) ? 'Updating sources replaces manual edits' : 'Managed services are applied when saving')}</span></div>{/if}
+            {#if detail.spec.managedConfig}<div class="generated-config-note"><strong>{$t('Managed configuration')}</strong><span>{$t(detail.spec.managedConfig.sources.some((source) => source.enabled) ? 'Source updates preserve Guided and Raw intent' : 'Enable a source to rebuild the Base configuration')}</span></div>{/if}
+            {#if configurationState && configurationState.guidedDescriptors.length > 0}
+              <GuidedConfigurationEditor
+                state={configurationState}
+                disabled={!!busy || configDirty || !canEditConfigurationByLicense}
+                on:change={changeGuidedSetting}
+              />
+            {/if}
+            {#if rawDraftSession}
+              <RawConfigurationConflictPanel
+                draft={rawDraftSession}
+                disabled={!!busy || !canEditConfigurationByLicense}
+                on:resolve={resolveRawConflict}
+                on:navigate={navigateRawConflict}
+                on:rebase={() => void rebaseRawDraft()}
+                on:discard={() => void discardRawDraft()}
+              />
+            {/if}
             <div class="config-toolbar">
               <div class="config-toolbar-tools">
                 <button class="link-button documentation-link" type="button" on:click={() => void openDocumentation()}><span>{$t('Documentation')}</span><Icon name="external" size={16} /></button>
@@ -4807,9 +5389,13 @@
                   configurationSchemaLoading={configurationSchemaLoading}
                   configurationSchemaError={configurationSchemaError}
                   jsonSchemaSemantics={programDefinition(detail.spec.type.kind).configuration?.jsonSchemaSemantics}
+                  markers={configurationEditorMarkers}
+                  activeMarkerId={activeRawConflictId}
+                  markerActionsDisabled={!!busy || !canEditConfigurationByLicense}
                   on:retrySchema={retryConfigurationSchema}
                   on:save={saveConfigurationFromEditor}
                   on:validate={validateConfigurationFromEditor}
+                  on:resolveMarker={resolveRawConflict}
                 />
               {/if}
               <ResizeSeparator
@@ -4987,5 +5573,14 @@
     confirmLabel={confirmation.confirmLabel}
     danger={confirmation.danger}
     onResolve={resolveConfirmation}
+  />
+{/if}
+
+{#if shareImportPreview}
+  <ShareImportPreviewDialog
+    preview={shareImportPreview}
+    busy={busy === 'preview-share-import'}
+    on:close={() => { shareImportPreview = null; }}
+    on:confirm={() => { shareImportPreview = null; }}
   />
 {/if}

@@ -1000,6 +1000,7 @@ mod tests {
             name: "Credential test".into(),
             executable: ExecutableSpec::External {
                 path: "/opt/example/program".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic { args: Vec::new() },

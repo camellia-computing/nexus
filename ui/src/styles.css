@@ -712,6 +712,7 @@
   .source-type-select select { width: 100%; text-align: center; text-align-last: center; }
   .source-address { min-width: 0; font-family: var(--ui-font-mono); }
   .source-primary > .source-address-field { min-width: 0; grid-area: address; }
+  .source-inline-content { min-height: 58px; max-height: 220px; padding: 8px 10px; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); line-height: 1.35; white-space: pre; }
   .source-address-field .source-address { min-height: var(--ui-control-md); padding-block: 6px; }
   .source-enabled { display: inline-flex; grid-area: enabled; flex-direction: row; align-items: center; gap: 6px; color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); white-space: nowrap; }
   .source-enabled input { width: 17px; min-height: 17px; }
@@ -773,6 +774,23 @@
   .command-line-input, .config-input { font-family: var(--ui-font-mono); font-size: var(--ui-font-size-sm); }
   .runtime-subsection { display: grid; gap: 10px; }
   .subsection-label { color: var(--ui-text-tertiary); font-size: var(--ui-font-size-xs); font-weight: var(--ui-weight-semibold); letter-spacing: .06em; text-transform: uppercase; }
+  .compatibility-card { display: grid; gap: 14px; margin-top: 14px; padding: 16px; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-lg); background: color-mix(in srgb, var(--ui-surface-raised) 88%, var(--ui-brand) 12%); }
+  .compatibility-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .compatibility-card-heading h3, .compatibility-card-heading p { margin: 0; }
+  .compatibility-card-heading p { max-width: 60rem; margin-top: 4px; color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); line-height: var(--ui-line-height-body); }
+  .compatibility-badge { flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--ui-brand) 52%, var(--ui-border-subtle)); border-radius: 999px; padding: 4px 9px; color: var(--ui-brand); font-size: var(--ui-font-size-xs); font-weight: var(--ui-weight-bold); white-space: nowrap; }
+  .compatibility-badge.warning { border-color: color-mix(in srgb, var(--ui-warning) 55%, var(--ui-border-subtle)); color: var(--ui-warning); }
+  .compatibility-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr)); gap: 12px; }
+  .compatibility-grid label, .compatibility-fact { display: grid; min-width: 0; gap: 4px; }
+  .compatibility-grid label > span, .compatibility-fact > span { color: var(--ui-text-tertiary); font-size: 0.7rem; font-weight: var(--ui-weight-bold); letter-spacing: .04em; text-transform: uppercase; }
+  .compatibility-fact strong, .compatibility-fact small { overflow-wrap: anywhere; }
+  .compatibility-fact strong { font-size: var(--ui-font-size-sm); }
+  .compatibility-fact.warning strong { color: var(--ui-warning); }
+  .compatibility-fact small { color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); line-height: var(--ui-line-height-body); }
+  .compatibility-notice { margin: 0; border-inline-start: 3px solid var(--ui-warning); padding-inline-start: 10px; color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); line-height: var(--ui-line-height-body); }
+  .compatibility-load-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-inline-start: 3px solid var(--ui-danger); padding-inline-start: 10px; color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); line-height: var(--ui-line-height-body); }
+  .compatibility-load-error button { flex: 0 0 auto; min-height: 32px; }
+  @media (max-width: 700px) { .compatibility-card-heading { display: grid; } .compatibility-badge { justify-self: start; } }
 }
 
 @layer settings {

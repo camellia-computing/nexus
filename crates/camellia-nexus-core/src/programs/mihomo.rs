@@ -33,20 +33,29 @@ impl ProgramAdapter for MihomoAdapter {
         {
             return Err(unsupported("Mihomo CLI capabilities are unsupported"));
         }
+        let reported = version
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_owned());
+        let mut probe = crate::CoreProbeReport::from_reported_version(reported);
+        probe.cli_observations = vec![crate::CoreCliObservation {
+            id: "core.cli.nativeValidation".into(),
+            available: help.contains("-t"),
+        }];
+        let core_target = crate::embedded_core_compatibility_catalog()?.resolve_target(
+            crate::ProgramKind::Mihomo,
+            &probe,
+            &crate::CoreCompatibilityPreference::Automatic,
+            None,
+        )?;
         Ok(DetectedBinary {
-            version: version
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .map(|line| line.trim().to_owned()),
+            probe: Some(probe),
+            core_target: Some(core_target),
         })
     }
 
     fn launch_plan(&self, spec: &ProgramSpec, workspace: &Path) -> Result<LaunchPlan> {
-        let ProgramType::Mihomo {
-            main_config,
-            extra_args,
-        } = &spec.program_type
-        else {
+        let ProgramType::Mihomo { extra_args } = &spec.program_type else {
             return Err(CamelliaNexusError::invalid_spec(
                 "Mihomo adapter received a different program kind",
             ));
@@ -59,21 +68,24 @@ impl ProgramAdapter for MihomoAdapter {
                     .to_string_lossy()
             ));
         }
-        if let Some(main_config) = main_config {
-            args.push(format!(
-                "-f={}",
-                workspace.join(main_config).to_string_lossy()
-            ));
-        }
+        args.push(format!(
+            "-f={}",
+            workspace
+                .join(
+                    spec.program_type
+                        .main_config()
+                        .expect("supported Core config")
+                )
+                .to_string_lossy()
+        ));
         args.extend(extra_args.iter().cloned());
         Ok(base_launch_plan(spec, workspace, args, self))
     }
 
     fn editor(&self, spec: &ProgramSpec) -> Option<EditorDescriptor> {
-        let ProgramType::Mihomo { main_config, .. } = &spec.program_type else {
+        let ProgramType::Mihomo { .. } = &spec.program_type else {
             return None;
         };
-        main_config.as_ref()?;
         Some(EditorDescriptor {
             language: EditorLanguage::Yaml,
             documentation_url: "https://wiki.metacubex.one/config/".into(),
@@ -180,12 +192,10 @@ mod tests {
             name: "Mihomo".into(),
             executable: crate::ExecutableSpec::Managed {
                 path: "bin/mihomo".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
-            program_type: ProgramType::Mihomo {
-                main_config: Some("config/managed.yaml".into()),
-                extra_args,
-            },
+            program_type: ProgramType::Mihomo { extra_args },
             managed_config: None,
             working_directory: "bin".into(),
             environment: BTreeMap::new(),
@@ -215,7 +225,13 @@ mod tests {
             output("Mihomo Meta 1.10.0 linux amd64"),
             output("-d string -f string -t"),
         ]);
-        assert!(result.is_ok());
+        let detected = result.expect("probe");
+        let probe = detected.probe.expect("probe report");
+        assert_eq!(probe.normalized_version.as_deref(), Some("1.10.0"));
+        assert_eq!(
+            detected.core_target.unwrap().basis,
+            crate::CoreCompatibilityBasis::BinaryReported
+        );
     }
 
     #[test]
@@ -228,7 +244,7 @@ mod tests {
         assert_attached_path(
             &plan.args[1],
             "-f",
-            Path::new("workspace/config/managed.yaml"),
+            Path::new("workspace/config/active.yaml"),
         );
     }
 
@@ -244,7 +260,7 @@ mod tests {
         assert_attached_path(
             &plan.args[0],
             "-f",
-            Path::new("workspace/config/managed.yaml"),
+            Path::new("workspace/config/active.yaml"),
         );
         assert_eq!(plan.args[1..], ["-d", "/var/lib/mihomo", "-m"]);
     }

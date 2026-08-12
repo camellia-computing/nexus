@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 2,
+  "observedAt": "2026-08-11T10:39:26Z",
+  "compatibilityCatalogRevision": "core-history-v1-20260811",
+  "programs": [
+    {
+      "program": "xray",
+      "repository": "XTLS/Xray-core",
+      "development": {
+        "policy": "branchHead",
+        "trackedRef": "main",
+        "resolvedRef": "bc6e966af890d0ef481501ec171321ec802c6857",
+        "commitSha": "bc6e966af890d0ef481501ec171321ec802c6857",
+        "sourceTimestamp": "2026-08-10T05:44:15Z",
+        "sourceUrl": "https://github.com/XTLS/Xray-core/commit/bc6e966af890d0ef481501ec171321ec802c6857"
+      },
+      "stable": {
+        "policy": "latestStableRelease",
+        "trackedRef": "latest",
+        "resolvedRef": "v26.3.27",
+        "commitSha": "d2758a023cd7f4174a5a5fa4ff66e487d4342ba0",
+        "sourceTimestamp": "2026-03-27T17:51:11Z",
+        "sourceUrl": "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27"
+      }
+    },
+    {
+      "program": "mihomo",
+      "repository": "MetaCubeX/mihomo",
+      "development": {
+        "policy": "branchHead",
+        "trackedRef": "Alpha",
+        "resolvedRef": "e183c580082a32e567157924613af8fe14f4e070",
+        "commitSha": "e183c580082a32e567157924613af8fe14f4e070",
+        "sourceTimestamp": "2026-08-10T06:06:28Z",
+        "sourceUrl": "https://github.com/MetaCubeX/mihomo/commit/e183c580082a32e567157924613af8fe14f4e070"
+      },
+      "stable": {
+        "policy": "latestStableRelease",
+        "trackedRef": "latest",
+        "resolvedRef": "v1.19.29",
+        "commitSha": "e26714a181ac0e2fa803453c0a8e9a9ce94e31cb",
+        "sourceTimestamp": "2026-07-18T12:34:03Z",
+        "sourceUrl": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.29"
+      }
+    },
+    {
+      "program": "singBox",
+      "repository": "SagerNet/sing-box",
+      "development": {
+        "policy": "branchHead",
+        "trackedRef": "testing",
+        "resolvedRef": "4902660f8424fef3c2a60dfcdce7aeadfe3f3b88",
+        "commitSha": "4902660f8424fef3c2a60dfcdce7aeadfe3f3b88",
+        "sourceTimestamp": "2026-08-11T04:01:33Z",
+        "sourceUrl": "https://github.com/SagerNet/sing-box/commit/4902660f8424fef3c2a60dfcdce7aeadfe3f3b88"
+      },
+      "stable": {
+        "policy": "latestStableRelease",
+        "trackedRef": "latest",
+        "resolvedRef": "v1.13.18",
+        "commitSha": "45ca32dcb966f07f97fc888fe8586e359dbe8405",
+        "sourceTimestamp": "2026-08-09T07:55:08Z",
+        "sourceUrl": "https://github.com/SagerNet/sing-box/releases/tag/v1.13.18"
+      }
+    }
+  ]
+}

@@ -78,6 +78,12 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
   4 MiB per source and 16 MiB total input.
 - sing-box and Xray use native JSON; Mihomo uses native YAML. The target binary's native validator is
   the final semantic gate before an atomic apply.
+- Core source compatibility has two independent tracks per adapter: Xray `main` plus GitHub latest
+  stable Release, Mihomo `Alpha` plus latest stable, and sing-box `testing` plus latest stable. The
+  upstream manifest resolves moving selectors to exact tag/commit SHAs; the separate historical
+  catalog indexes releases, prereleases, surface events, and feature anchors. Keep binary fingerprint,
+  probe report, compatibility preference, target/profile, and candidate-only validation evidence
+  separate. Version text never proves official source, and Unknown decisions remain attemptable.
 - Automatic refresh scheduling, retry state, and shared configuration behavior belong in shared
   services/components rather than program-specific copies.
 

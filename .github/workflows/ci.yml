@@ -214,6 +214,7 @@ jobs:
       - name: Version policy
         run: |
           bash scripts/check-version-policy.sh
+          python3 scripts/check-core-upstreams.py
           bash scripts/test-update-toolchains.sh
           bash -n scripts/resolve-ci-profile.sh scripts/test-resolve-ci-profile.sh
           bash scripts/test-resolve-ci-profile.sh

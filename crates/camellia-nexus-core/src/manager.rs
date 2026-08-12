@@ -367,9 +367,7 @@ impl ProgramManager {
             .await
             .map_err(|error| creation_context(error, "Failed to prepare the program workspace"))?;
         let result = async {
-            let detected_version = self.config_service.probe_binary(&spec).await?;
-            let mut metadata = self.program_store.executable_metadata(&spec).await?;
-            metadata.detected_version = detected_version;
+            let metadata = self.config_service.probe_binary(&spec).await?;
             spec.executable.set_metadata(metadata);
             if spec.program_type.main_config().is_some() {
                 let document = self.config_service.load(&spec).await?;
@@ -459,9 +457,7 @@ impl ProgramManager {
         let identity_changed = current.executable != spec.executable
             || current.program_type.kind() != spec.program_type.kind();
         if identity_changed {
-            let detected_version = self.config_service.probe_binary(&spec).await?;
-            let mut metadata = self.program_store.executable_metadata(&spec).await?;
-            metadata.detected_version = detected_version;
+            let metadata = self.config_service.probe_binary(&spec).await?;
             spec.executable.set_metadata(metadata);
         }
         if current.program_type != spec.program_type && spec.program_type.main_config().is_some() {
@@ -668,10 +664,15 @@ impl ProgramManager {
             .await?;
         let probe = self
             .config_service
-            .probe_executable(&expected_spec, staged.executable.clone(), workspace)
+            .probe_executable(
+                &expected_spec,
+                staged.executable.clone(),
+                workspace,
+                &staged.metadata.fingerprint,
+            )
             .await;
-        let detected_version = match probe {
-            Ok(version) => version,
+        let detected = match probe {
+            Ok(detected) => detected,
             Err(error) => {
                 let _ = self.program_store.discard_package(staged).await;
                 return Err(error);
@@ -679,7 +680,8 @@ impl ProgramManager {
         };
         let mut next_spec = expected_spec.clone();
         let mut metadata = staged.metadata.clone();
-        metadata.detected_version = detected_version;
+        metadata.probe = detected.probe;
+        metadata.core_target = detected.core_target;
         next_spec.executable.set_metadata(metadata);
         if let Err(error) = next_spec.validate() {
             let _ = self.program_store.discard_package(staged).await;
@@ -733,7 +735,7 @@ impl ProgramManager {
                 Mutation::CommitPreparedPackage {
                     expected_spec: Box::new(expected_spec),
                     next_spec: Box::new(next_spec),
-                    staged,
+                    staged: Box::new(staged),
                 },
                 mutation_guard,
             )
@@ -760,6 +762,13 @@ impl ProgramManager {
         let _lease = handle.operation_lease().await?;
         let spec = handle.spec().await;
         self.config_service.load(&spec).await
+    }
+
+    pub async fn refresh_binary_identity(&self, id: &ProgramId) -> Result<ProgramSpec> {
+        let handle = self.handle(id).await?;
+        let _lease = handle.operation_lease().await?;
+        handle.mutate(Mutation::RefreshBinaryIdentity).await?;
+        Ok(handle.spec().await)
     }
 
     pub async fn load_configuration_schema(
@@ -1455,10 +1464,10 @@ mod tests {
             name: "Mihomo port test".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/mihomo".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Mihomo {
-                main_config: Some("config/managed.yaml".into()),
                 extra_args: Vec::new(),
             },
             managed_config: Some(ManagedConfigSpec {

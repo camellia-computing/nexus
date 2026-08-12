@@ -130,7 +130,8 @@ pub struct CommandOutput {
 
 #[derive(Debug, Clone)]
 pub struct DetectedBinary {
-    pub version: Option<String>,
+    pub probe: Option<crate::CoreProbeReport>,
+    pub core_target: Option<crate::CoreTargetIdentity>,
 }
 
 #[derive(Debug, Clone)]

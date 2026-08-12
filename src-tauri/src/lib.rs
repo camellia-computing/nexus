@@ -13,6 +13,8 @@ mod config_sources;
 mod config_update_schedule;
 #[cfg(feature = "desktop")]
 mod config_updates;
+#[cfg(feature = "desktop")]
+mod configuration_state;
 #[cfg(any(feature = "desktop", test))]
 mod license_session;
 #[cfg(feature = "desktop")]
@@ -20,8 +22,6 @@ mod licensing;
 mod platform;
 mod privilege_broker;
 mod privileges;
-#[cfg(feature = "desktop")]
-mod programs;
 mod storage;
 
 #[cfg(feature = "desktop")]
@@ -136,6 +136,7 @@ pub(crate) struct AppState {
     pub(crate) window_state: window_state::WindowStateTracker,
     pub(crate) settings: Arc<settings::SettingsStore>,
     pub(crate) config_refreshes: Arc<config_updates::RefreshCoordinator>,
+    pub(crate) configuration_state: Arc<configuration_state::ConfigurationCoordinator>,
     pub(crate) config_credentials: Arc<config_credentials::ConfigCredentialVault>,
     pub(crate) authorization: Arc<camellia_nexus_licensing::AuthorizationService>,
 }
@@ -268,6 +269,9 @@ pub fn run() {
             let store = Arc::new(
                 FileStore::new(data_dir.clone()).map_err(Box::<dyn std::error::Error>::from)?,
             );
+            let configuration_state = Arc::new(configuration_state::ConfigurationCoordinator::new(
+                store.clone(),
+            ));
             let tool_runner: camellia_nexus_core::DynToolRunner =
                 Arc::new(NativeToolRunner::default());
             let manager = ProgramManager::new(
@@ -325,6 +329,7 @@ pub fn run() {
                 window_state: window_state::WindowStateTracker::default(),
                 settings,
                 config_refreshes: config_refreshes.clone(),
+                configuration_state,
                 config_credentials,
                 authorization,
             });
@@ -497,7 +502,6 @@ pub fn run() {
             commands::create_program,
             commands::update_program,
             commands::update_program_and_restart,
-            commands::update_program_and_refresh_config,
             commands::remove_program,
             commands::start_program,
             commands::stop_program,
@@ -507,9 +511,18 @@ pub fn run() {
             commands::run_action,
             commands::load_config,
             commands::load_configuration_schema,
-            commands::validate_config,
-            commands::apply_config,
-            commands::refresh_config_sources,
+            commands::get_configuration_state,
+            commands::set_guided_intent,
+            commands::preview_configuration_import,
+            commands::get_configuration_editor_session,
+            commands::save_configuration_draft,
+            commands::rebase_configuration_draft,
+            commands::resolve_configuration_conflict,
+            commands::discard_configuration_draft,
+            commands::commit_configuration_draft,
+            commands::apply_configuration_candidate,
+            commands::refresh_configuration_sources,
+            commands::update_configuration_sources,
             commands::read_logs,
             commands::clear_logs,
             commands::open_working_directory,
@@ -596,13 +609,13 @@ fn application_data_directory(
     #[cfg(all(not(feature = "desktop-e2e"), windows))]
     {
         let _ = app;
-        return std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("LOCALAPPDATA")
             .map(std::path::PathBuf::from)
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "LOCALAPPDATA is unavailable")
             })
             .map(|path| path.join("camellia-nexus"))
-            .map_err(Into::into);
+            .map_err(Into::into)
     }
     #[cfg(all(not(feature = "desktop-e2e"), not(windows)))]
     Ok(app.path().app_local_data_dir()?)
@@ -675,6 +688,7 @@ mod tests {
 
     use crate::{
         FileStore, NativeProcessDriver, NativeToolRunner, RuntimeAuthorizationCoordinator,
+        configuration_state::ConfigurationCoordinator,
     };
 
     const TEST_PROCESS_EXIT: ProcessExit = ProcessExit {
@@ -701,11 +715,15 @@ case "$1" in
     if [ "$2" = "--help" ]; then echo "-w"; fi
     ;;
   schema)
-    count=0
-    if [ -f "$counter" ]; then count="$(cat "$counter")"; fi
-    count=$((count + 1))
-    echo "$count" > "$counter"
-    echo '{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false}'
+    if [ "$2" = "--help" ]; then
+      echo "schema"
+    else
+      count=0
+      if [ -f "$counter" ]; then count="$(cat "$counter")"; fi
+      count=$((count + 1))
+      echo "$count" > "$counter"
+      echo '{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false}'
+    fi
     ;;
 esac
 "#,
@@ -722,7 +740,7 @@ esac
         let manager = ProgramManager::new(
             Arc::new(NativeProcessDriver::default()),
             store.clone(),
-            store,
+            store.clone(),
             Arc::new(NativeToolRunner::default()),
         );
         manager.initialize().await.expect("initialize");
@@ -735,10 +753,10 @@ esac
                     name: "Schema cache fixture".into(),
                     executable: ExecutableSpec::External {
                         path: binary.clone(),
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::SingBox {
-                        main_config: Some(PathBuf::from("config/config.json")),
                         extra_args: Vec::new(),
                     },
                     managed_config: None,
@@ -1041,6 +1059,7 @@ esac
                     name: id.as_str().into(),
                     executable: ExecutableSpec::External {
                         path: executable,
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic { args: Vec::new() },
@@ -1073,6 +1092,7 @@ esac
                     name: id.as_str().into(),
                     executable: ExecutableSpec::External {
                         path: executable,
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1100,7 +1120,7 @@ esac
         let manager = ProgramManager::new(
             Arc::new(NativeProcessDriver::default()),
             store.clone(),
-            store,
+            store.clone(),
             Arc::new(NativeToolRunner::default()),
         );
         manager
@@ -1218,6 +1238,7 @@ esac
                     name: "Managed fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1267,6 +1288,7 @@ esac
                     name: "Stop retry fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1589,6 +1611,7 @@ esac
                     name: "Retry fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1666,6 +1689,7 @@ esac
                     name: "Exited fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1728,6 +1752,7 @@ esac
             name: id.into(),
             executable: ExecutableSpec::External {
                 path: PathBuf::from("/bin/sh"),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type,
@@ -1751,7 +1776,6 @@ esac
                 spec: spec(
                     "xray-profile",
                     ProgramType::Xray {
-                        main_config: None,
                         extra_args: Vec::new(),
                     },
                 ),
@@ -1783,6 +1807,7 @@ esac
             name: id.into(),
             executable: ExecutableSpec::External {
                 path: PathBuf::from("/bin/sh"),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type,
@@ -1798,7 +1823,6 @@ esac
             make_spec(
                 "b-xray",
                 ProgramType::Xray {
-                    main_config: None,
                     extra_args: Vec::new(),
                 },
             ),
@@ -1852,6 +1876,7 @@ esac
                         name: format!("Parallel {index}"),
                         executable: ExecutableSpec::External {
                             path: executable,
+                            compatibility: Default::default(),
                             metadata: None,
                         },
                         program_type: ProgramType::Generic {
@@ -1938,7 +1963,7 @@ sleep 30
         let manager = ProgramManager::new(
             Arc::new(NativeProcessDriver::default()),
             store.clone(),
-            store,
+            store.clone(),
             Arc::new(NativeToolRunner::default()),
         );
         manager.initialize().await.expect("initialize");
@@ -1951,10 +1976,10 @@ sleep 30
                     name: "Rollback fixture".into(),
                     executable: ExecutableSpec::External {
                         path: binary,
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Xray {
-                        main_config: Some(PathBuf::from("config/config.json")),
                         extra_args: Vec::new(),
                     },
                     managed_config: None,
@@ -1969,6 +1994,10 @@ sleep 30
             })
             .await
             .expect("create");
+        ConfigurationCoordinator::new(store)
+            .initialize_created(&manager, &id, None)
+            .await
+            .expect("initialize configuration state");
         manager.start(&id).await.expect("start old config");
         let (expected_spec, _) = manager.get(&id).await.expect("get spec");
         let document = manager.load_config(&id).await.expect("load config");
@@ -2036,7 +2065,7 @@ sleep 30
             .commit_update_and_apply_config(prepared_update, prepared_config, true)
             .await
             .expect_err("failed stabilization must roll back settings and configuration");
-        assert_eq!(error.code, ErrorCode::ConfigInvalid);
+        assert_eq!(error.code, ErrorCode::ConfigInvalid, "{error:?}");
         assert_eq!(
             manager.get(&id).await.expect("rolled back spec").0,
             before_transaction
@@ -2108,11 +2137,12 @@ sleep 30
             )
             .await
             .expect("prepare CAS config");
-        let config_path = manager
-            .workspace(&id)
-            .await
-            .expect("workspace")
-            .join("config/config.json");
+        let config_path = manager.workspace(&id).await.expect("workspace").join(
+            expected_spec
+                .program_type
+                .main_config()
+                .expect("configured program target"),
+        );
         std::fs::write(&config_path, r#"{"external":true}"#).expect("external config edit");
         let conflict = manager
             .apply_prepared_config(&id, &expected_spec, prepared, true)
@@ -2123,15 +2153,14 @@ sleep 30
             std::fs::read_to_string(&config_path).expect("external config remains"),
             r#"{"external":true}"#
         );
+        // The external edit is intentionally not considered validated.  The
+        // controller must fail closed instead of restarting an un-evidenced
+        // configuration after the CAS conflict; a safety stop remains valid.
         assert!(matches!(
-            manager
-                .get(&id)
-                .await
-                .expect("running after CAS conflict")
-                .1,
-            ProgramState::Running { .. }
+            manager.get(&id).await.expect("state after CAS conflict").1,
+            ProgramState::Error { .. }
         ));
-        manager.stop(&id).await.expect("stop restored process");
+        manager.stop(&id).await.expect("stop failed-closed process");
     }
 
     #[tokio::test]
@@ -2162,6 +2191,7 @@ sleep 30
                     name: "Managed package".into(),
                     executable: ExecutableSpec::Managed {
                         path: PathBuf::from("bin/tool"),
+                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic { args: Vec::new() },

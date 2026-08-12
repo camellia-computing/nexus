@@ -15,6 +15,7 @@
   const dispatch = createEventDispatcher<{
     change: ConfigSource[];
     remoteUpdate: RemoteUpdate | undefined;
+    preview: string;
   }>();
   const remoteUpdateIntervals = [15, 60, 360, 720, 1440];
   let selectedRemoteUpdateInterval = 60;
@@ -27,6 +28,7 @@
     label: $t(interval === 15 ? '15 minutes' : interval === 60 ? '1 hour' : interval === 360 ? '6 hours' : interval === 720 ? '12 hours' : '1 day'),
   }));
   $: sourceTypeOptions = [
+    { value: 'inline', label: $t('Inline content') },
     { value: 'local', label: $t('Local file') },
     { value: 'remote', label: $t('Remote URL') },
   ];
@@ -45,12 +47,14 @@
     const index = sources.length + 1;
     const common = {
       id: sourceId(),
-      name: `${mode === 'local' ? 'Local' : 'Remote'} ${index}`,
+      name: `${mode === 'local' ? 'Local' : mode === 'remote' ? 'Remote' : 'Inline'} ${index}`,
       enabled: true,
     };
     setSources([
       ...sources,
-      mode === 'local'
+      mode === 'inline'
+        ? { ...common, mode, content: '{\n  \n}' }
+        : mode === 'local'
         ? { ...common, mode, path: '' }
         : { ...common, mode, url: '' },
     ]);
@@ -60,7 +64,9 @@
     setSources(sources.map((source, sourceIndex) => {
       if (sourceIndex !== index) return source;
       if (field === 'mode') {
-        return value === 'local'
+        return value === 'inline'
+          ? { mode: 'inline', id: source.id, name: source.name, enabled: source.enabled, content: '{\n  \n}' }
+          : value === 'local'
           ? { mode: 'local', id: source.id, name: source.name, enabled: source.enabled, path: '' }
           : { mode: 'remote', id: source.id, name: source.name, enabled: source.enabled, url: '' };
       }
@@ -142,6 +148,9 @@
       <span><strong>{$t('Configuration sources')}</strong><small>{activeCount} / {sources.length} {$t('active')}</small></span>
     </div>
     <div class="source-editor-add">
+      <button type="button" on:click={() => add('inline')} disabled={disabled || sources.length >= maxSources}>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5h10v13H5Z"></path><path d="M7.5 7.5h5M7.5 10h5M7.5 12.5h3"></path></svg>{$t('Inline content')}
+      </button>
       <button type="button" on:click={() => add('local')} disabled={disabled || sources.length >= maxSources}>
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5h6l4 4v9H5Z"></path><path d="M11 3.5v4h4M10 10v4M8 12h4"></path></svg>{$t('Local file')}
       </button>
@@ -165,7 +174,10 @@
         <div class="source-primary">
           <input class="source-name" value={source.name} maxlength="128" aria-label={$t('Source name')} placeholder={$t('Source name')} on:input={(event) => update(index, 'name', event.currentTarget.value)} {disabled} />
           <span class="source-type-select"><OptionSelect value={source.mode} options={sourceTypeOptions} ariaLabel={$t('Source type')} {disabled} align="center" size="md" width="content" on:change={(event) => update(index, 'mode', String(event.detail.value))} /></span>
-          {#if source.mode === 'local'}
+          {#if source.mode === 'inline'}
+            <textarea class="source-address-field source-inline-content" value={source.content} maxlength={4194304} aria-label={$t('Inline configuration content')} placeholder={'{}'} on:input={(event) => update(index, 'content', event.currentTarget.value)} {disabled}></textarea>
+            <button class="source-preview" type="button" on:click={() => dispatch('preview', source.content)} disabled={disabled || !source.content.trim()}>{$t('Preview share import')}</button>
+          {:else if source.mode === 'local'}
             <OverflowPreviewInput className="source-address-field" value={source.path} maxlength={32000} ariaLabel={$t('Local configuration path')} placeholder={platform === 'Windows' ? 'config.json · C:/Configs/config.json' : 'config.json · /etc/proxy/config.json'} on:input={(event) => update(index, 'path', event.detail.value)} {disabled} />
           {:else}
             <OverflowPreviewInput className="source-address-field" value={source.url} maxlength={2048} ariaLabel={$t('Remote configuration URL')} placeholder="https://example.com/config.json" on:input={(event) => update(index, 'url', event.detail.value)} {disabled} />

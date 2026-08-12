@@ -9,16 +9,28 @@ use std::{
 
 use async_trait::async_trait;
 use camellia_nexus_core::{
-    CamelliaNexusError, ConfigStore, CreateAssets, ErrorCode, ExecutableMetadata, InvalidProgram,
-    LoadReport, LogChunk, LogStream, MAX_CONFIG_BYTES, ProgramConfigTransaction, ProgramId,
-    ProgramSpec, ProgramStore, RawConfig, Result, StagedConfig, StagedPackage, StoredProgram,
+    CamelliaNexusError, ConfigStore, ConfigurationFormat, ConfigurationState,
+    CoreBinaryFingerprint, CreateAssets, ErrorCode, ExecutableMetadata, InvalidProgram, LoadReport,
+    LogChunk, LogStream, MAX_CONFIG_BYTES, ProgramConfigTransaction, ProgramId, ProgramSpec,
+    ProgramStore, RawConfig, RawDraftSession, Result, StagedConfig, StagedPackage, StoredProgram,
     config_service::hash_bytes,
 };
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const PACKAGE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const PACKAGE_MAX_ENTRIES: usize = 4096;
 const PROGRAM_SPEC_MAX_BYTES: u64 = 1024 * 1024;
+const CONFIGURATION_STATE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const CONFIGURATION_STATE_DIRECTORY: &str = "configuration";
+const CONFIGURATION_STATE_FILE: &str = "state.json";
+const CONFIGURATION_SIDECAR_DIRECTORY: &str = "sidecars";
+const CONFIGURATION_LKG_JSON: &str = "last-known-good.json";
+const CONFIGURATION_LKG_YAML: &str = "last-known-good.yaml";
+const CONFIGURATION_RAW_DRAFT: &str = "raw-draft.json";
+const CONFIGURATION_APPLY_MARKER: &str = ".configuration-apply.json";
+const CONFIGURATION_SOURCE_TRANSACTION_MARKER: &str = ".configuration-source-transaction.json";
+const CONFIGURATION_SOURCE_STATE_BACKUP: &str = ".configuration-source-state.json.bak";
 const PROGRAM_CONFIG_TRANSACTION_VERSION: u32 = 1;
 const PROGRAM_CONFIG_TRANSACTION_MARKER: &str = ".program-config-transaction.json";
 const PROGRAM_CONFIG_SPEC_BACKUP: &str = ".program-config-program.json.bak";
@@ -100,6 +112,27 @@ struct ProgramPackageTransactionMarker {
     committed: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfigurationApplyMarker {
+    version: u32,
+    state: ConfigurationState,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfigurationSourceTransactionMarker {
+    version: u32,
+    previous_spec: ProgramSpec,
+    next_spec: ProgramSpec,
+    expected_generation: u64,
+    previous_state_present: bool,
+    state_committed: bool,
+}
+
+const CONFIGURATION_APPLY_MARKER_VERSION: u32 = 1;
+const CONFIGURATION_SOURCE_TRANSACTION_VERSION: u32 = 1;
+
 #[derive(Clone)]
 pub struct FileStore {
     root: Arc<PathBuf>,
@@ -132,6 +165,499 @@ impl FileStore {
     fn config_path(&self, spec: &ProgramSpec) -> Result<PathBuf> {
         let root = self.program_root(&spec.id);
         config_path_in_root(&root, spec)
+    }
+
+    fn configuration_state_path(&self, id: &ProgramId) -> PathBuf {
+        self.program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_STATE_FILE)
+    }
+
+    fn configuration_sidecar_path(&self, id: &ProgramId, hash: &str) -> PathBuf {
+        self.program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_SIDECAR_DIRECTORY)
+            .join(format!("{hash}.source"))
+    }
+
+    fn configuration_raw_draft_path(&self, id: &ProgramId) -> PathBuf {
+        self.program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_RAW_DRAFT)
+    }
+
+    pub async fn load_configuration_state(
+        &self,
+        id: &ProgramId,
+    ) -> Result<Option<ConfigurationState>> {
+        let path = self.configuration_state_path(id);
+        blocking(move || {
+            if !path.exists() {
+                return Ok(None);
+            }
+            let bytes = read_with_overflow_byte(&path, CONFIGURATION_STATE_MAX_BYTES)?;
+            if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Configuration state exceeds the 32 MiB limit",
+                ));
+            }
+            let mut state: ConfigurationState =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    CamelliaNexusError::new(
+                        ErrorCode::ConfigInvalid,
+                        "Configuration state is invalid",
+                    )
+                    .with_details(error.to_string())
+                })?;
+            if state.schema_version != camellia_nexus_core::CONFIGURATION_STATE_SCHEMA_VERSION {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Configuration state schema is unsupported",
+                ));
+            }
+            for snapshot in state.source_snapshots.values_mut() {
+                if snapshot.content.is_empty() {
+                    if !valid_content_hash(&snapshot.content_hash) {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::ConfigInvalid,
+                            "Configuration source sidecar reference is invalid",
+                        ));
+                    }
+                    let sidecar = path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(CONFIGURATION_SIDECAR_DIRECTORY)
+                        .join(format!("{}.source", snapshot.content_hash));
+                    let content = fs::read(&sidecar).map_err(|error| {
+                        CamelliaNexusError::new(
+                            ErrorCode::Storage,
+                            "Configuration source sidecar is unavailable",
+                        )
+                        .with_details(error.to_string())
+                    })?;
+                    if content.len() > MAX_CONFIG_BYTES {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::Storage,
+                            "Configuration source sidecar exceeds the 4 MiB limit",
+                        ));
+                    }
+                    if hash_bytes(&content) != snapshot.content_hash {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::Storage,
+                            "Configuration source sidecar hash does not match its snapshot",
+                        ));
+                    }
+                    snapshot.content = String::from_utf8(content).map_err(|_| {
+                        CamelliaNexusError::new(
+                            ErrorCode::ConfigInvalid,
+                            "Configuration source sidecar is not UTF-8",
+                        )
+                    })?;
+                }
+            }
+            Ok(Some(state))
+        })
+        .await
+    }
+
+    pub async fn save_configuration_state(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+        expected_generation: Option<u64>,
+    ) -> Result<()> {
+        if state.schema_version != camellia_nexus_core::CONFIGURATION_STATE_SCHEMA_VERSION {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration state schema is unsupported",
+            ));
+        }
+        let path = self.configuration_state_path(id);
+        let mut state = state.clone();
+        let sidecar_root = self
+            .program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_SIDECAR_DIRECTORY);
+        blocking(move || {
+            fs::create_dir_all(&sidecar_root)?;
+            for snapshot in state.source_snapshots.values_mut() {
+                if snapshot.content.len() > MAX_CONFIG_BYTES {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigInvalid,
+                        "Configuration source exceeds the 4 MiB limit",
+                    ));
+                }
+                if !valid_content_hash(&snapshot.content_hash) {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigInvalid,
+                        "Configuration source snapshot hash is invalid",
+                    ));
+                }
+                let sidecar = sidecar_root.join(format!("{}.source", snapshot.content_hash));
+                if !snapshot.content.is_empty() {
+                    write_bytes_atomic(&sidecar, snapshot.content.as_bytes())?;
+                    snapshot.content.clear();
+                }
+            }
+            if let Some(expected_generation) = expected_generation {
+                let current = if path.exists() {
+                    let bytes = read_with_overflow_byte(&path, CONFIGURATION_STATE_MAX_BYTES)?;
+                    if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::ConfigInvalid,
+                            "Configuration state exceeds the 32 MiB limit",
+                        ));
+                    }
+                    Some(
+                        serde_json::from_slice::<ConfigurationState>(&bytes).map_err(|error| {
+                            CamelliaNexusError::new(
+                                ErrorCode::ConfigInvalid,
+                                "Configuration state is invalid",
+                            )
+                            .with_details(error.to_string())
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                if current.as_ref().map(|state| state.generation) != Some(expected_generation) {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigConflict,
+                        "Configuration state changed since it was loaded",
+                    ));
+                }
+            }
+            let bytes = serde_json::to_vec_pretty(&state)?;
+            if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Configuration state exceeds the 32 MiB limit",
+                ));
+            }
+            write_bytes_atomic(&path, &bytes)
+        })
+        .await
+    }
+
+    /// Stores an original observation or translated fragment by content hash.
+    /// The state file only keeps the reference, which prevents a collection of
+    /// 4 MiB sources from expanding the state beyond its durable limit.
+    pub async fn save_configuration_sidecar(
+        &self,
+        id: &ProgramId,
+        hash: &str,
+        content: &[u8],
+    ) -> Result<()> {
+        if content.len() > MAX_CONFIG_BYTES {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration sidecar exceeds the 4 MiB limit",
+            ));
+        }
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration sidecar reference is invalid",
+            ));
+        }
+        let path = self.configuration_sidecar_path(id, hash);
+        let bytes = content.to_vec();
+        blocking(move || write_bytes_atomic(&path, &bytes)).await
+    }
+
+    pub async fn load_configuration_sidecar(&self, id: &ProgramId, hash: &str) -> Result<Vec<u8>> {
+        if !valid_content_hash(hash) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration sidecar reference is invalid",
+            ));
+        }
+        let path = self.configuration_sidecar_path(id, hash);
+        let expected = hash.to_owned();
+        blocking(move || {
+            let bytes = read_with_overflow_byte(&path, MAX_CONFIG_BYTES as u64)?;
+            if bytes.len() > MAX_CONFIG_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Configuration sidecar exceeds the 4 MiB limit",
+                ));
+            }
+            if hash_bytes(&bytes) != expected {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Configuration sidecar hash does not match its reference",
+                ));
+            }
+            Ok(bytes)
+        })
+        .await
+    }
+
+    /// Starts the source-list/state transaction.  The previous state is kept
+    /// as a bounded atomic backup until `finish_configuration_source_update`.
+    pub async fn begin_configuration_source_update(
+        &self,
+        id: &ProgramId,
+        previous_spec: &ProgramSpec,
+        next_spec: &ProgramSpec,
+        expected_generation: u64,
+    ) -> Result<()> {
+        let root = self.program_root(id);
+        let state_path = self.configuration_state_path(id);
+        let marker_path = root.join(CONFIGURATION_SOURCE_TRANSACTION_MARKER);
+        let backup_path = root.join(CONFIGURATION_SOURCE_STATE_BACKUP);
+        let previous_spec = previous_spec.clone();
+        let next_spec = next_spec.clone();
+        blocking(move || {
+            if marker_path.exists() || backup_path.exists() {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ProgramBusy,
+                    "A previous configuration source transaction still requires recovery",
+                ));
+            }
+            let previous_state_present = state_path.exists();
+            if previous_state_present {
+                let bytes = read_with_overflow_byte(&state_path, CONFIGURATION_STATE_MAX_BYTES)?;
+                if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigInvalid,
+                        "Configuration state exceeds the 32 MiB limit",
+                    ));
+                }
+                let current: ConfigurationState =
+                    serde_json::from_slice(&bytes).map_err(|error| {
+                        CamelliaNexusError::new(
+                            ErrorCode::ConfigInvalid,
+                            "Configuration state is invalid",
+                        )
+                        .with_details(error.to_string())
+                    })?;
+                if current.generation != expected_generation {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigConflict,
+                        "Configuration state changed before the source transaction began",
+                    ));
+                }
+                write_bytes_atomic(&backup_path, &bytes)?;
+            } else if expected_generation != 0 {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigConflict,
+                    "Configuration state disappeared before the source transaction began",
+                ));
+            }
+            let marker = ConfigurationSourceTransactionMarker {
+                version: CONFIGURATION_SOURCE_TRANSACTION_VERSION,
+                previous_spec,
+                next_spec,
+                expected_generation,
+                previous_state_present,
+                state_committed: false,
+            };
+            write_json_atomic(&marker_path, &marker)
+        })
+        .await
+    }
+
+    pub async fn mark_configuration_source_update_committed(&self, id: &ProgramId) -> Result<()> {
+        let root = self.program_root(id);
+        let marker_path = root.join(CONFIGURATION_SOURCE_TRANSACTION_MARKER);
+        blocking(move || {
+            let mut marker =
+                load_configuration_source_transaction_marker(&root)?.ok_or_else(|| {
+                    CamelliaNexusError::new(
+                        ErrorCode::InvalidState,
+                        "Configuration source transaction marker is missing",
+                    )
+                })?;
+            marker.state_committed = true;
+            write_json_atomic(&marker_path, &marker)
+        })
+        .await
+    }
+
+    pub async fn finish_configuration_source_update(&self, id: &ProgramId) -> Result<()> {
+        let root = self.program_root(id);
+        blocking(move || {
+            for path in [
+                root.join(CONFIGURATION_SOURCE_TRANSACTION_MARKER),
+                root.join(CONFIGURATION_SOURCE_STATE_BACKUP),
+            ] {
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            sync_directory(&root)
+        })
+        .await
+    }
+
+    pub async fn rollback_configuration_source_update(&self, id: &ProgramId) -> Result<()> {
+        let root = self.program_root(id);
+        blocking(move || recover_configuration_source_transaction(&root)).await
+    }
+
+    pub async fn load_raw_draft(&self, id: &ProgramId) -> Result<Option<RawDraftSession>> {
+        let path = self.configuration_raw_draft_path(id);
+        blocking(move || {
+            if !path.exists() {
+                return Ok(None);
+            }
+            let bytes = read_with_overflow_byte(&path, MAX_CONFIG_BYTES as u64)?;
+            if bytes.len() > MAX_CONFIG_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Raw configuration draft exceeds the 4 MiB limit",
+                ));
+            }
+            serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+                CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Raw configuration draft is invalid",
+                )
+                .with_details(error.to_string())
+            })
+        })
+        .await
+    }
+
+    pub async fn save_raw_draft(
+        &self,
+        id: &ProgramId,
+        draft: &RawDraftSession,
+        expected_revision: Option<u64>,
+    ) -> Result<()> {
+        if draft.working_content.len() > MAX_CONFIG_BYTES
+            || draft.user_content.len() > MAX_CONFIG_BYTES
+            || draft.base_content.len() > MAX_CONFIG_BYTES
+        {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Raw configuration draft content exceeds the 4 MiB limit",
+            ));
+        }
+        let path = self.configuration_raw_draft_path(id);
+        let draft = draft.clone();
+        blocking(move || {
+            if let Some(expected_revision) = expected_revision {
+                let current = if path.exists() {
+                    let bytes = read_with_overflow_byte(&path, MAX_CONFIG_BYTES as u64)?;
+                    Some(
+                        serde_json::from_slice::<RawDraftSession>(&bytes).map_err(|error| {
+                            CamelliaNexusError::new(
+                                ErrorCode::ConfigInvalid,
+                                "Raw configuration draft is invalid",
+                            )
+                            .with_details(error.to_string())
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                if current.as_ref().map(|current| current.draft_revision) != Some(expected_revision)
+                {
+                    // Revision zero is the in-memory session returned before the
+                    // first autosave.  Treat a missing file as that initial
+                    // revision, while every later save remains a strict CAS.
+                    let initial_create = current.is_none() && expected_revision == 0;
+                    if !initial_create {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::ConfigConflict,
+                            "Raw configuration draft changed since it was loaded",
+                        ));
+                    }
+                }
+            }
+            let bytes = serde_json::to_vec(&draft)?;
+            if bytes.len() > MAX_CONFIG_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Raw configuration draft exceeds the 4 MiB limit",
+                ));
+            }
+            write_bytes_atomic(&path, &bytes)
+        })
+        .await
+    }
+
+    pub async fn discard_raw_draft(&self, id: &ProgramId) -> Result<()> {
+        let path = self.configuration_raw_draft_path(id);
+        blocking(move || match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        })
+        .await
+    }
+
+    pub async fn save_last_known_good(
+        &self,
+        id: &ProgramId,
+        format: ConfigurationFormat,
+        content: &str,
+    ) -> Result<()> {
+        if content.len() > MAX_CONFIG_BYTES {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Last known good configuration exceeds the 4 MiB limit",
+            ));
+        }
+        let file_name = match format {
+            ConfigurationFormat::Jsonc => CONFIGURATION_LKG_JSON,
+            ConfigurationFormat::Yaml => CONFIGURATION_LKG_YAML,
+        };
+        let path = self
+            .program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(file_name);
+        let bytes = content.as_bytes().to_vec();
+        blocking(move || write_bytes_atomic(&path, &bytes)).await
+    }
+
+    pub async fn begin_configuration_apply(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+    ) -> Result<()> {
+        let path = self.program_root(id).join(CONFIGURATION_APPLY_MARKER);
+        let root = self.program_root(id);
+        let sidecar_root = root
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_SIDECAR_DIRECTORY);
+        let marker = ConfigurationApplyMarker {
+            version: CONFIGURATION_APPLY_MARKER_VERSION,
+            state: state.clone(),
+        };
+        blocking(move || {
+            fs::create_dir_all(&sidecar_root)?;
+            let mut marker = marker;
+            compact_configuration_state(&sidecar_root, &mut marker.state)?;
+            let bytes = serde_json::to_vec(&marker)?;
+            if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Configuration apply transaction exceeds the 32 MiB limit",
+                ));
+            }
+            write_bytes_atomic(&path, &bytes)
+        })
+        .await
+    }
+
+    pub async fn finish_configuration_apply(&self, id: &ProgramId) -> Result<()> {
+        let root = self.program_root(id);
+        let path = root.join(CONFIGURATION_APPLY_MARKER);
+        blocking(move || {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            sync_directory(&root)
+        })
+        .await
     }
 
     fn clean_trash(&self) {
@@ -187,6 +713,7 @@ impl ProgramStore for FileStore {
                 }
                 let spec_path = path.join("program.json");
                 let loaded = (|| -> Result<ProgramSpec> {
+                    recover_configuration_source_transaction(&path)?;
                     recover_program_config_transaction(&path)?;
                     recover_program_package_transaction(&path)?;
                     clean_atomic_temps(&path);
@@ -351,6 +878,17 @@ impl ProgramStore for FileStore {
     async fn executable_metadata(&self, spec: &ProgramSpec) -> Result<ExecutableMetadata> {
         let path = spec.executable_path(&self.program_root(&spec.id));
         blocking(move || executable_metadata(&path)).await
+    }
+
+    async fn configuration_validation_evidence(
+        &self,
+        spec: &ProgramSpec,
+    ) -> Result<Option<camellia_nexus_core::CoreValidationEvidence>> {
+        Ok(self
+            .load_configuration_state(&spec.id)
+            .await?
+            .and_then(|state| state.applied)
+            .and_then(|candidate| candidate.validation_evidence))
     }
 
     async fn stage_package(&self, spec: &ProgramSpec, source: &Path) -> Result<StagedPackage> {
@@ -1048,6 +1586,8 @@ impl ConfigStore for FileStore {
             return Ok(());
         };
         let target = self.config_path(spec)?;
+        let root = self.program_root(&spec.id);
+        let spec = spec.clone();
         blocking(move || {
             let backup = suffixed_path(&target, ".bak");
             let pending = suffixed_path(&target, ".pending");
@@ -1086,7 +1626,7 @@ impl ConfigStore for FileStore {
                 }
                 sync_directory(parent)?;
             }
-            Ok(())
+            recover_configuration_apply_transaction(&root, &spec)
         })
         .await
     }
@@ -1116,6 +1656,35 @@ fn safe_path(root: &Path, relative: &Path) -> Result<PathBuf> {
         }
     }
     Ok(joined)
+}
+
+fn valid_content_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Remove large source bodies from a crash-recovery marker while ensuring the
+/// referenced content has already been durably materialized in its sidecar.
+fn compact_configuration_state(sidecar_root: &Path, state: &mut ConfigurationState) -> Result<()> {
+    for snapshot in state.source_snapshots.values_mut() {
+        if !valid_content_hash(&snapshot.content_hash) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration source snapshot hash is invalid",
+            ));
+        }
+        if snapshot.content.len() > MAX_CONFIG_BYTES {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration source exceeds the 4 MiB limit",
+            ));
+        }
+        if !snapshot.content.is_empty() {
+            let path = sidecar_root.join(format!("{}.source", snapshot.content_hash));
+            write_bytes_atomic(&path, snapshot.content.as_bytes())?;
+            snapshot.content.clear();
+        }
+    }
+    Ok(())
 }
 
 fn validated_program_workspace(
@@ -1348,6 +1917,170 @@ fn recover_program_config_transaction(root: &Path) -> Result<()> {
     }
 }
 
+fn recover_configuration_apply_transaction(root: &Path, spec: &ProgramSpec) -> Result<()> {
+    let marker_path = root.join(CONFIGURATION_APPLY_MARKER);
+    if !marker_path.exists() {
+        return Ok(());
+    }
+    let bytes = read_with_overflow_byte(&marker_path, CONFIGURATION_STATE_MAX_BYTES)?;
+    if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::Storage,
+            "Configuration apply transaction marker is oversized",
+        ));
+    }
+    let marker: ConfigurationApplyMarker = serde_json::from_slice(&bytes).map_err(|error| {
+        CamelliaNexusError::new(
+            ErrorCode::Storage,
+            "Configuration apply transaction marker is invalid",
+        )
+        .with_details(error.to_string())
+    })?;
+    if marker.version != CONFIGURATION_APPLY_MARKER_VERSION {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::Storage,
+            "Configuration apply transaction marker version is unsupported",
+        ));
+    }
+    let target = config_path_in_root(root, spec)?;
+    let active_matches = if target.is_file() {
+        let active = fs::read(&target)?;
+        let value = camellia_nexus_core::parse_semantic_document(marker.state.format, &active);
+        value
+            .and_then(|value| {
+                camellia_nexus_core::serialize_semantic_document(marker.state.format, &value)
+            })
+            .is_ok_and(|content| {
+                camellia_nexus_core::config_service::hash_bytes(content.as_bytes())
+                    == marker.state.desired.revision.content_hash
+            })
+    } else {
+        false
+    };
+    if active_matches {
+        let marker_state = marker.state;
+        if marker_state.desired.validation == camellia_nexus_core::CandidateValidationStatus::Valid
+        {
+            let state_path = root
+                .join(CONFIGURATION_STATE_DIRECTORY)
+                .join(CONFIGURATION_STATE_FILE);
+            let mut state = if state_path.exists() {
+                let current_bytes =
+                    read_with_overflow_byte(&state_path, CONFIGURATION_STATE_MAX_BYTES)?;
+                if current_bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::Storage,
+                        "Configuration state is oversized during apply recovery",
+                    ));
+                }
+                let current: ConfigurationState =
+                    serde_json::from_slice(&current_bytes).map_err(|error| {
+                        CamelliaNexusError::new(
+                            ErrorCode::Storage,
+                            "Configuration state is invalid during apply recovery",
+                        )
+                        .with_details(error.to_string())
+                    })?;
+                if current.generation > marker_state.generation {
+                    let mut preserved = current;
+                    preserved.applied = Some(marker_state.desired.clone());
+                    preserved.last_known_good = Some(marker_state.desired.clone());
+                    preserved
+                } else {
+                    marker_state.clone()
+                }
+            } else {
+                marker_state.clone()
+            };
+            if state.generation <= marker_state.generation {
+                state.mark_applied()?;
+            }
+            let state_bytes = serde_json::to_vec_pretty(&state)?;
+            write_bytes_atomic(&state_path, &state_bytes)?;
+            let lkg_name = match marker_state.format {
+                ConfigurationFormat::Jsonc => CONFIGURATION_LKG_JSON,
+                ConfigurationFormat::Yaml => CONFIGURATION_LKG_YAML,
+            };
+            write_bytes_atomic(
+                &root.join(CONFIGURATION_STATE_DIRECTORY).join(lkg_name),
+                marker_state.desired.content.as_bytes(),
+            )?;
+        }
+    }
+    let _ = fs::remove_file(marker_path);
+    sync_directory(root)?;
+    Ok(())
+}
+
+fn load_configuration_source_transaction_marker(
+    root: &Path,
+) -> Result<Option<ConfigurationSourceTransactionMarker>> {
+    let path = root.join(CONFIGURATION_SOURCE_TRANSACTION_MARKER);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = read_with_overflow_byte(&path, PROGRAM_SPEC_MAX_BYTES * 2)?;
+    if bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES * 2 {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::Storage,
+            "Configuration source transaction marker is oversized",
+        ));
+    }
+    let marker: ConfigurationSourceTransactionMarker =
+        serde_json::from_slice(&bytes).map_err(|error| {
+            CamelliaNexusError::new(
+                ErrorCode::Storage,
+                "Configuration source transaction marker is invalid",
+            )
+            .with_details(error.to_string())
+        })?;
+    if marker.version != CONFIGURATION_SOURCE_TRANSACTION_VERSION {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::Storage,
+            "Configuration source transaction marker version is unsupported",
+        ));
+    }
+    Ok(Some(marker))
+}
+
+fn recover_configuration_source_transaction(root: &Path) -> Result<()> {
+    let Some(marker) = load_configuration_source_transaction_marker(root)? else {
+        return Ok(());
+    };
+    let state_path = root
+        .join(CONFIGURATION_STATE_DIRECTORY)
+        .join(CONFIGURATION_STATE_FILE);
+    let backup_path = root.join(CONFIGURATION_SOURCE_STATE_BACKUP);
+    if !marker.state_committed {
+        write_json_atomic(&root.join("program.json"), &marker.previous_spec)?;
+        if marker.previous_state_present {
+            if backup_path.exists() {
+                replace_file(&backup_path, &state_path)?;
+            } else {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Configuration source transaction state backup is missing",
+                ));
+            }
+        } else if state_path.exists() {
+            fs::remove_file(&state_path)?;
+        }
+    } else {
+        write_json_atomic(&root.join("program.json"), &marker.next_spec)?;
+    }
+    for path in [
+        root.join(CONFIGURATION_SOURCE_TRANSACTION_MARKER),
+        backup_path,
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    sync_directory(root)
+}
+
 fn load_program_package_transaction_marker(
     root: &Path,
 ) -> Result<Option<ProgramPackageTransactionMarker>> {
@@ -1575,10 +2308,56 @@ fn executable_metadata(path: &Path) -> Result<ExecutableMetadata> {
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |duration| duration.as_millis() as u64);
+    let mut file = File::open(path).map_err(|error| {
+        CamelliaNexusError::new(ErrorCode::UnsupportedBinary, "Executable is not readable")
+            .with_details(error.to_string())
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            CamelliaNexusError::new(
+                ErrorCode::UnsupportedBinary,
+                "Executable could not be fingerprinted",
+            )
+            .with_details(error.to_string())
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let after = fs::metadata(path).map_err(|error| {
+        CamelliaNexusError::new(
+            ErrorCode::UnsupportedBinary,
+            "Executable metadata could not be read",
+        )
+        .with_details(error.to_string())
+    })?;
+    let after_modified_unix_ms = after
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_millis() as u64);
+    if after.len() != metadata.len() || after_modified_unix_ms != modified_unix_ms {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::ConfigConflict,
+            "Executable changed while its fingerprint was computed",
+        ));
+    }
+    let sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     Ok(ExecutableMetadata {
-        size: metadata.len(),
-        modified_unix_ms,
-        detected_version: None,
+        fingerprint: CoreBinaryFingerprint {
+            sha256,
+            size: metadata.len(),
+            modified_unix_ms,
+        },
+        probe: None,
+        core_target: None,
     })
 }
 
@@ -1748,8 +2527,12 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf, sync::mpsc};
 
     use camellia_nexus_core::{
-        ConfigStore, CreateAssets, ErrorCode, ExecutableSpec, MAX_CONFIG_BYTES, ProgramId,
-        ProgramSpec, ProgramStore, ProgramType, RestartPolicy, SCHEMA_VERSION,
+        CandidateValidationStatus, ConfigStore, ConfigurationCandidate, ConfigurationDiagnostic,
+        ConfigurationFormat, ConfigurationRevision, ConfigurationState, CoreBinaryFingerprint,
+        CoreCompatibilityProfile, CoreTargetIdentity, CoreValidationEvidence, CreateAssets,
+        ErrorCode, ExecutableSpec, MAX_CONFIG_BYTES, ProgramId, ProgramKind, ProgramSpec,
+        ProgramStore, ProgramType, RawDraftSession, RestartPolicy, SCHEMA_VERSION, SourceSnapshot,
+        merge_configuration_sources,
     };
 
     use super::{
@@ -1787,6 +2570,7 @@ mod tests {
             name: "Fixture".into(),
             executable: ExecutableSpec::External {
                 path: executable,
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic { args: Vec::new() },
@@ -1799,10 +2583,45 @@ mod tests {
         }
     }
 
+    fn xray_profile() -> CoreCompatibilityProfile {
+        let fingerprint = CoreBinaryFingerprint {
+            sha256: "a".repeat(64),
+            size: 1,
+            modified_unix_ms: 1,
+        };
+        CoreCompatibilityProfile::resolve(
+            &CoreTargetIdentity::unknown(ProgramKind::Xray, None).bind_fingerprint(&fingerprint),
+        )
+        .expect("profile")
+    }
+
+    fn xray_state(
+        generation: u64,
+        merge: camellia_nexus_core::SemanticMergeResult,
+    ) -> ConfigurationState {
+        ConfigurationState::from_merge(ProgramKind::Xray, generation, 1, merge, xray_profile())
+            .expect("configuration state")
+    }
+
+    fn validation_evidence(state: &ConfigurationState) -> CoreValidationEvidence {
+        CoreValidationEvidence {
+            binary_sha256: state
+                .compatibility_profile
+                .target
+                .fingerprint_sha256
+                .clone()
+                .expect("fingerprint"),
+            profile_hash: state.compatibility_profile.profile_hash.clone(),
+            config_hash: state.desired.revision.content_hash.clone(),
+            validator_contract_revision: "test-validator-v1".into(),
+            native_accepted: true,
+            validated_unix_ms: 1,
+        }
+    }
+
     fn configured_spec() -> ProgramSpec {
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         spec
@@ -1821,6 +2640,7 @@ mod tests {
         let mut spec = generic_spec();
         spec.executable = ExecutableSpec::Managed {
             path: PathBuf::from("bin/tool"),
+            compatibility: Default::default(),
             metadata: None,
         };
         spec.working_directory = PathBuf::from("bin");
@@ -1996,6 +2816,7 @@ mod tests {
         let mut spec = generic_spec();
         spec.executable = ExecutableSpec::Managed {
             path: PathBuf::from("bin/bin/tool"),
+            compatibility: Default::default(),
             metadata: None,
         };
         spec.working_directory = PathBuf::from("bin/bin");
@@ -2123,7 +2944,6 @@ mod tests {
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2170,7 +2990,6 @@ mod tests {
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2208,7 +3027,6 @@ mod tests {
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2245,6 +3063,627 @@ mod tests {
                 .expect("load")
                 .content
                 .contains("new")
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_apply_marker_recovers_state_after_active_commit() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"old":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"new":true}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let mut state = xray_state(2, merge);
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        store
+            .begin_configuration_apply(&spec.id, &state)
+            .await
+            .expect("begin apply");
+        std::fs::write(
+            store.config_path(&spec).expect("config path"),
+            state.desired.content.as_bytes(),
+        )
+        .expect("simulate active commit");
+
+        store.recover(&spec).await.expect("recover apply");
+
+        let recovered = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load state")
+            .expect("recovered state");
+        assert_eq!(
+            recovered
+                .applied
+                .as_ref()
+                .map(|candidate| &candidate.revision),
+            Some(&recovered.desired.revision)
+        );
+        assert!(recovered.last_known_good.is_some());
+        assert!(
+            !store
+                .program_root(&spec.id)
+                .join(super::CONFIGURATION_APPLY_MARKER)
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_state_save_uses_generation_compare_and_swap() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"log":{"loglevel":"info"}}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"log":{"loglevel":"info"}}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(1, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("initial state");
+        let mut next = state.clone();
+        next.generation = 2;
+        next.desired.revision.generation = 2;
+        store
+            .save_configuration_state(&spec.id, &next, Some(1))
+            .await
+            .expect("new generation");
+        let mut stale = state;
+        stale.generation = 3;
+        stale.desired.revision.generation = 3;
+        let error = store
+            .save_configuration_state(&spec.id, &stale, Some(1))
+            .await
+            .expect_err("stale generation must be rejected");
+        assert_eq!(error.code, ErrorCode::ConfigConflict);
+        assert_eq!(
+            store
+                .load_configuration_state(&spec.id)
+                .await
+                .expect("load")
+                .expect("state")
+                .generation,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_state_sidecar_round_trip_hydrates_and_compacts_state() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"old":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{"large":"value"}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, std::slice::from_ref(&snapshot))
+            .expect("merge");
+        let mut state = xray_state(1, merge);
+        state
+            .source_snapshots
+            .insert(snapshot.source_id.clone(), snapshot.clone());
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("save");
+        let state_path = store.configuration_state_path(&spec.id);
+        let persisted = std::fs::read_to_string(&state_path).expect("state file");
+        let persisted_value: serde_json::Value =
+            serde_json::from_str(&persisted).expect("persisted state json");
+        assert_eq!(
+            persisted_value["sourceSnapshots"]["source"]["content"],
+            serde_json::Value::String(String::new())
+        );
+        let loaded = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load")
+            .expect("state");
+        assert_eq!(loaded.source_snapshots["source"].content, snapshot.content);
+
+        let mut marker_state = state;
+        marker_state.generation = 2;
+        marker_state.desired.revision.generation = 2;
+        store
+            .begin_configuration_apply(&spec.id, &marker_state)
+            .await
+            .expect("marker");
+        let marker = std::fs::read_to_string(
+            store
+                .program_root(&spec.id)
+                .join(super::CONFIGURATION_APPLY_MARKER),
+        )
+        .expect("marker file");
+        let marker_value: serde_json::Value = serde_json::from_str(&marker).expect("marker json");
+        assert_eq!(
+            marker_value["state"]["sourceSnapshots"]["source"]["content"],
+            serde_json::Value::String(String::new())
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_draft_initial_revision_can_be_autosaved_once() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let draft = RawDraftSession {
+            session_id: "session".into(),
+            draft_revision: 1,
+            based_on_generation: 1,
+            base_content: "{}".into(),
+            user_content: "{}".into(),
+            working_content: "{}".into(),
+            conflicts: Vec::new(),
+            resolutions: BTreeMap::new(),
+            unresolved_conflict_ids: Vec::new(),
+            updated_unix_ms: 1,
+        };
+        store
+            .save_raw_draft(&spec.id, &draft, Some(0))
+            .await
+            .expect("initial autosave");
+        let second = store
+            .save_raw_draft(&spec.id, &draft, Some(0))
+            .await
+            .expect_err("repeated initial revision must conflict");
+        assert_eq!(second.code, ErrorCode::ConfigConflict);
+    }
+
+    #[tokio::test]
+    async fn source_transaction_recovery_restores_spec_and_state_before_commit() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(4, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "new source list".into();
+        store
+            .begin_configuration_source_update(&spec.id, &spec, &next_spec, state.generation)
+            .await
+            .expect("begin");
+        write_json_atomic(
+            &store.program_root(&spec.id).join("program.json"),
+            &next_spec,
+        )
+        .expect("simulate spec commit");
+        let mut changed = state.clone();
+        changed.generation = 5;
+        changed.desired.revision.generation = 5;
+        store
+            .save_configuration_state(&spec.id, &changed, None)
+            .await
+            .expect("simulate state write");
+
+        store.load_all().await.expect("recover");
+        assert_eq!(store.load_all().await.expect("load").valid[0].spec, spec);
+        assert_eq!(
+            store
+                .load_configuration_state(&spec.id)
+                .await
+                .expect("load state")
+                .expect("state")
+                .generation,
+            state.generation
+        );
+        assert!(
+            !store
+                .program_root(&spec.id)
+                .join(super::CONFIGURATION_SOURCE_TRANSACTION_MARKER)
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn source_transaction_recovery_keeps_the_committed_spec_and_state() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(7, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "committed source list".into();
+        store
+            .begin_configuration_source_update(&spec.id, &spec, &next_spec, state.generation)
+            .await
+            .expect("begin");
+        write_json_atomic(
+            &store.program_root(&spec.id).join("program.json"),
+            &next_spec,
+        )
+        .expect("simulate spec commit");
+        let mut changed = state;
+        changed.generation = 8;
+        changed.desired.revision.generation = 8;
+        store
+            .save_configuration_state(&spec.id, &changed, None)
+            .await
+            .expect("simulate state commit");
+        store
+            .mark_configuration_source_update_committed(&spec.id)
+            .await
+            .expect("mark committed");
+
+        let report = store.load_all().await.expect("recover");
+        assert_eq!(report.valid[0].spec, next_spec);
+        assert_eq!(
+            store
+                .load_configuration_state(&spec.id)
+                .await
+                .expect("load state")
+                .expect("state")
+                .generation,
+            8
+        );
+    }
+
+    #[tokio::test]
+    async fn source_transaction_rejects_stale_generation_before_writing_recovery_evidence() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(4, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "stale source update".into();
+
+        let error = store
+            .begin_configuration_source_update(&spec.id, &spec, &next_spec, 3)
+            .await
+            .expect_err("stale generation must not begin");
+
+        assert_eq!(error.code, ErrorCode::ConfigConflict);
+        let root = store.program_root(&spec.id);
+        assert!(
+            !root
+                .join(super::CONFIGURATION_SOURCE_TRANSACTION_MARKER)
+                .exists()
+        );
+        assert!(!root.join(super::CONFIGURATION_SOURCE_STATE_BACKUP).exists());
+    }
+
+    #[tokio::test]
+    async fn source_transaction_rollback_keeps_marker_when_state_backup_is_missing() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(4, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "source update with lost backup".into();
+        store
+            .begin_configuration_source_update(&spec.id, &spec, &next_spec, state.generation)
+            .await
+            .expect("begin");
+        let root = store.program_root(&spec.id);
+        std::fs::remove_file(root.join(super::CONFIGURATION_SOURCE_STATE_BACKUP))
+            .expect("remove backup to simulate storage failure");
+
+        let error = store
+            .rollback_configuration_source_update(&spec.id)
+            .await
+            .expect_err("missing backup must block rollback");
+
+        assert_eq!(error.code, ErrorCode::Storage);
+        assert!(
+            root.join(super::CONFIGURATION_SOURCE_TRANSACTION_MARKER)
+                .exists()
+        );
+        assert_eq!(
+            store.load_all().await.expect("load report").invalid.len(),
+            1
+        );
+        assert!(
+            root.join(super::CONFIGURATION_SOURCE_TRANSACTION_MARKER)
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_raw_desired_persists_without_replacing_applied_or_lkg() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"valid":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"valid":true}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let mut state = xray_state(1, merge);
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        state.mark_applied().expect("initial apply");
+        let applied = state.applied.clone();
+        state.generation = 2;
+        state.desired = ConfigurationCandidate {
+            revision: ConfigurationRevision::new(2, "not-json", 2),
+            content: "not-json".into(),
+            compatibility_profile_hash: state.compatibility_profile.profile_hash.clone(),
+            validation: CandidateValidationStatus::Invalid,
+            validation_evidence: None,
+            diagnostics: vec![ConfigurationDiagnostic {
+                code: "RAW_PARSE_FAILED".into(),
+                message: "Configuration is not valid JSON".into(),
+                details: None,
+            }],
+            conflicts: Vec::new(),
+        };
+
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("persist invalid desired");
+
+        let recovered = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load state")
+            .expect("state");
+        assert_eq!(
+            recovered.desired.validation,
+            CandidateValidationStatus::Invalid
+        );
+        assert_eq!(recovered.desired.content, "not-json");
+        assert_eq!(recovered.desired.diagnostics[0].code, "RAW_PARSE_FAILED");
+        assert_eq!(recovered.applied, applied);
+        assert_eq!(recovered.last_known_good, applied);
+    }
+
+    #[tokio::test]
+    async fn configuration_apply_recovery_preserves_a_newer_desired_generation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"old":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"new":true}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let mut applying = xray_state(2, merge);
+        applying
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&applying)))
+            .expect("validation");
+        store
+            .begin_configuration_apply(&spec.id, &applying)
+            .await
+            .expect("begin apply");
+        std::fs::write(
+            store.config_path(&spec).expect("config path"),
+            applying.desired.content.as_bytes(),
+        )
+        .expect("simulate active commit");
+
+        let applied_revision = applying.desired.revision.clone();
+        let mut newer = applying;
+        newer
+            .guided_intent
+            .set("logging.level", serde_json::Value::String("debug".into()));
+        newer.rebuild_desired(2).expect("newer desired");
+        let newer_revision = newer.desired.revision.clone();
+        store
+            .save_configuration_state(&spec.id, &newer, None)
+            .await
+            .expect("external newer state");
+
+        store.recover(&spec).await.expect("recover apply");
+
+        let recovered = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load state")
+            .expect("recovered state");
+        assert_eq!(recovered.generation, newer_revision.generation);
+        assert_eq!(recovered.desired.revision, newer_revision);
+        assert_eq!(
+            recovered
+                .applied
+                .as_ref()
+                .map(|candidate| &candidate.revision),
+            Some(&applied_revision)
+        );
+        assert_eq!(
+            recovered
+                .last_known_good
+                .as_ref()
+                .map(|candidate| &candidate.revision),
+            Some(&applied_revision)
         );
     }
 
@@ -2381,7 +3820,6 @@ mod tests {
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2420,6 +3858,7 @@ mod tests {
         let mut spec = generic_spec();
         spec.executable = ExecutableSpec::Managed {
             path: PathBuf::from("bin/tool"),
+            compatibility: Default::default(),
             metadata: None,
         };
         store

@@ -16,7 +16,10 @@ impl ProgramAdapter for GenericAdapter {
     }
 
     fn verify_probe(&self, _outputs: &[CommandOutput]) -> Result<DetectedBinary> {
-        Ok(DetectedBinary { version: None })
+        Ok(DetectedBinary {
+            probe: None,
+            core_target: None,
+        })
     }
 
     fn launch_plan(&self, spec: &ProgramSpec, workspace: &Path) -> Result<LaunchPlan> {
@@ -75,6 +78,7 @@ mod tests {
             name: "Generic".into(),
             executable: crate::ExecutableSpec::External {
                 path: "/tools/program/program".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic {

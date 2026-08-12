@@ -74,6 +74,18 @@ async function openProgramConfiguration(page: Page, programId: string) {
   return editor;
 }
 
+async function openProgramDetails(page: Page, programId: string) {
+  const program = page.locator(`.program-item[data-program-id="${programId}"]`);
+  if (!await program.isVisible()) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+  }
+  await program.click();
+  await page.getByRole('tab', { name: 'Details' }).click();
+  const panel = page.locator('#program-panel-overview');
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
 async function replaceEditorContent(page: Page, editor: Locator, content: string) {
   await editor.focus();
   await page.keyboard.press('ControlOrMeta+A');
@@ -2754,6 +2766,207 @@ test('the configuration editor has a localized name, description and visible foc
   await expect(page.locator(`#${localizedDescriptionId}`)).toContainText(
     '编辑程序配置',
   );
+});
+
+test('catalogued Core releases expose distinct reviewed feature surfaces', async ({ page }, testInfo) => {
+  const scenarios = [
+    {
+      query: '&__ui_core_target=release-xray',
+      programId: 'xray-primary',
+      target: 'Xray v26.3.27',
+      coordinate: 'v26.3.27 · d2758a023cd7',
+      counts: ['4 supported', '1 unknown · 1 unsupported'],
+    },
+    {
+      query: '&__ui_core_target=release-mihomo',
+      programId: 'mihomo-alpha',
+      target: 'Mihomo Meta v1.19.29',
+      coordinate: 'v1.19.29 · e26714a181ac',
+      counts: ['5 supported', '1 unknown · 0 unsupported'],
+    },
+    {
+      query: '&__ui_core_target=release-singbox',
+      programId: 'sing-box-edge',
+      target: 'sing-box version 1.13.18',
+      coordinate: 'v1.13.18 · 45ca32dcb966',
+      counts: ['5 supported', '1 unknown · 0 unsupported'],
+    },
+    {
+      query: '&__ui_core_target=release-singbox-new',
+      programId: 'sing-box-edge',
+      target: 'sing-box version 1.14.0-beta.2',
+      coordinate: 'v1.14.0-beta.2 · 03c3bf4c01e7',
+      counts: ['6 supported', '0 unknown · 0 unsupported'],
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await page.setViewportSize({ width: index % 2 === 0 ? 1180 : 720, height: 860 });
+    await openPreview(page, index % 2 === 0 ? 'cupertino' : 'aurora', index % 2 === 0 ? 'light' : 'dark', 1.05, scenario.query);
+    const panel = await openProgramDetails(page, scenario.programId);
+    const card = panel.locator('.compatibility-card');
+    await expect(card.getByText(scenario.target, { exact: true }).first()).toBeVisible();
+    await expect(card.getByText(scenario.coordinate, { exact: true })).toBeVisible();
+    await expect(card.getByText(scenario.counts[0], { exact: true })).toBeVisible();
+    await expect(card.getByText(scenario.counts[1], { exact: true })).toBeVisible();
+    await expect(card.getByText('Accepted for this candidate', { exact: true })).toBeVisible();
+    await expectNoViewportOverflow(page);
+    await expectAccessible(page, '.compatibility-card');
+    await card.screenshot({ path: testInfo.outputPath(`core-release-${index + 1}.png`) });
+  }
+});
+
+test('future Core versions and stale validation evidence stay explicit at compact width', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 680, height: 720 });
+  await openPreview(
+    page,
+    'material',
+    'dark',
+    1.3,
+    '&__ui_core_target=future&__ui_core_evidence=stale&__ui_config_source=stale',
+  );
+  const panel = await openProgramDetails(page, 'xray-primary');
+  const card = panel.locator('.compatibility-card');
+  await expect(card.getByText('Xray version 99.0.0', { exact: true }).first()).toBeVisible();
+  await expect(card.getByText('99.0.0 · futureVersion', { exact: true })).toBeVisible();
+  await expect(card.getByText('Validation required', { exact: true })).toBeVisible();
+  await expect(card.getByText(
+    'This reported version is newer than the local compatibility catalog. Features remain attemptable and require validation by the exact binary',
+    { exact: true },
+  )).toBeVisible();
+  await expect(card.getByText(
+    'Native validation evidence is missing or stale. Validate this candidate again before activation',
+    { exact: true },
+  )).toBeVisible();
+
+  await openProgramConfiguration(page, 'xray-primary');
+  const guided = page.locator('.guided-workspace');
+  await expect(guided.getByText('Pending validation', { exact: true })).toBeVisible();
+  const source = guided.locator('.source-statuses span').filter({ hasText: 'Production routing' });
+  await expect(source).toContainText('stale');
+  await expect(source).toHaveClass(/warning/);
+  await expect(source).toHaveAttribute('title', 'Latest read failed; using the last parsed snapshot.');
+  await expect(guided.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-configuration');
+  await page.screenshot({ path: testInfo.outputPath('core-future-stale-evidence-compact.png'), fullPage: true });
+});
+
+test('invalid and unavailable sources retain visible recovery diagnostics', async ({ page }, testInfo) => {
+  const scenarios = [
+    {
+      mode: 'invalid',
+      status: 'invalid',
+      code: 'SOURCE_INVALID',
+      message: 'The latest source content is invalid; Applied and Last Known Good were retained.',
+    },
+    {
+      mode: 'unavailable',
+      status: 'unavailable',
+      code: 'SOURCE_UNAVAILABLE',
+      message: 'No parsed snapshot is available for this source.',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await page.setViewportSize({ width: 760, height: 760 });
+    await openPreview(page, 'aurora', 'light', 1.15, `&__ui_config_source=${scenario.mode}`);
+    await openProgramConfiguration(page, 'xray-primary');
+    const guided = page.locator('.guided-workspace');
+    await expect(guided.getByText('Needs attention', { exact: true })).toBeVisible();
+    const source = guided.locator('.source-statuses span').filter({ hasText: 'Production routing' });
+    await expect(source).toContainText(scenario.status);
+    await expect(source).toHaveClass(/problem/);
+    await expect(guided.getByText(scenario.code, { exact: true })).toBeVisible();
+    await expect(
+      guided.locator('.guided-diagnostics span').filter({ hasText: scenario.code }),
+    ).toContainText(scenario.message);
+    await expectNoViewportOverflow(page);
+    await expectAccessible(page, '#program-panel-configuration');
+    await page.screenshot({ path: testInfo.outputPath(`configuration-source-${scenario.mode}.png`), fullPage: true });
+  }
+});
+
+test('invalid compatibility preferences fail before persistence and do not start a stopped program', async ({ page }) => {
+  await page.setViewportSize({ width: 1040, height: 820 });
+  await openPreview(page);
+  const panel = await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
+
+  const baseline = panel.getByLabel('Compatibility baseline');
+  await expect(baseline).toBeEnabled();
+  await baseline.selectOption('release');
+  await expect(panel.getByLabel('Exact release tag')).toHaveValue('');
+  await panel.locator('.change-notice .primary').click();
+  await expect(panel).toContainText('Select an exact catalogued release before saving');
+  await expect(panel.getByLabel('Compatibility baseline')).toHaveValue('release');
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0);
+});
+
+test('Raw conflict markers resolve inline and stay coherent across editor undo and redo', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1180, height: 860 });
+  await openPreview(page, 'material', 'dark', 1.05, '&__ui_raw_conflict');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  const shell = page.locator('.code-editor-shell');
+  const panel = page.locator('.raw-conflict-panel');
+  const widget = shell.locator('.cm-configuration-conflict-widget');
+
+  await expect(panel.getByRole('heading', { name: '1 blocking conflicts' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: /\/route\/final/ })).toBeVisible();
+  await expect(shell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
+    .toHaveCount(1);
+  await expect(widget).toContainText('Conflict: /route/final');
+  await expect(widget.getByRole('button', { name: 'Keep Mine', exact: true })).toBeVisible();
+  await expect(widget.getByRole('button', { name: 'Use Updated', exact: true })).toBeVisible();
+  await expect(editor).toContainText('mine-route');
+  await expectAccessible(page, '.code-editor-shell');
+
+  await widget.getByRole('button', { name: 'Use Updated', exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(editor).toContainText('source-route');
+  const undo = shell.getByRole('button', { name: 'Undo', exact: true });
+  const redo = shell.getByRole('button', { name: 'Redo', exact: true });
+  await expect(undo).toBeEnabled();
+
+  await undo.click();
+  await expect(editor).toContainText('mine-route');
+  await expect(panel.getByRole('heading', { name: '1 blocking conflicts' })).toBeVisible();
+  await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(1);
+
+  await expect(redo).toBeEnabled();
+  await redo.click();
+  await expect(editor).toContainText('source-route');
+  await expect(panel).toHaveCount(0);
+  await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(0);
+  await shell.screenshot({ path: testInfo.outputPath('configuration-raw-conflict-inline.png') });
+});
+
+test('automatic source updates refresh Desired content, Guided projection and Source status together', async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 860 });
+  await openPreview(page);
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await expect(page.getByLabel('Log level')).toHaveValue('warning');
+  await expect(page.getByText('Production routing · fresh', { exact: true })).toBeVisible();
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', {
+      detail: { programId: 'xray-primary' },
+    }));
+  });
+
+  await expect(page.getByLabel('Log level')).toHaveValue('debug');
+  await expect(
+    page.getByText('Automatically refreshed source · fresh', { exact: true }),
+  ).toBeVisible();
+  await expect(editor.locator('.cm-line')).toHaveText([
+    '{',
+    '  "log": { "loglevel": "debug" },',
+    '  "automatic": true',
+    '}',
+    '',
+  ]);
 });
 
 test('the JSON configuration editor supports diagnostics, formatting and command shortcuts', async ({ page }, testInfo) => {

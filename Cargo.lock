@@ -515,6 +515,7 @@ name = "camellia-nexus-core"
 version = "1.0.6"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "semver",
  "serde",
  "serde_json",
@@ -524,6 +525,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

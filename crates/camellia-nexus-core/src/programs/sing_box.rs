@@ -1,13 +1,12 @@
 use std::path::Path;
 
-use semver::Version;
-
 use crate::{
     ActionContext, ActionDescriptor, ActionPlan, CamelliaNexusError, CommandOutput, CommandPlan,
     ConfigurationSchemaDescriptor, ConfigurationSchemaPlan, ConfigurationSchemaSource,
-    DetectedBinary, EditorDescriptor, EditorLanguage, ErrorCode, JsonSchemaDialect, LaunchPlan,
-    MAX_CONFIGURATION_SCHEMA_BYTES, PrivilegeAssessmentContext, PrivilegeConfigInput,
-    PrivilegeReason, ProgramSpec, ProgramState, ProgramType, Result,
+    CoreCompatibilityProfile, CoreFeatureAvailability, DetectedBinary, EditorDescriptor,
+    EditorLanguage, ErrorCode, JsonSchemaDialect, LaunchPlan, MAX_CONFIGURATION_SCHEMA_BYTES,
+    PrivilegeAssessmentContext, PrivilegeConfigInput, PrivilegeReason, ProgramSpec, ProgramState,
+    ProgramType, Result,
 };
 
 use super::{
@@ -23,6 +22,7 @@ impl ProgramAdapter for SingBoxAdapter {
             vec!["version".into()],
             vec!["check".into(), "--help".into()],
             vec!["format".into(), "--help".into()],
+            vec!["schema".into(), "--help".into()],
         ]
         .into_iter()
         .map(|args| {
@@ -33,7 +33,7 @@ impl ProgramAdapter for SingBoxAdapter {
     }
 
     fn verify_probe(&self, outputs: &[CommandOutput]) -> Result<DetectedBinary> {
-        if outputs.len() != 3 || outputs.iter().any(|output| !output.success) {
+        if outputs.len() != 4 || outputs[..3].iter().any(|output| !output.success) {
             return Err(unsupported("sing-box probe command failed"));
         }
         let version_text = combined(&outputs[0]).to_ascii_lowercase();
@@ -46,17 +46,32 @@ impl ProgramAdapter for SingBoxAdapter {
         {
             return Err(unsupported("sing-box CLI capabilities are unsupported"));
         }
+        let mut probe =
+            crate::CoreProbeReport::from_reported_version(first_non_empty_line(&outputs[0]));
+        probe.cli_observations = vec![
+            crate::CoreCliObservation {
+                id: "core.cli.nativeValidation".into(),
+                available: true,
+            },
+            crate::CoreCliObservation {
+                id: "core.cli.generatedSchema".into(),
+                available: outputs[3].success,
+            },
+        ];
+        let core_target = crate::embedded_core_compatibility_catalog()?.resolve_target(
+            crate::ProgramKind::SingBox,
+            &probe,
+            &crate::CoreCompatibilityPreference::Automatic,
+            None,
+        )?;
         Ok(DetectedBinary {
-            version: first_non_empty_line(&outputs[0]),
+            probe: Some(probe),
+            core_target: Some(core_target),
         })
     }
 
     fn launch_plan(&self, spec: &ProgramSpec, workspace: &Path) -> Result<LaunchPlan> {
-        let ProgramType::SingBox {
-            main_config,
-            extra_args,
-        } = &spec.program_type
-        else {
+        let ProgramType::SingBox { extra_args } = &spec.program_type else {
             return Err(CamelliaNexusError::invalid_spec(
                 "SingBox adapter received a different program kind",
             ));
@@ -72,20 +87,24 @@ impl ProgramAdapter for SingBoxAdapter {
             ]);
         }
         args.extend(extra_args.iter().cloned());
-        if let Some(main_config) = main_config {
-            args.extend([
-                "-c".into(),
-                workspace.join(main_config).to_string_lossy().into_owned(),
-            ]);
-        }
+        args.extend([
+            "-c".into(),
+            workspace
+                .join(
+                    spec.program_type
+                        .main_config()
+                        .expect("supported Core config"),
+                )
+                .to_string_lossy()
+                .into_owned(),
+        ]);
         Ok(base_launch_plan(spec, workspace, args, self))
     }
 
     fn editor(&self, spec: &ProgramSpec) -> Option<EditorDescriptor> {
-        let ProgramType::SingBox { main_config, .. } = &spec.program_type else {
+        let ProgramType::SingBox { .. } = &spec.program_type else {
             return None;
         };
-        main_config.as_ref()?;
         Some(EditorDescriptor {
             language: EditorLanguage::Jsonc,
             documentation_url: "https://sing-box.sagernet.org/configuration/".into(),
@@ -199,15 +218,24 @@ impl ProgramAdapter for SingBoxAdapter {
 }
 
 fn sing_box_schema_supported(spec: &ProgramSpec) -> bool {
-    let Some(version) = spec
-        .executable
-        .metadata()
-        .and_then(|metadata| metadata.detected_version.as_deref())
-        .and_then(parse_sing_box_version)
-    else {
+    let Some(metadata) = spec.executable.metadata() else {
         return false;
     };
-    version >= Version::parse("1.14.0-beta.2").expect("valid schema feature version")
+    if metadata
+        .probe
+        .as_ref()
+        .and_then(|probe| probe.observes("core.cli.generatedSchema"))
+        == Some(true)
+    {
+        return true;
+    }
+    metadata.core_target.as_ref().is_some_and(|target| {
+        CoreCompatibilityProfile::resolve(target).is_ok_and(|profile| {
+            profile
+                .decision("core.cli.generatedSchema")
+                .is_some_and(|decision| decision.availability == CoreFeatureAvailability::Supported)
+        })
+    })
 }
 
 fn sing_box_schema_descriptor(spec: &ProgramSpec) -> Option<ConfigurationSchemaDescriptor> {
@@ -215,12 +243,6 @@ fn sing_box_schema_descriptor(spec: &ProgramSpec) -> Option<ConfigurationSchemaD
         source: ConfigurationSchemaSource::ProgramBinary,
         dialect: JsonSchemaDialect::Draft202012,
     })
-}
-
-fn parse_sing_box_version(value: &str) -> Option<Version> {
-    value
-        .split_whitespace()
-        .find_map(|part| Version::parse(part.trim_start_matches('v')).ok())
 }
 
 fn unsupported(details: &str) -> CamelliaNexusError {
@@ -304,12 +326,10 @@ mod tests {
             name: "sing-box".into(),
             executable: crate::ExecutableSpec::Managed {
                 path: "bin/sing-box".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
-            program_type: ProgramType::SingBox {
-                main_config: Some("config/managed.json".into()),
-                extra_args,
-            },
+            program_type: ProgramType::SingBox { extra_args },
             managed_config: None,
             working_directory: "bin".into(),
             environment: BTreeMap::new(),
@@ -321,10 +341,26 @@ mod tests {
 
     fn spec_with_version(version: &str) -> ProgramSpec {
         let mut spec = spec(Vec::new());
+        let probe = crate::CoreProbeReport::from_reported_version(Some(format!(
+            "sing-box version {version}"
+        )));
+        let target = crate::embedded_core_compatibility_catalog()
+            .unwrap()
+            .resolve_target(
+                crate::ProgramKind::SingBox,
+                &probe,
+                &crate::CoreCompatibilityPreference::Automatic,
+                Some("a".repeat(64)),
+            )
+            .unwrap();
         spec.executable.set_metadata(crate::ExecutableMetadata {
-            size: 1,
-            modified_unix_ms: 1,
-            detected_version: Some(format!("sing-box version {version}")),
+            fingerprint: crate::CoreBinaryFingerprint {
+                sha256: "a".repeat(64),
+                size: 1,
+                modified_unix_ms: 1,
+            },
+            probe: Some(probe),
+            core_target: Some(target),
         });
         spec
     }
@@ -341,8 +377,22 @@ mod tests {
             output("sing-box version 1.12.0"),
             output("-c --config -D --directory"),
             output("-w -c --config"),
+            CommandOutput {
+                code: Some(1),
+                success: false,
+                stdout: String::new(),
+                stderr: "unknown command schema".into(),
+            },
         ]);
-        assert!(result.is_ok());
+        let detected = result.expect("probe");
+        assert_eq!(
+            detected.probe.unwrap().normalized_version.as_deref(),
+            Some("1.12.0")
+        );
+        assert_eq!(
+            detected.core_target.unwrap().basis,
+            crate::CoreCompatibilityBasis::BinaryReported
+        );
     }
 
     #[test]
@@ -377,33 +427,29 @@ mod tests {
         );
         assert!(
             SingBoxAdapter
-                .configuration_schema_plan(&spec_with_version("1.14.0-rc.1"), workspace)
+                .configuration_schema_plan(&spec_with_version("1.14.0-beta.14"), workspace)
                 .is_some()
         );
         assert!(
             SingBoxAdapter
-                .configuration_schema_plan(&spec_with_version("1.14.0"), workspace)
+                .configuration_schema_plan(&spec_with_version("1.14.0-rc.1"), workspace)
                 .is_some()
         );
     }
 
     #[test]
-    fn stored_config_is_merged_after_explicit_config() {
+    fn launch_uses_the_single_client_owned_active_config() {
         let plan = SingBoxAdapter
-            .launch_plan(
-                &spec(vec!["--config".into(), "custom.json".into()]),
-                Path::new("workspace"),
-            )
+            .launch_plan(&spec(Vec::new()), Path::new("workspace"))
             .expect("plan");
-        assert!(plan.args.iter().any(|argument| argument == "custom.json"));
         assert!(
             plan.args
                 .iter()
-                .any(|argument| Path::new(argument) == Path::new("workspace/config/managed.json"))
+                .any(|argument| Path::new(argument) == Path::new("workspace/config/active.json"))
         );
         assert_eq!(
             plan.args.last().map(Path::new),
-            Some(Path::new("workspace").join("config/managed.json").as_path())
+            Some(Path::new("workspace").join("config/active.json").as_path())
         );
     }
 
@@ -417,7 +463,7 @@ mod tests {
         assert!(
             plan.args
                 .iter()
-                .any(|argument| Path::new(argument) == workspace.join("config/managed.json"))
+                .any(|argument| Path::new(argument) == workspace.join("config/active.json"))
         );
         let directory_index = plan
             .args
@@ -431,26 +477,21 @@ mod tests {
     }
 
     #[test]
-    fn validation_uses_external_config_before_staged_override() {
+    fn validation_uses_only_the_staged_candidate() {
         let context = ActionContext {
-            spec: spec(vec!["--config".into(), "external.json".into()]),
+            spec: spec(Vec::new()),
             workspace: "workspace".into(),
             staged_config: "workspace/config/staged.json".into(),
         };
         let plan = SingBoxAdapter
             .validate_plan(&context)
             .expect("validation plan");
-        let external = plan
-            .args
-            .iter()
-            .position(|argument| argument == "external.json")
-            .expect("external config");
         let staged = plan
             .args
             .iter()
             .position(|argument| Path::new(argument) == context.staged_config)
             .expect("staged config");
-        assert!(external < staged);
+        assert_eq!(plan.args[staged.saturating_sub(1)], "-c");
     }
 
     #[test]
@@ -487,9 +528,10 @@ mod tests {
 
     #[test]
     fn optional_run_subcommand_is_not_duplicated() {
-        let mut external = spec(vec!["run".into(), "-c".into(), "config.json".into()]);
+        let mut external = spec(vec!["run".into()]);
         external.executable = crate::ExecutableSpec::External {
             path: "/tools/sing-box/sing-box".into(),
+            compatibility: Default::default(),
             metadata: None,
         };
         external.working_directory = "/tools/sing-box".into();
@@ -499,13 +541,10 @@ mod tests {
             .expect("plan");
 
         assert_eq!(plan.cwd, Path::new("/tools/sing-box"));
-        assert_eq!(
-            &plan.args[..6],
-            ["run", "-D", "/tools/sing-box", "-c", "config.json", "-c"]
-        );
+        assert_eq!(&plan.args[..4], ["run", "-D", "/tools/sing-box", "-c"]);
         assert_eq!(
             plan.args.last().map(Path::new),
-            Some(Path::new("workspace/config/managed.json"))
+            Some(Path::new("workspace/config/active.json"))
         );
     }
 }

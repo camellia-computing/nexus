@@ -28,6 +28,46 @@ known layout-sensitive theme matrix in one worker so resource contention cannot 
 常规浏览器套件继续并行执行；`pnpm --dir ui test:e2e:stability` 另以单 worker 重复已知资源敏感的
 主题布局矩阵，避免资源竞争掩盖真实竞态。
 
+## Upstream Core compatibility matrix / 上游 Core 兼容矩阵
+
+Xray, Mihomo, and sing-box each have two independent moving selectors defined by
+[`core-upstream-versions.json`](../crates/camellia-nexus-core/core-upstream-versions.json): the exact
+head of the configured development branch and the exact commit behind GitHub's latest stable Release.
+[`core-compatibility-catalog.json`](../crates/camellia-nexus-core/core-compatibility-catalog.json)
+separately indexes official releases/prereleases and reviewed feature anchors. Tests must cover the
+moving targets, introduction/removal boundary versions, a known release commit, an arbitrary Unknown
+commit, and a binary-reported version without claiming official origin.
+
+Xray、Mihomo 与 sing-box 各有两个由
+[`core-upstream-versions.json`](../crates/camellia-nexus-core/core-upstream-versions.json) 定义的独立
+动态选择器：配置的开发分支精确头提交，以及 GitHub 最新稳定 Release 背后的精确 commit。
+[`core-compatibility-catalog.json`](../crates/camellia-nexus-core/core-compatibility-catalog.json)
+另行索引官方正式版/预发布版及已审查功能锚点。测试必须覆盖动态目标、功能加入/移除边界版本、已知
+Release commit、任意 Unknown commit，以及“不声明官方来源”的 binary-reported version。
+
+`python3 scripts/check-core-upstreams.py` validates the committed manifest deterministically. The
+explicit `--live` form compares all six moving selectors with GitHub and is required during upstream
+maintenance. Live movement is a review trigger, not permission to rewrite pins automatically. The
+review and evidence rules are defined in
+[`docs/core-upstream-tracking.md`](core-upstream-tracking.md).
+
+`python3 scripts/check-core-upstreams.py` 以确定性方式校验已提交清单；显式 `--live` 会把六个动态
+选择器与 GitHub 当前状态比较，是上游维护时的必需检查。上游移动只表示需要审查，不授权自动改写
+pin。完整审查和证据规则见 [`docs/core-upstream-tracking.md`](core-upstream-tracking.md)。
+
+Where reproducible binaries exist, native compatibility runs each exact target through streaming
+fingerprint, probe report, target/profile resolution, launch/help contract, representative native
+validation, schema generation when declared, and share translation. Evidence must prove that changing
+the binary, profile, or candidate hash invalidates acceptance; target changes must reparse/rebase and
+preserve Applied/LKG on failure. Missing local binaries are absent evidence, never a ProgramKind-only
+fixture pretending to prove a specific SHA.
+
+存在可复现二进制时，原生兼容测试要让每个精确目标依次经过流式 fingerprint、probe report、
+target/profile 解析、launch/help 契约、代表性 native validation、声明支持时的 Schema 生成及分享转换。
+证据必须证明 binary/profile/candidate 任一 hash 变化都会使 acceptance 失效，且 target 变化会重解析/
+重放并在失败时保留 Applied/LKG。本地缺少二进制时必须明确记录证据缺失，不能把 ProgramKind-only
+fixture 冒充某个精确 SHA 的证明。
+
 ## Hosted native workflow / 托管原生工作流
 
 `.github/workflows/native-e2e.yml` is the reusable cross-repository workflow:

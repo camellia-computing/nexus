@@ -1,12 +1,15 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
+#[cfg(test)]
+use camellia_nexus_core::ProgramKind;
 use camellia_nexus_core::{
-    CamelliaNexusError, ConfigSourceAuthentication, ConfigSourceSpec, ErrorCode, MAX_CONFIG_BYTES,
-    ManagedConfigSpec, ProgramKind, ProgramSpec, Result,
+    CamelliaNexusError, ConfigSourceAuthentication, ConfigSourceSpec, ConfigurationFormat,
+    CoreTargetIdentity, ErrorCode, MAX_CONFIG_BYTES, PayloadKind, ProgramSpec, Result,
+    SourceFreshness, SourceSnapshot, SourceStatus, merge_configuration_sources,
+    normalize_share_input,
 };
 use reqwest::{Client, redirect::Policy};
 use serde_json::{Map, Value};
-use serde_yaml_ng::{Mapping as YamlMapping, Value as YamlValue};
 use tokio::io::AsyncReadExt;
 
 const MAX_SOURCE_BYTES: usize = MAX_CONFIG_BYTES;
@@ -16,18 +19,29 @@ const MAX_SOURCE_REDIRECTS: usize = 5;
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(25);
 
 struct ResolvedSource {
+    id: String,
     name: String,
     content: Vec<u8>,
     append_xray_outbounds: bool,
 }
 
+pub struct SourceRefreshResult {
+    pub snapshots: Vec<SourceSnapshot>,
+    pub statuses: BTreeMap<String, SourceStatus>,
+    pub unavailable: bool,
+    pub raw_observations: BTreeMap<String, Vec<u8>>,
+}
+
+pub struct MaterializedConfiguration {
+    pub content: String,
+    pub observations: SourceRefreshResult,
+}
+
 pub async fn materialize(
     spec: &ProgramSpec,
-    fallback: Option<String>,
-    require_sources: bool,
     local_base: Option<&Path>,
     credentials: &crate::config_credentials::CredentialSnapshot,
-) -> Result<String> {
+) -> Result<MaterializedConfiguration> {
     let managed = spec.managed_config.as_ref().ok_or_else(|| {
         CamelliaNexusError::new(
             ErrorCode::InvalidState,
@@ -39,99 +53,262 @@ pub async fn materialize(
         .iter()
         .filter(|source| source.enabled())
         .collect();
-    let mut content = if enabled.is_empty() {
-        if require_sources {
-            return Err(CamelliaNexusError::invalid_spec(
-                "Enable at least one configuration source before updating",
-            ));
-        }
-        fallback.unwrap_or_else(|| "{}".into())
-    } else {
-        let sources = resolve_sources(&enabled, local_base, credentials).await?;
-        merge_sources(spec.program_type.kind(), &sources)?
-    };
-    content = apply_managed_features(spec, content)?;
+    if enabled.is_empty() {
+        return Err(CamelliaNexusError::invalid_spec(
+            "Enable at least one configuration source before updating",
+        ));
+    }
+    let sources = resolve_sources(&enabled, local_base, credentials).await?;
+    let observed_unix_ms = now_unix_ms();
+    let target = spec.core_target_identity().ok_or_else(|| {
+        CamelliaNexusError::new(
+            ErrorCode::InvalidState,
+            "Managed configuration requires a supported Core version target",
+        )
+    })?;
+    let snapshots = parse_sources(&target, &sources, observed_unix_ms)?;
+    let raw_observations = sources
+        .iter()
+        .map(|source| (source.id.clone(), source.content.clone()))
+        .collect();
+    let content = merge_configuration_sources(spec.program_type.kind(), &snapshots)?.content;
     if content.len() > MAX_CONFIG_BYTES {
         return Err(CamelliaNexusError::invalid_spec(
             "Merged configuration exceeds the 4 MiB limit",
         ));
     }
-    Ok(content)
+    let snapshots_by_id = snapshots
+        .iter()
+        .map(|snapshot| (snapshot.source_id.as_str(), snapshot))
+        .collect::<BTreeMap<_, _>>();
+    let statuses = managed
+        .sources
+        .iter()
+        .map(|source| {
+            let snapshot = snapshots_by_id.get(source.id()).copied();
+            let freshness = if source.enabled() {
+                SourceFreshness::Fresh
+            } else {
+                SourceFreshness::Disabled
+            };
+            (
+                source.id().to_owned(),
+                SourceStatus {
+                    source_id: source.id().to_owned(),
+                    source_name: source.name().to_owned(),
+                    freshness,
+                    observed_hash: snapshot.map(|snapshot| snapshot.content_hash.clone()),
+                    snapshot_hash: snapshot.map(|snapshot| snapshot.content_hash.clone()),
+                    message: None,
+                    observed_unix_ms: snapshot.map(|_| observed_unix_ms),
+                },
+            )
+        })
+        .collect();
+    Ok(MaterializedConfiguration {
+        content,
+        observations: SourceRefreshResult {
+            snapshots,
+            statuses,
+            unavailable: false,
+            raw_observations,
+        },
+    })
 }
 
-pub fn apply_managed_features(spec: &ProgramSpec, content: String) -> Result<String> {
-    let Some(managed) = spec.managed_config.as_ref() else {
-        return Ok(content);
-    };
-    match spec.program_type.kind() {
-        ProgramKind::Mihomo => apply_mihomo_managed_features(managed, content),
-        ProgramKind::Generic | ProgramKind::SingBox | ProgramKind::Xray => {
-            apply_json_managed_features(spec.program_type.kind(), managed, content)
+pub async fn refresh_snapshots(
+    spec: &ProgramSpec,
+    local_base: Option<&Path>,
+    credentials: &crate::config_credentials::CredentialSnapshot,
+    previous: &BTreeMap<String, SourceSnapshot>,
+    observed_unix_ms: u64,
+) -> Result<SourceRefreshResult> {
+    let managed = spec.managed_config.as_ref().ok_or_else(|| {
+        CamelliaNexusError::new(
+            ErrorCode::InvalidState,
+            "Managed configuration is not enabled",
+        )
+    })?;
+    let enabled = managed
+        .sources
+        .iter()
+        .filter(|source| source.enabled())
+        .collect::<Vec<_>>();
+    if enabled.is_empty() {
+        return Ok(SourceRefreshResult {
+            snapshots: Vec::new(),
+            statuses: managed
+                .sources
+                .iter()
+                .map(|source| disabled_source_status(source, previous))
+                .collect(),
+            unavailable: false,
+            raw_observations: BTreeMap::new(),
+        });
+    }
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = Client::builder()
+        .https_only(true)
+        .redirect(remote_source_redirect_policy())
+        .timeout(SOURCE_TIMEOUT)
+        .user_agent(concat!("camellia-nexus/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(CamelliaNexusError::internal)?;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SOURCES));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, source) in enabled.iter().enumerate() {
+        let client = client.clone();
+        let semaphore = semaphore.clone();
+        let source = (*source).clone();
+        let local_base = local_base.map(Path::to_path_buf);
+        let credentials = credentials.clone();
+        tasks.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(CamelliaNexusError::internal)?;
+            Ok::<_, CamelliaNexusError>((
+                index,
+                source.clone(),
+                resolve_source(&client, &source, local_base.as_deref(), &credentials).await,
+            ))
+        });
+    }
+    let mut ordered = std::iter::repeat_with(|| None)
+        .take(enabled.len())
+        .collect::<Vec<Option<(ConfigSourceSpec, Result<ResolvedSource>)>>>();
+    while let Some(task) = tasks.join_next().await {
+        let (index, source, result) = task.map_err(CamelliaNexusError::internal)??;
+        ordered[index] = Some((source, result));
+    }
+
+    let mut snapshots = Vec::with_capacity(ordered.len());
+    let mut statuses = BTreeMap::new();
+    let mut unavailable = false;
+    let mut raw_observations = BTreeMap::new();
+    let mut total = 0usize;
+    let target = spec.core_target_identity().ok_or_else(|| {
+        CamelliaNexusError::new(
+            ErrorCode::InvalidState,
+            "Managed configuration requires a supported Core version target",
+        )
+    })?;
+    for entry in ordered {
+        let (source, result) = entry.ok_or_else(|| {
+            CamelliaNexusError::new(ErrorCode::Internal, "Configuration source task was lost")
+        })?;
+        let id = source.id().to_owned();
+        let name = source.name().to_owned();
+        let mut raw_content = None;
+        let (parsed, failure_freshness, observed_hash) = match result {
+            Ok(resolved) => {
+                raw_content = Some(resolved.content.clone());
+                total = total.saturating_add(resolved.content.len());
+                let observed_hash = Some(camellia_nexus_core::config_service::hash_bytes(
+                    &resolved.content,
+                ));
+                let parsed = if total > MAX_TOTAL_SOURCE_BYTES {
+                    Err(CamelliaNexusError::invalid_spec(
+                        "Configuration sources exceed the 16 MiB aggregate limit",
+                    ))
+                } else {
+                    parse_source_snapshot(
+                        &target,
+                        resolved.id,
+                        resolved.name,
+                        &resolved.content,
+                        observed_unix_ms,
+                        resolved.append_xray_outbounds,
+                    )
+                };
+                (parsed, SourceFreshness::Invalid, observed_hash)
+            }
+            Err(error) => (Err(error), SourceFreshness::Unavailable, None),
+        };
+        match parsed {
+            Ok(snapshot) => {
+                if let Some(raw_content) = raw_content {
+                    raw_observations.insert(id.clone(), raw_content);
+                }
+                statuses.insert(
+                    id.clone(),
+                    SourceStatus {
+                        source_id: id,
+                        source_name: name,
+                        freshness: SourceFreshness::Fresh,
+                        observed_hash: Some(snapshot.content_hash.clone()),
+                        snapshot_hash: Some(snapshot.content_hash.clone()),
+                        message: None,
+                        observed_unix_ms: Some(observed_unix_ms),
+                    },
+                );
+                snapshots.push(snapshot);
+            }
+            Err(error) => {
+                if let Some(snapshot) = previous.get(&id).cloned() {
+                    statuses.insert(
+                        id.clone(),
+                        SourceStatus {
+                            source_id: id,
+                            source_name: name,
+                            freshness: SourceFreshness::Stale,
+                            observed_hash,
+                            snapshot_hash: Some(snapshot.content_hash.clone()),
+                            message: Some(error.to_string()),
+                            observed_unix_ms: Some(observed_unix_ms),
+                        },
+                    );
+                    snapshots.push(snapshot);
+                } else {
+                    unavailable = true;
+                    statuses.insert(
+                        id.clone(),
+                        SourceStatus {
+                            source_id: id,
+                            source_name: name,
+                            freshness: failure_freshness,
+                            observed_hash,
+                            snapshot_hash: None,
+                            message: Some(error.to_string()),
+                            observed_unix_ms: Some(observed_unix_ms),
+                        },
+                    );
+                }
+            }
         }
     }
+    for source in managed.sources.iter().filter(|source| !source.enabled()) {
+        let (source_id, status) = disabled_source_status(source, previous);
+        statuses.insert(source_id, status);
+    }
+    Ok(SourceRefreshResult {
+        snapshots,
+        statuses,
+        unavailable,
+        raw_observations,
+    })
 }
 
-fn apply_mihomo_managed_features(managed: &ManagedConfigSpec, content: String) -> Result<String> {
-    let has_sing_box_dashboard =
-        managed.sing_box_dashboard.is_some() || managed.sing_box_clash_dashboard.is_some();
-    let has_xray_dashboard = managed.xray_dashboard.is_some();
-    if has_sing_box_dashboard || has_xray_dashboard {
-        return Err(CamelliaNexusError::invalid_spec(
-            "Only the Mihomo Dashboard service is available for Mihomo",
-        ));
-    }
-    let mut root = parse_yaml_mapping("managed configuration", content.as_bytes())?;
-    if !crate::programs::mihomo::apply_features(&mut root, managed)? {
-        return Ok(content);
-    }
-    serialize_yaml(root)
-}
-
-fn apply_json_managed_features(
-    kind: ProgramKind,
-    managed: &ManagedConfigSpec,
-    content: String,
-) -> Result<String> {
-    let has_sing_box_dashboard =
-        managed.sing_box_dashboard.is_some() || managed.sing_box_clash_dashboard.is_some();
-    let has_xray_dashboard = managed.xray_dashboard.is_some();
-    let has_mihomo_dashboard = managed.mihomo_dashboard.is_some();
-    let mut root = parse_object("managed configuration", content.as_bytes())?;
-    let changed = match kind {
-        ProgramKind::SingBox => {
-            if has_xray_dashboard || has_mihomo_dashboard {
-                return Err(CamelliaNexusError::invalid_spec(
-                    "Only sing-box Dashboard services are available for sing-box",
-                ));
-            }
-            crate::programs::sing_box::apply_features(&mut root, managed)?
-        }
-        ProgramKind::Xray => {
-            if has_sing_box_dashboard || has_mihomo_dashboard {
-                return Err(CamelliaNexusError::invalid_spec(
-                    "Only the Xray Dashboard service is available for Xray",
-                ));
-            }
-            crate::programs::xray::apply_features(&mut root, managed)?
-        }
-        ProgramKind::Generic => {
-            if has_sing_box_dashboard || has_xray_dashboard || has_mihomo_dashboard {
-                return Err(CamelliaNexusError::invalid_spec(
-                    "Dashboard services are only available for supported program types",
-                ));
-            }
-            false
-        }
-        ProgramKind::Mihomo => {
-            return Err(CamelliaNexusError::invalid_spec(
-                "Mihomo managed configuration must use YAML",
-            ));
-        }
-    };
-    if !changed {
-        return Ok(content);
-    }
-    serde_json::to_string_pretty(&Value::Object(root)).map_err(Into::into)
+fn disabled_source_status(
+    source: &ConfigSourceSpec,
+    previous: &BTreeMap<String, SourceSnapshot>,
+) -> (String, SourceStatus) {
+    let source_id = source.id().to_owned();
+    (
+        source_id.clone(),
+        SourceStatus {
+            source_id,
+            source_name: source.name().to_owned(),
+            freshness: SourceFreshness::Disabled,
+            observed_hash: None,
+            snapshot_hash: previous
+                .get(source.id())
+                .map(|snapshot| snapshot.content_hash.clone()),
+            message: None,
+            observed_unix_ms: None,
+        },
+    )
 }
 
 async fn resolve_sources(
@@ -218,7 +395,10 @@ async fn resolve_source(
     local_base: Option<&Path>,
     credentials: &crate::config_credentials::CredentialSnapshot,
 ) -> Result<ResolvedSource> {
-    let (name, content, append_xray_outbounds) = match source {
+    let (id, name, content, append_xray_outbounds) = match source {
+        ConfigSourceSpec::Inline {
+            id, name, content, ..
+        } => (id.clone(), name.clone(), content.as_bytes().to_vec(), false),
         ConfigSourceSpec::Local { name, path, .. } => {
             let resolved_path = if path.is_absolute() {
                 path.clone()
@@ -237,8 +417,9 @@ async fn resolve_source(
                 .and_then(|value| value.to_str())
                 .unwrap_or("");
             (
+                source.id().to_owned(),
                 name.clone(),
-                read_local_source(&resolved_path)
+                read_local_source_stable(&resolved_path)
                     .await
                     .map_err(|error| annotate_source_error(name, error))?,
                 contains_tail_marker(file_name),
@@ -255,6 +436,7 @@ async fn resolve_source(
                 .map(|url| url.path().to_owned())
                 .unwrap_or_default();
             (
+                source.id().to_owned(),
                 name.clone(),
                 fetch_remote_source(client, url, authentication.as_ref(), credentials)
                     .await
@@ -264,6 +446,7 @@ async fn resolve_source(
         }
     };
     Ok(ResolvedSource {
+        id,
         name,
         content,
         append_xray_outbounds,
@@ -315,6 +498,44 @@ async fn read_local_source(path: &Path) -> Result<Vec<u8>> {
         ));
     }
     Ok(content)
+}
+
+async fn read_local_source_stable(path: &Path) -> Result<Vec<u8>> {
+    let mut last = None;
+    for attempt in 0..3 {
+        let before = tokio::fs::metadata(path)
+            .await
+            .ok()
+            .map(|metadata| (metadata.len(), metadata.modified().ok()));
+        let content = read_local_source(path).await?;
+        let after = tokio::fs::metadata(path)
+            .await
+            .ok()
+            .map(|metadata| (metadata.len(), metadata.modified().ok()));
+        if before == after {
+            if content.iter().all(u8::is_ascii_whitespace) {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Local configuration source is empty",
+                )
+                .with_details(path.display().to_string()));
+            }
+            return Ok(content);
+        }
+        last = Some(content);
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    Err(CamelliaNexusError::new(
+        ErrorCode::ConfigConflict,
+        "Local configuration source changed while it was being read",
+    )
+    .with_details(format!(
+        "{} (last observed {} bytes)",
+        path.display(),
+        last.as_ref().map_or(0, Vec::len)
+    )))
 }
 
 async fn fetch_remote_source(
@@ -393,69 +614,97 @@ async fn fetch_remote_source(
     Ok(content)
 }
 
-fn merge_sources(kind: ProgramKind, sources: &[ResolvedSource]) -> Result<String> {
-    match kind {
-        ProgramKind::Mihomo => merge_mihomo_sources(sources),
-        ProgramKind::SingBox | ProgramKind::Xray => merge_json_sources(kind, sources),
-        ProgramKind::Generic => Err(CamelliaNexusError::invalid_spec(
-            "Generic programs do not support managed configuration sources",
-        )),
-    }
+fn parse_sources(
+    target: &CoreTargetIdentity,
+    sources: &[ResolvedSource],
+    observed_unix_ms: u64,
+) -> Result<Vec<SourceSnapshot>> {
+    sources
+        .iter()
+        .map(|source| {
+            parse_source_snapshot(
+                target,
+                &source.id,
+                &source.name,
+                &source.content,
+                observed_unix_ms,
+                source.append_xray_outbounds,
+            )
+        })
+        .collect()
 }
 
-fn merge_mihomo_sources(sources: &[ResolvedSource]) -> Result<String> {
-    let mut merged = YamlMapping::new();
-    for source in sources {
-        let next = parse_yaml_mapping(&source.name, &source.content)?;
-        crate::programs::mihomo::merge_mapping(&mut merged, next);
-    }
-    serialize_yaml(merged)
-}
-
-fn merge_json_sources(kind: ProgramKind, sources: &[ResolvedSource]) -> Result<String> {
-    let mut merged = Map::new();
-    for source in sources {
-        let next = parse_object(&source.name, &source.content)?;
-        match kind {
-            ProgramKind::SingBox => crate::programs::sing_box::merge_object(&mut merged, next),
-            ProgramKind::Xray => {
-                crate::programs::xray::merge_object(&mut merged, next, source.append_xray_outbounds)
+fn parse_source_snapshot(
+    target: &CoreTargetIdentity,
+    source_id: impl Into<String>,
+    source_name: impl Into<String>,
+    content: &[u8],
+    parsed_unix_ms: u64,
+    append_xray_outbounds: bool,
+) -> Result<SourceSnapshot> {
+    let kind = target.program;
+    let source_id = source_id.into();
+    let source_name = source_name.into();
+    let normalized = normalize_share_input(content).ok();
+    if let Some(normalized) = normalized.as_ref()
+        && matches!(
+            normalized.payload,
+            PayloadKind::SingleShareLink | PayloadKind::ShareCollection
+        )
+    {
+        let source_log = source_id.clone();
+        let parsed =
+            SourceSnapshot::parse_share(source_id, source_name, target, content, parsed_unix_ms);
+        match &parsed {
+            Ok(snapshot) => {
+                if let Some(summary) = &snapshot.share_summary {
+                    tracing::info!(
+                        source = %snapshot.source_id,
+                        parser_revision = summary.parser_revision.as_str(),
+                        accepted = summary.accepted_items,
+                        rejected = summary.rejected_items,
+                        fidelity = ?summary.fidelity,
+                        "configuration share source parsed"
+                    );
+                }
             }
-            ProgramKind::Generic | ProgramKind::Mihomo => {
-                return Err(CamelliaNexusError::invalid_spec(
-                    "Program configuration format does not match JSON sources",
-                ));
+            Err(error) => {
+                tracing::warn!(
+                    source = %source_log,
+                    code = ?error.code,
+                    "configuration share source rejected"
+                );
             }
         }
+        return parsed;
     }
-    serde_json::to_string_pretty(&Value::Object(merged)).map_err(Into::into)
+    let native_content = if normalized
+        .as_ref()
+        .is_some_and(|value| !matches!(value.envelope, camellia_nexus_core::EnvelopeKind::Plain))
+    {
+        normalized.as_ref().expect("checked above").text.as_bytes()
+    } else {
+        content
+    };
+    SourceSnapshot::parse(
+        source_id,
+        source_name,
+        ConfigurationFormat::for_kind(kind).ok_or_else(|| {
+            CamelliaNexusError::invalid_spec(
+                "Generic programs do not support managed configuration sources",
+            )
+        })?,
+        native_content,
+        parsed_unix_ms,
+        append_xray_outbounds,
+    )
 }
 
-pub(crate) fn parse_yaml_mapping(name: &str, content: &[u8]) -> Result<YamlMapping> {
-    let value: YamlValue = serde_yaml_ng::from_slice(content).map_err(|error| {
-        CamelliaNexusError::new(
-            ErrorCode::ConfigInvalid,
-            "Configuration source is not valid YAML",
-        )
-        .with_details(format!("{name}: {error}"))
-    })?;
-    value.as_mapping().cloned().ok_or_else(|| {
-        CamelliaNexusError::new(
-            ErrorCode::ConfigInvalid,
-            "Configuration source root must be a mapping",
-        )
-        .with_details(name.to_owned())
-    })
-}
-
-fn serialize_yaml(mapping: YamlMapping) -> Result<String> {
-    serde_yaml_ng::to_string(&YamlValue::Mapping(mapping)).map_err(|error| {
-        CamelliaNexusError::new(
-            ErrorCode::Internal,
-            "Failed to serialize YAML configuration",
-        )
-        .with_details(error.to_string())
-    })
+#[cfg(test)]
+fn merge_sources(kind: ProgramKind, sources: &[ResolvedSource]) -> Result<String> {
+    let target = CoreTargetIdentity::unknown(kind, None);
+    let snapshots = parse_sources(&target, sources, 0)?;
+    Ok(merge_configuration_sources(kind, &snapshots)?.content)
 }
 
 pub(crate) fn parse_object(name: &str, content: &[u8]) -> Result<Map<String, Value>> {
@@ -488,12 +737,301 @@ fn annotate_source_error(name: &str, mut error: CamelliaNexusError) -> CamelliaN
     error
 }
 
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, path::PathBuf};
 
     use super::*;
+    use camellia_nexus_core::{
+        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType, RestartPolicy, SCHEMA_VERSION,
+    };
+    use serde_yaml_ng::Value as YamlValue;
     use tokio::io::AsyncWriteExt;
+
+    fn source_test_spec(sources: Vec<ConfigSourceSpec>) -> ProgramSpec {
+        ProgramSpec {
+            schema_version: SCHEMA_VERSION,
+            id: ProgramId::parse("source-test").expect("id"),
+            name: "Source test".into(),
+            executable: ExecutableSpec::External {
+                path: PathBuf::from("xray"),
+                compatibility: Default::default(),
+                metadata: None,
+            },
+            program_type: ProgramType::Xray {
+                extra_args: Vec::new(),
+            },
+            managed_config: Some(ManagedConfigSpec {
+                sources,
+                ..ManagedConfigSpec::default()
+            }),
+            working_directory: PathBuf::from("."),
+            environment: BTreeMap::new(),
+            auto_start: false,
+            restart_policy: RestartPolicy::Never,
+            privilege_policy: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_distinguishes_invalid_content_from_unavailable_input() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let invalid_id = "invalid-inline";
+        let unavailable_id = "missing-local";
+        let spec = source_test_spec(vec![
+            ConfigSourceSpec::Inline {
+                id: invalid_id.into(),
+                name: "Invalid inline".into(),
+                enabled: true,
+                content: "not-json".into(),
+            },
+            ConfigSourceSpec::Local {
+                id: unavailable_id.into(),
+                name: "Missing local".into(),
+                enabled: true,
+                path: PathBuf::from("missing.json"),
+            },
+        ]);
+
+        let result = refresh_snapshots(
+            &spec,
+            Some(directory.path()),
+            &crate::config_credentials::CredentialSnapshot::empty(),
+            &BTreeMap::new(),
+            42,
+        )
+        .await
+        .expect("refresh result");
+
+        assert_eq!(
+            result.statuses[invalid_id].freshness,
+            SourceFreshness::Invalid
+        );
+        assert!(result.statuses[invalid_id].observed_hash.is_some());
+        assert_eq!(
+            result.statuses[unavailable_id].freshness,
+            SourceFreshness::Unavailable
+        );
+        assert!(result.statuses[unavailable_id].observed_hash.is_none());
+        assert!(result.unavailable);
+        assert!(result.snapshots.is_empty());
+    }
+
+    #[test]
+    fn base64_native_json_and_yaml_are_parsed_as_normal_sources() {
+        let json = parse_source_snapshot(
+            &CoreTargetIdentity::unknown(ProgramKind::Xray, None),
+            "json",
+            "JSON",
+            b"eyJsb2ciOnsibGV2ZWwiOiJpbmZvIn19",
+            1,
+            false,
+        )
+        .expect("base64 JSON");
+        assert!(json.content.contains("\"log\""));
+        assert!(json.share_summary.is_none());
+
+        let yaml = parse_source_snapshot(
+            &CoreTargetIdentity::unknown(ProgramKind::Mihomo, None),
+            "yaml",
+            "YAML",
+            b"cHJveGllczoKICAtIG5hbWU6IHRlc3QKICAgIHR5cGU6IHNzCiAgICBzZXJ2ZXI6IGV4YW1wbGUuY29tCiAgICBwb3J0OiA4Mzg4CiAgICBjaXBoZXI6IGFlcy0xMjgtZ2NtCiAgICBwYXNzd29yZDogc2VjcmV0Cg==",
+            1,
+            false,
+        )
+        .expect("base64 YAML");
+        assert!(yaml.content.contains("proxies:"));
+        assert!(yaml.share_summary.is_none());
+    }
+
+    #[tokio::test]
+    async fn all_invalid_share_refresh_keeps_the_previous_snapshot() {
+        let source_id = "share-inline";
+        let spec = source_test_spec(vec![ConfigSourceSpec::Inline {
+            id: source_id.into(),
+            name: "Share".into(),
+            enabled: true,
+            content: "tuic://token-only@example.com:443".into(),
+        }]);
+        let previous_snapshot = SourceSnapshot::parse(
+            source_id,
+            "Share",
+            ConfigurationFormat::Jsonc,
+            br#"{"outbounds":[]}"#,
+            1,
+            false,
+        )
+        .expect("previous snapshot");
+        let previous_hash = previous_snapshot.content_hash.clone();
+        let result = refresh_snapshots(
+            &spec,
+            None,
+            &crate::config_credentials::CredentialSnapshot::empty(),
+            &BTreeMap::from([(source_id.into(), previous_snapshot)]),
+            42,
+        )
+        .await
+        .expect("refresh");
+
+        assert_eq!(result.statuses[source_id].freshness, SourceFreshness::Stale);
+        assert_eq!(
+            result.statuses[source_id].snapshot_hash.as_deref(),
+            Some(previous_hash.as_str())
+        );
+        assert_eq!(result.snapshots.len(), 1);
+        assert!(!result.unavailable);
+    }
+
+    #[tokio::test]
+    async fn disabled_source_status_keeps_the_previous_snapshot_hash() {
+        let disabled_id = "disabled-inline";
+        let spec = source_test_spec(vec![
+            ConfigSourceSpec::Inline {
+                id: "enabled-inline".into(),
+                name: "Enabled".into(),
+                enabled: true,
+                content: r#"{"enabled":true}"#.into(),
+            },
+            ConfigSourceSpec::Inline {
+                id: disabled_id.into(),
+                name: "Disabled".into(),
+                enabled: false,
+                content: r#"{"disabled":true}"#.into(),
+            },
+        ]);
+        let previous_snapshot = SourceSnapshot::parse(
+            disabled_id,
+            "Disabled",
+            ConfigurationFormat::Jsonc,
+            br#"{"disabled":"previous"}"#,
+            1,
+            false,
+        )
+        .expect("previous snapshot");
+        let previous_hash = previous_snapshot.content_hash.clone();
+        let previous = BTreeMap::from([(disabled_id.into(), previous_snapshot)]);
+
+        let result = refresh_snapshots(
+            &spec,
+            None,
+            &crate::config_credentials::CredentialSnapshot::empty(),
+            &previous,
+            42,
+        )
+        .await
+        .expect("refresh result");
+
+        assert_eq!(
+            result.statuses[disabled_id].freshness,
+            SourceFreshness::Disabled
+        );
+        assert_eq!(
+            result.statuses[disabled_id].snapshot_hash.as_deref(),
+            Some(previous_hash.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_accepts_an_all_disabled_source_list_without_emptying_snapshots() {
+        let source_id = "disabled-inline";
+        let spec = source_test_spec(vec![ConfigSourceSpec::Inline {
+            id: source_id.into(),
+            name: "Disabled".into(),
+            enabled: false,
+            content: r#"{"disabled":true}"#.into(),
+        }]);
+        let previous_snapshot = SourceSnapshot::parse(
+            source_id,
+            "Disabled",
+            ConfigurationFormat::Jsonc,
+            br#"{"disabled":"previous"}"#,
+            1,
+            false,
+        )
+        .expect("previous snapshot");
+        let previous_hash = previous_snapshot.content_hash.clone();
+        let previous = BTreeMap::from([(source_id.into(), previous_snapshot)]);
+
+        let result = refresh_snapshots(
+            &spec,
+            None,
+            &crate::config_credentials::CredentialSnapshot::empty(),
+            &previous,
+            42,
+        )
+        .await
+        .expect("refresh result");
+
+        assert!(result.snapshots.is_empty());
+        assert!(!result.unavailable);
+        assert_eq!(
+            result.statuses[source_id].freshness,
+            SourceFreshness::Disabled
+        );
+        assert_eq!(
+            result.statuses[source_id].snapshot_hash.as_deref(),
+            Some(previous_hash.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_preserves_real_source_observations() {
+        let spec = source_test_spec(vec![
+            ConfigSourceSpec::Inline {
+                id: "base-inline".into(),
+                name: "Base".into(),
+                enabled: true,
+                content: r#"{"log":{"loglevel":"info"}}"#.into(),
+            },
+            ConfigSourceSpec::Inline {
+                id: "override-inline".into(),
+                name: "Override".into(),
+                enabled: true,
+                content: r#"{"log":{"loglevel":"debug"}}"#.into(),
+            },
+            ConfigSourceSpec::Inline {
+                id: "disabled-inline".into(),
+                name: "Disabled".into(),
+                enabled: false,
+                content: r#"{"log":{"loglevel":"warning"}}"#.into(),
+            },
+        ]);
+
+        let materialized = materialize(
+            &spec,
+            None,
+            &crate::config_credentials::CredentialSnapshot::empty(),
+        )
+        .await
+        .expect("materialize");
+
+        assert_eq!(
+            materialized
+                .observations
+                .snapshots
+                .iter()
+                .map(|snapshot| snapshot.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["base-inline", "override-inline"]
+        );
+        assert_eq!(
+            materialized.observations.statuses["base-inline"].freshness,
+            SourceFreshness::Fresh
+        );
+        assert_eq!(
+            materialized.observations.statuses["disabled-inline"].freshness,
+            SourceFreshness::Disabled
+        );
+        assert!(materialized.content.contains("debug"));
+        assert!(!materialized.observations.unavailable);
+    }
 
     #[tokio::test]
     async fn remote_source_redirect_rejects_insecure_target_before_connecting() {
@@ -548,99 +1086,18 @@ mod tests {
         );
     }
 
-    fn sing_box_spec(dashboard: Option<camellia_nexus_core::SingBoxDashboardSpec>) -> ProgramSpec {
-        ProgramSpec {
-            schema_version: camellia_nexus_core::SCHEMA_VERSION,
-            id: camellia_nexus_core::ProgramId::parse("api-test").expect("id"),
-            name: "API test".into(),
-            executable: camellia_nexus_core::ExecutableSpec::Managed {
-                path: "bin/sing-box".into(),
-                metadata: None,
-            },
-            program_type: camellia_nexus_core::ProgramType::SingBox {
-                main_config: Some("config/config.json".into()),
-                extra_args: Vec::new(),
-            },
-            managed_config: Some(camellia_nexus_core::ManagedConfigSpec {
-                sources: Vec::new(),
-                remote_update: None,
-                sing_box_dashboard: dashboard,
-                sing_box_clash_dashboard: None,
-                xray_dashboard: None,
-                mihomo_dashboard: None,
-            }),
-            working_directory: "bin".into(),
-            environment: BTreeMap::new(),
-            auto_start: false,
-            restart_policy: camellia_nexus_core::RestartPolicy::Never,
-            privilege_policy: Default::default(),
-        }
-    }
-
-    fn xray_spec(dashboard: Option<camellia_nexus_core::XrayDashboardSpec>) -> ProgramSpec {
-        ProgramSpec {
-            schema_version: camellia_nexus_core::SCHEMA_VERSION,
-            id: camellia_nexus_core::ProgramId::parse("xray-api-test").expect("id"),
-            name: "Xray API test".into(),
-            executable: camellia_nexus_core::ExecutableSpec::Managed {
-                path: "bin/xray".into(),
-                metadata: None,
-            },
-            program_type: camellia_nexus_core::ProgramType::Xray {
-                main_config: Some("config/managed.json".into()),
-                extra_args: Vec::new(),
-            },
-            managed_config: Some(camellia_nexus_core::ManagedConfigSpec {
-                sources: Vec::new(),
-                remote_update: None,
-                sing_box_dashboard: None,
-                sing_box_clash_dashboard: None,
-                xray_dashboard: dashboard,
-                mihomo_dashboard: None,
-            }),
-            working_directory: "bin".into(),
-            environment: BTreeMap::new(),
-            auto_start: false,
-            restart_policy: camellia_nexus_core::RestartPolicy::Never,
-            privilege_policy: Default::default(),
-        }
-    }
-
-    fn mihomo_spec(dashboard: Option<camellia_nexus_core::MihomoDashboardSpec>) -> ProgramSpec {
-        ProgramSpec {
-            schema_version: camellia_nexus_core::SCHEMA_VERSION,
-            id: camellia_nexus_core::ProgramId::parse("mihomo-api-test").expect("id"),
-            name: "Mihomo API test".into(),
-            executable: camellia_nexus_core::ExecutableSpec::Managed {
-                path: "bin/mihomo".into(),
-                metadata: None,
-            },
-            program_type: camellia_nexus_core::ProgramType::Mihomo {
-                main_config: Some("config/managed.yaml".into()),
-                extra_args: Vec::new(),
-            },
-            managed_config: Some(camellia_nexus_core::ManagedConfigSpec {
-                mihomo_dashboard: dashboard,
-                ..camellia_nexus_core::ManagedConfigSpec::default()
-            }),
-            working_directory: "bin".into(),
-            environment: BTreeMap::new(),
-            auto_start: false,
-            restart_policy: camellia_nexus_core::RestartPolicy::Never,
-            privilege_policy: Default::default(),
-        }
-    }
-
     #[test]
     fn xray_merge_obeys_tag_and_tail_rules() {
         let sources = vec![
             ResolvedSource {
+                id: "xray-01".into(),
                 name: "01.json".into(),
                 content: br#"{"outbounds":[{"tag":"direct"}],"log":{"loglevel":"warning"}}"#
                     .to_vec(),
                 append_xray_outbounds: false,
             },
             ResolvedSource {
+                id: "xray-02".into(),
                 name: "02.json".into(),
                 content:
                     br#"{"outbounds":[{"tag":"block"},{"tag":"proxy"}],"log":{"loglevel":"debug"}}"#
@@ -648,6 +1105,7 @@ mod tests {
                 append_xray_outbounds: false,
             },
             ResolvedSource {
+                id: "xray-tail".into(),
                 name: "03_tail.json".into(),
                 content: br#"{"outbounds":[{"tag":"last"}]}"#.to_vec(),
                 append_xray_outbounds: true,
@@ -666,11 +1124,13 @@ mod tests {
     fn mihomo_merge_uses_named_sections_and_preserves_rule_priority() {
         let sources = vec![
             ResolvedSource {
+                id: "mihomo-01".into(),
                 name: "01.yaml".into(),
                 content: b"mode: rule\nproxies:\n  - name: edge\n    type: direct\nrules:\n  - DOMAIN,first.test,DIRECT\nsub-rules:\n  regional:\n    - DOMAIN-SUFFIX,first.test,DIRECT\n".to_vec(),
                 append_xray_outbounds: false,
             },
             ResolvedSource {
+                id: "mihomo-02".into(),
                 name: "02.yaml".into(),
                 content: b"mode: global\nproxies:\n  - name: edge\n    type: socks5\n  - name: backup\n    type: direct\nrules:\n  - MATCH,edge\nsub-rules:\n  regional:\n    - MATCH,edge\n".to_vec(),
                 append_xray_outbounds: false,
@@ -698,31 +1158,9 @@ mod tests {
     }
 
     #[test]
-    fn mihomo_dashboard_materializes_as_yaml_and_keeps_user_secret() {
-        let enabled = mihomo_spec(Some(camellia_nexus_core::MihomoDashboardSpec {
-            listen_port: 9092,
-            download_url: None,
-        }));
-        let configured: YamlValue = serde_yaml_ng::from_str(
-            &apply_managed_features(&enabled, "secret: keep-me\n".into())
-                .expect("inject dashboard"),
-        )
-        .expect("yaml");
-        assert_eq!(
-            configured["external-controller"].as_str(),
-            Some("127.0.0.1:9092")
-        );
-        assert_eq!(
-            configured["external-ui"].as_str(),
-            Some(crate::programs::mihomo::managed_ui_directory())
-        );
-        assert_eq!(configured["secret"].as_str(), Some("keep-me"));
-        assert!(configured["external-ui-url"].is_null());
-    }
-
-    #[test]
     fn mihomo_sources_require_a_yaml_mapping_root() {
         let source = ResolvedSource {
+            id: "mihomo-invalid".into(),
             name: "invalid.yaml".into(),
             content: b"- one\n- two\n".to_vec(),
             append_xray_outbounds: false,
@@ -742,162 +1180,5 @@ mod tests {
         let parsed = parse_object("jsonc", source).expect("parse JSONC");
         assert_eq!(parsed["log"]["level"], "info");
         assert_eq!(parsed["value"], "// retained");
-    }
-
-    #[test]
-    fn dashboard_uses_services_api_and_can_be_removed() {
-        let enabled = sing_box_spec(Some(camellia_nexus_core::SingBoxDashboardSpec {
-            listen_port: 9090,
-            update_interval: "1d".into(),
-        }));
-        let configured: Value = serde_json::from_str(
-            &apply_managed_features(&enabled, "{}".into()).expect("inject API service"),
-        )
-        .expect("JSON");
-        assert_eq!(configured["services"][0]["type"], "api");
-        assert_eq!(configured["services"][0]["listen"], "127.0.0.1");
-        assert!(configured.get("experimental").is_none());
-
-        let disabled = sing_box_spec(None);
-        let removed: Value = serde_json::from_str(
-            &apply_managed_features(&disabled, configured.to_string()).expect("remove API service"),
-        )
-        .expect("JSON");
-        assert_eq!(removed["services"].as_array().map(Vec::len), Some(0));
-    }
-
-    #[test]
-    fn clash_dashboard_uses_experimental_clash_api() {
-        let mut enabled = sing_box_spec(None);
-        let managed = enabled
-            .managed_config
-            .as_mut()
-            .expect("managed configuration");
-        managed.sing_box_clash_dashboard = Some(camellia_nexus_core::SingBoxClashDashboardSpec {
-            listen_port: 9091,
-            download_url: Some("https://example.com/dashboard.zip".into()),
-        });
-        let configured: Value = serde_json::from_str(
-            &apply_managed_features(&enabled, "{}".into()).expect("inject Clash API"),
-        )
-        .expect("JSON");
-        assert_eq!(
-            configured["experimental"]["clash_api"]["external_controller"],
-            "127.0.0.1:9091"
-        );
-        assert_eq!(
-            configured["experimental"]["clash_api"]["external_ui"],
-            crate::programs::sing_box::managed_clash_ui()
-        );
-        let external_ui = configured["experimental"]["clash_api"]["external_ui"]
-            .as_str()
-            .expect("external UI path");
-        assert_eq!(external_ui, "clash-dashboard");
-        assert!(!external_ui.starts_with("dashboard/"));
-    }
-
-    #[test]
-    fn sing_box_dashboards_are_injected_independently() {
-        let mut enabled = sing_box_spec(Some(camellia_nexus_core::SingBoxDashboardSpec {
-            listen_port: 9090,
-            update_interval: "12h".into(),
-        }));
-        let managed = enabled
-            .managed_config
-            .as_mut()
-            .expect("managed configuration");
-        managed.sing_box_clash_dashboard = Some(camellia_nexus_core::SingBoxClashDashboardSpec {
-            listen_port: 9091,
-            download_url: None,
-        });
-
-        let configured: Value = serde_json::from_str(
-            &apply_managed_features(&enabled, "{}".into()).expect("inject dashboards"),
-        )
-        .expect("JSON");
-        let service = configured["services"][0]
-            .as_object()
-            .expect("sing-box API service");
-        assert_eq!(service["listen_port"], 9090);
-        let service_dashboard = service["dashboard"].as_object().expect("API dashboard");
-        assert_eq!(service_dashboard["update_interval"], "12h");
-        assert!(!service_dashboard.contains_key("external_ui"));
-
-        let clash = configured["experimental"]["clash_api"]
-            .as_object()
-            .expect("Clash API");
-        assert_eq!(clash["external_controller"], "127.0.0.1:9091");
-        assert_eq!(
-            clash["external_ui"],
-            crate::programs::sing_box::managed_clash_ui()
-        );
-        assert!(!clash.contains_key("dashboard"));
-    }
-
-    #[test]
-    fn xray_dashboard_enables_api_metrics_and_traffic_stats() {
-        let enabled = xray_spec(Some(camellia_nexus_core::XrayDashboardSpec {
-            api_port: 10085,
-            metrics_port: 11111,
-        }));
-        let configured: Value = serde_json::from_str(
-            &apply_managed_features(&enabled, "{}".into()).expect("inject Xray dashboard"),
-        )
-        .expect("JSON");
-        assert_eq!(
-            configured["api"]["tag"],
-            crate::programs::xray::managed_api_tag()
-        );
-        assert_eq!(configured["api"]["listen"], "127.0.0.1:10085");
-        assert_eq!(
-            configured["api"]["services"],
-            serde_json::json!([
-                "HandlerService",
-                "LoggerService",
-                "StatsService",
-                "RoutingService",
-                "ReflectionService"
-            ])
-        );
-        assert_eq!(
-            configured["metrics"]["tag"],
-            crate::programs::xray::managed_metrics_tag()
-        );
-        assert_eq!(configured["metrics"]["listen"], "127.0.0.1:11111");
-        assert_eq!(configured["stats"], serde_json::json!({}));
-        assert_eq!(configured["policy"]["system"]["statsInboundUplink"], true);
-        assert_eq!(
-            configured["policy"]["system"]["statsOutboundDownlink"],
-            true
-        );
-    }
-
-    #[test]
-    fn xray_dashboard_restores_the_complete_managed_api_service_set() {
-        let enabled = xray_spec(Some(camellia_nexus_core::XrayDashboardSpec {
-            api_port: 10085,
-            metrics_port: 11111,
-        }));
-        let previous = serde_json::json!({
-            "api": {
-                "tag": crate::programs::xray::managed_api_tag(),
-                "listen": "127.0.0.1:10085",
-                "services": ["StatsService", "RoutingService"]
-            }
-        });
-        let configured: Value = serde_json::from_str(
-            &apply_managed_features(&enabled, previous.to_string()).expect("migrate Xray API"),
-        )
-        .expect("JSON");
-        assert_eq!(
-            configured["api"]["services"],
-            serde_json::json!([
-                "StatsService",
-                "RoutingService",
-                "HandlerService",
-                "LoggerService",
-                "ReflectionService"
-            ])
-        );
     }
 }

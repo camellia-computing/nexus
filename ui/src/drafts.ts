@@ -99,19 +99,29 @@ function sanitize(value: unknown, fallback: CreateDraft): CreateDraft {
         .filter((source): source is ConfigSource => {
           if (!source || typeof source !== 'object') return false;
           const value = source as Partial<ConfigSource>;
-          return (value.mode === 'local' || value.mode === 'remote')
+          return (value.mode === 'inline' || value.mode === 'local' || value.mode === 'remote')
             && typeof value.id === 'string'
             && typeof value.name === 'string';
         })
-        .map((source) => source.mode === 'local'
+        .map((source) => source.mode === 'inline'
           ? {
+              mode: 'inline' as const,
+              id: source.id.slice(0, 64),
+              name: source.name.slice(0, 128),
+              enabled: source.enabled !== false,
+              // Configuration bodies may contain credentials. Match initialConfig and do not
+              // restore Inline content from the browser-persisted create draft.
+              content: '{}',
+            }
+          : source.mode === 'local'
+            ? {
               mode: 'local' as const,
               id: source.id.slice(0, 64),
               name: source.name.slice(0, 128),
               enabled: source.enabled !== false,
               path: typeof source.path === 'string' ? source.path.slice(0, 32_000) : '',
             }
-          : {
+            : {
               mode: 'remote' as const,
               id: source.id.slice(0, 64),
               name: source.name.slice(0, 128),

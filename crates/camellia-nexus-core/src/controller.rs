@@ -34,6 +34,7 @@ pub enum Mutation {
     Restart {
         interactive: bool,
     },
+    RefreshBinaryIdentity,
     UpdateSpec {
         expected_spec: Box<ProgramSpec>,
         next_spec: Box<ProgramSpec>,
@@ -45,7 +46,7 @@ pub enum Mutation {
     CommitPreparedPackage {
         expected_spec: Box<ProgramSpec>,
         next_spec: Box<ProgramSpec>,
-        staged: StagedPackage,
+        staged: Box<StagedPackage>,
     },
     ApplyPreparedConfig {
         expected_spec: Box<ProgramSpec>,
@@ -384,6 +385,7 @@ impl ProgramController {
             Mutation::Restart { interactive } => {
                 self.restart_process(interactive).await.map(|_| None)
             }
+            Mutation::RefreshBinaryIdentity => self.refresh_binary_identity().await.map(|_| None),
             Mutation::UpdateSpec {
                 expected_spec,
                 next_spec,
@@ -403,7 +405,7 @@ impl ProgramController {
                 next_spec,
                 staged,
             } => self
-                .commit_prepared_package(*expected_spec, *next_spec, staged)
+                .commit_prepared_package(*expected_spec, *next_spec, *staged)
                 .await
                 .map(|_| None),
             Mutation::ApplyPreparedConfig {
@@ -436,6 +438,15 @@ impl ProgramController {
     }
 
     async fn start_process(&mut self, interactive: bool) -> Result<()> {
+        self.start_process_with_validated_config(interactive, None)
+            .await
+    }
+
+    async fn start_process_with_validated_config(
+        &mut self,
+        interactive: bool,
+        validated_config_hash: Option<&str>,
+    ) -> Result<()> {
         if self.process.is_some() {
             return Ok(());
         }
@@ -444,6 +455,9 @@ impl ProgramController {
         let prepared = async {
             self.refresh_binary_identity().await?;
             let spec = self.spec.read().await.clone();
+            self.config_service
+                .activation_preflight(&spec, validated_config_hash)
+                .await?;
             let adapter = self.adapters.get(spec.program_type.kind());
             let mut plan = adapter.launch_plan(&spec, &self.workspace)?;
             plan.interactive = interactive;
@@ -598,14 +612,15 @@ impl ProgramController {
 
     async fn refresh_binary_identity(&mut self) -> Result<()> {
         let mut spec = self.spec.read().await.clone();
-        let mut current = self.store.executable_metadata(&spec).await?;
-        let changed = spec.executable.metadata().is_none_or(|recorded| {
-            recorded.size != current.size || recorded.modified_unix_ms != current.modified_unix_ms
-        });
+        let current = self.store.executable_metadata(&spec).await?;
+        let changed = spec
+            .executable
+            .metadata()
+            .is_none_or(|recorded| recorded.fingerprint.sha256 != current.fingerprint.sha256);
         if !changed {
             return Ok(());
         }
-        current.detected_version = self.config_service.probe_binary(&spec).await?;
+        let current = self.config_service.probe_binary(&spec).await?;
         spec.executable.set_metadata(current);
         self.store.save(&spec).await?;
         *self.spec.write().await = spec;
@@ -705,7 +720,10 @@ impl ProgramController {
             return self.config_service.finalize(&spec, committed).await;
         }
 
-        if let Err(new_error) = self.start_process(interactive).await {
+        if let Err(new_error) = self
+            .start_process_with_validated_config(interactive, Some(committed.new_hash()))
+            .await
+        {
             return self
                 .rollback_after_failed_apply(&spec, new_error, interactive)
                 .await;
@@ -826,7 +844,10 @@ impl ProgramController {
         }
 
         self.desired_running = true;
-        if let Err(new_error) = self.start_process(interactive).await {
+        if let Err(new_error) = self
+            .start_process_with_validated_config(interactive, Some(committed.new_hash()))
+            .await
+        {
             return self
                 .rollback_program_config_update(&current, committed, new_error, interactive, true)
                 .await;

@@ -1,9 +1,12 @@
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
+import { installPreviewInvokeTransport } from '../api';
 import { canUseProgramLifecycleAction, deriveLicenseAccess } from '../licenseAccess';
+import { PROGRAM_SPEC_SCHEMA_VERSION } from '../types';
 import type {
   AppSettings,
+  ConfigSource,
   CustomerPaymentSubmission,
   EntitlementSnapshot,
   LicenseBillingSummary,
@@ -13,6 +16,7 @@ import type {
   ProgramSpec,
   ProgramState,
   ProgramSummary,
+  RemoteUpdate,
   SharedConfigurationContent,
   SharedConfigurationSummary,
   TeamProfile,
@@ -28,6 +32,14 @@ import type {
   WorkspaceSyncChange,
   XrayBalancerInfo,
   XrayDashboardSnapshot,
+  ConfigurationStateView,
+  CoreCompatibilityProfile,
+  CoreTargetIdentity,
+  GuidedProjection,
+  GuidedSettingDescriptor,
+  RawDraftSession,
+  ShareImportPreview,
+  ProgramKind,
 } from '../types';
 
 const nowSeconds = Math.floor(Date.now() / 1_000);
@@ -94,6 +106,9 @@ const teamCloudPreview = previewParameters.has('__ui_team_cloud');
 const teamLongLayoutPreview = previewParameters.has('__ui_team_long');
 const xrayDenseLayoutPreview = previewParameters.has('__ui_xray_dense');
 const removedLicensePreview = previewParameters.has('__ui_removed_license');
+const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
+const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
+const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
 const requestedTeamRole = previewParameters.get('__ui_team_role');
 const previewWorkspaceRole: WorkspaceRole = teamMemberPreview
   ? 'operator'
@@ -535,21 +550,171 @@ function mockProgramSelectionResult<T>(
   return value;
 }
 
-function managedExecutable(path: string, version: string) {
+function unclassifiedCoreTarget(
+  program: Exclude<ProgramKind, 'generic'>,
+  reportedVersion?: string,
+) {
+  const fingerprintSha256 = 'a'.repeat(64);
+  const releaseTarget = (tag: string, normalizedVersion: string, commitSha: string, report: string) => ({
+    program,
+    coordinate: {
+      kind: 'release' as const,
+      tag,
+      normalizedVersion,
+      commitSha,
+    },
+    basis: 'binaryReported' as const,
+    catalogRevision: 'core-history-v1-20260811',
+    reportedVersion: report,
+    fingerprintSha256,
+  });
+  if (coreTargetPreview === 'release-xray' && program === 'xray') {
+    return releaseTarget(
+      'v26.3.27',
+      '26.3.27',
+      'd2758a023cd7f4174a5a5fa4ff66e487d4342ba0',
+      'Xray v26.3.27',
+    );
+  }
+  if (coreTargetPreview === 'release-mihomo' && program === 'mihomo') {
+    return releaseTarget(
+      'v1.19.29',
+      '1.19.29',
+      'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+      'Mihomo Meta v1.19.29',
+    );
+  }
+  if (coreTargetPreview === 'release-singbox' && program === 'singBox') {
+    return releaseTarget(
+      'v1.13.18',
+      '1.13.18',
+      '45ca32dcb966f07f97fc888fe8586e359dbe8405',
+      'sing-box version 1.13.18',
+    );
+  }
+  if (coreTargetPreview === 'release-singbox-new' && program === 'singBox') {
+    return releaseTarget(
+      'v1.14.0-beta.2',
+      '1.14.0-beta.2',
+      '03c3bf4c01e7b1fd165d0c46ff376828fa878aab',
+      'sing-box version 1.14.0-beta.2',
+    );
+  }
+  if (coreTargetPreview === 'future') {
+    const displayName = program === 'xray'
+      ? 'Xray'
+      : program === 'singBox'
+        ? 'sing-box'
+        : 'Mihomo';
+    return {
+      program,
+      coordinate: {
+        kind: 'uncatalogued' as const,
+        normalizedVersion: '99.0.0',
+        reason: 'futureVersion' as const,
+      },
+      basis: 'binaryReported' as const,
+      catalogRevision: 'core-history-v1-20260811',
+      reportedVersion: `${displayName} version 99.0.0`,
+      fingerprintSha256,
+    };
+  }
+  if (coreTargetPreview === 'unknown') {
+    return {
+      program,
+      coordinate: { kind: 'unknown' as const },
+      basis: 'unknown' as const,
+      catalogRevision: 'core-history-v1-20260811',
+      fingerprintSha256,
+    };
+  }
+  return {
+    program,
+    coordinate: {
+      kind: 'uncatalogued' as const,
+      ...(reportedVersion ? { normalizedVersion: reportedVersion.replace(/^.*?([0-9]+\.[0-9]+\.[0-9]+.*)$/, '$1') } : {}),
+      reason: 'notFound' as const,
+    },
+    basis: 'binaryReported' as const,
+    catalogRevision: 'core-history-v1-20260811',
+    ...(reportedVersion ? { reportedVersion } : {}),
+    fingerprintSha256,
+  };
+}
+
+function managedExecutable(
+  path: string,
+  program?: Exclude<ProgramKind, 'generic'>,
+  version?: string,
+) {
   return {
     mode: 'managed' as const,
     path,
-    metadata: { size: 18_462_720, modifiedUnixMs: Date.now() - 86_400_000, detectedVersion: version },
+    compatibility: { mode: 'automatic' as const },
+    metadata: {
+      fingerprint: {
+        sha256: 'a'.repeat(64),
+        size: 18_462_720,
+        modifiedUnixMs: Date.now() - 86_400_000,
+      },
+      ...(program ? {
+        probe: {
+          revision: 'core-binary-probe-v2-20260811',
+          ...(version ? { reportedVersion: version } : {}),
+          ...(version ? { normalizedVersion: version } : {}),
+          cliObservations: [],
+        },
+        coreTarget: unclassifiedCoreTarget(program, version),
+      } : {}),
+    },
+  };
+}
+
+function mockCompatibilityProfile(
+  program: ProgramKind,
+  targetOverride?: CoreTargetIdentity,
+): CoreCompatibilityProfile {
+  const targetProgram = program === 'generic' ? 'xray' : program;
+  const target = targetOverride ?? unclassifiedCoreTarget(targetProgram);
+  const featureIds = [
+    'core.cli.nativeValidation',
+    'core.cli.generatedSchema',
+    'proxy.outbound.vless',
+    'proxy.outbound.shadowsocks',
+    'proxy.outbound.hysteria2',
+    'proxy.outbound.tuicV5',
+  ];
+  const releaseKnown = target.coordinate.kind === 'release';
+  const generatedSchemaKnown = releaseKnown
+    && target.program === 'singBox'
+    && target.coordinate.kind === 'release'
+    && target.coordinate.normalizedVersion.startsWith('1.14.');
+  return {
+    target,
+    profileHash: 'preview-core-profile-hash',
+    decisions: featureIds.map((featureId) => ({
+      featureId,
+      availability: !releaseKnown
+        ? 'unknown' as const
+        : featureId === 'proxy.outbound.tuicV5' && target.program === 'xray'
+          ? 'unsupported' as const
+          : featureId === 'core.cli.generatedSchema' && !generatedSchemaKnown
+            ? 'unknown' as const
+            : 'supported' as const,
+      lifecycle: !releaseKnown ? 'unreviewed' as const : 'active' as const,
+      evidence: releaseKnown ? 'catalogConfirmed' as const : 'binaryReported' as const,
+      attemptAllowed: true,
+    })),
   };
 }
 
 const specs: Record<string, ProgramSpec> = {
   'local-agent': {
     // ProgramSpec has its own storage schema; this is unrelated to entitlement schema v3.
-    schemaVersion: 3,
+    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'local-agent',
     name: 'Local telemetry agent',
-    executable: managedExecutable('bin/local-agent', '2.8.1'),
+    executable: managedExecutable('bin/local-agent'),
     type: { kind: 'generic', args: ['--listen', '127.0.0.1:4400'] },
     workingDirectory: 'bin',
     environment: { RUST_LOG: 'info' },
@@ -558,11 +723,11 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'sing-box-edge': {
-    schemaVersion: 3,
+    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'sing-box-edge',
     name: 'Singapore edge gateway',
-    executable: managedExecutable('bin/sing-box/sing-box', '1.14.0'),
-    type: { kind: 'singBox', mainConfig: 'config.json', extraArgs: ['run'] },
+    executable: managedExecutable('bin/sing-box/sing-box', 'singBox', 'sing-box version 1.14.0'),
+    type: { kind: 'singBox', extraArgs: ['run'] },
     managedConfig: {
       sources: [
         { mode: 'local', id: 'base', name: 'Base policy', enabled: true, path: 'profiles/base.json' },
@@ -579,11 +744,11 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'xray-primary': {
-    schemaVersion: 3,
+    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'xray-primary',
     name: 'Primary Xray routing fabric',
-    executable: managedExecutable('bin/xray/xray', '25.6.8'),
-    type: { kind: 'xray', mainConfig: 'config.json', extraArgs: ['run'] },
+    executable: managedExecutable('bin/xray/xray', 'xray', 'Xray 25.6.8'),
+    type: { kind: 'xray', extraArgs: ['run'] },
     managedConfig: {
       sources: [{ mode: 'local', id: 'primary', name: 'Production routing', enabled: true, path: 'profiles/xray.json' }],
       xrayDashboard: { apiPort: 10085, metricsPort: 11111 },
@@ -595,11 +760,11 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'mihomo-alpha': {
-    schemaVersion: 3,
+    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'mihomo-alpha',
     name: 'Mihomo Alpha gateway',
-    executable: managedExecutable('bin/mihomo/mihomo', 'Mihomo Meta alpha'),
-    type: { kind: 'mihomo', mainConfig: 'config/managed.yaml', extraArgs: [] },
+    executable: managedExecutable('bin/mihomo/mihomo', 'mihomo', 'Mihomo Meta alpha'),
+    type: { kind: 'mihomo', extraArgs: [] },
     managedConfig: {
       sources: [
         { mode: 'local', id: 'base', name: 'Base policy', enabled: true, path: 'profiles/base.yaml' },
@@ -783,6 +948,347 @@ const previewConfigurationDocuments = new Map<string, {
   content: string;
   baseHash: string;
 }>();
+const previewConfigurationStates = new Map<string, ConfigurationStateView>();
+const previewRawDrafts = new Map<string, RawDraftSession>();
+
+function previewGuidedSettings(kind: ProgramSpec['type']['kind']): {
+  descriptors: GuidedSettingDescriptor[];
+  projection: GuidedProjection[];
+} {
+  if (kind === 'generic') return { descriptors: [], projection: [] };
+  const descriptors: GuidedSettingDescriptor[] = [{
+    id: 'logging.level',
+    category: 'logging',
+    label: 'Log level',
+    description: 'Control the Core log verbosity, or follow the source configuration.',
+    control: 'select',
+    allowedValues: kind === 'xray'
+      ? ['debug', 'info', 'warning', 'error', 'none']
+      : ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'panic'],
+  }];
+  const values = new Map<string, unknown>([['logging.level', kind === 'xray' ? 'warning' : 'info']]);
+  if (kind === 'singBox') {
+    descriptors.push(
+      { id: 'dns.strategy', category: 'dns', label: 'IP strategy', description: 'Configure IP strategy, or follow the source configuration.', control: 'select', allowedValues: ['prefer_ipv4', 'prefer_ipv6', 'ipv4_only', 'ipv6_only'] },
+      { id: 'routing.autoDetectInterface', category: 'routing', label: 'Auto-detect interface', description: 'Configure interface detection, or follow the source configuration.', control: 'toggle', allowedValues: [] },
+    );
+    values.set('dns.strategy', 'prefer_ipv4');
+    values.set('routing.autoDetectInterface', true);
+  } else if (kind === 'xray') {
+    descriptors.push({ id: 'routing.domainStrategy', category: 'routing', label: 'Domain strategy', description: 'Configure domain strategy, or follow the source configuration.', control: 'select', allowedValues: ['AsIs', 'IPIfNonMatch', 'IPOnDemand'] });
+    values.set('routing.domainStrategy', 'AsIs');
+  } else {
+    descriptors.push(
+      { id: 'network.ipv6', category: 'network', label: 'IPv6', description: 'Configure IPv6, or follow the source configuration.', control: 'toggle', allowedValues: [] },
+      { id: 'tun.enabled', category: 'tun', label: 'TUN', description: 'Configure TUN, or follow the source configuration.', control: 'toggle', allowedValues: [] },
+      { id: 'tun.strictRoute', category: 'tun', label: 'Strict routing', description: 'Configure strict routing, or follow the source configuration.', control: 'toggle', allowedValues: [], enabledWhen: 'tun.enabled' },
+      { id: 'dns.enabled', category: 'dns', label: 'DNS', description: 'Configure DNS, or follow the source configuration.', control: 'toggle', allowedValues: [] },
+      { id: 'dns.mode', category: 'dns', label: 'DNS mode', description: 'Configure DNS mode, or follow the source configuration.', control: 'select', allowedValues: ['normal', 'fake-ip', 'redir-host'] },
+      { id: 'routing.mode', category: 'routing', label: 'Routing mode', description: 'Configure routing mode, or follow the source configuration.', control: 'select', allowedValues: ['rule', 'global', 'direct'] },
+    );
+    values.set('network.ipv6', true);
+    values.set('tun.enabled', false);
+    values.set('tun.strictRoute', false);
+    values.set('dns.enabled', true);
+    values.set('dns.mode', 'fake-ip');
+    values.set('routing.mode', 'rule');
+  }
+  return {
+    descriptors,
+    projection: descriptors.map((descriptor) => ({
+      settingId: descriptor.id,
+      status: 'inherited',
+      value: values.get(descriptor.id),
+    })),
+  };
+}
+
+function configurationState(programId: string): ConfigurationStateView {
+  const existing = previewConfigurationStates.get(programId);
+  if (existing) return structuredClone(existing);
+  const spec = specs[programId];
+  const document = configDocument(programId);
+  const kind = spec?.type.kind ?? 'generic';
+  const format = document.language === 'yaml' ? 'yaml' : 'jsonc';
+  const guided = previewGuidedSettings(kind);
+  const metadataTarget = kind === 'generic'
+    ? undefined
+    : spec?.executable.metadata?.coreTarget;
+  const compatibilityProfile = mockCompatibilityProfile(kind, metadataTarget);
+  const evidenceStale = coreEvidencePreview === 'stale';
+  const evidenceMismatch = coreEvidencePreview === 'profile-mismatch';
+  const sourceBlocked = configurationSourcePreview === 'invalid'
+    || configurationSourcePreview === 'unavailable';
+  const candidateNeedsAttention = evidenceStale || evidenceMismatch || sourceBlocked;
+  const desiredHash = candidateNeedsAttention
+    ? 'preview-pending-desired-hash'
+    : 'preview-desired-hash';
+  const generation = candidateNeedsAttention ? 2 : 1;
+  const diagnostics = evidenceStale
+    ? [{
+        code: 'CORE_VALIDATION_EVIDENCE_STALE',
+        message: 'The binary, compatibility profile, or configuration changed after native validation.',
+      }]
+    : evidenceMismatch
+      ? [{
+          code: 'CORE_PROFILE_MISMATCH',
+          message: 'The candidate was validated for a different compatibility profile.',
+        }]
+      : sourceBlocked
+        ? [{
+            code: configurationSourcePreview === 'unavailable'
+              ? 'SOURCE_UNAVAILABLE'
+              : 'SOURCE_INVALID',
+            message: configurationSourcePreview === 'unavailable'
+              ? 'No parsed snapshot is available for this source.'
+              : 'The latest source content is invalid; Applied and Last Known Good were retained.',
+          }]
+        : [];
+  const state: ConfigurationStateView = {
+    schemaVersion: 3,
+    kind,
+    format,
+    generation,
+    compatibilityProfile,
+    sourceStatuses: (spec?.managedConfig?.sources ?? []).map((source) => ({
+      sourceId: source.id,
+      sourceName: source.name,
+      freshness: !source.enabled
+        ? 'disabled'
+        : configurationSourcePreview === 'stale'
+          ? 'stale'
+          : configurationSourcePreview === 'invalid'
+            ? 'invalid'
+            : configurationSourcePreview === 'unavailable'
+              ? 'unavailable'
+              : 'fresh',
+      snapshotHash: source.enabled && configurationSourcePreview !== 'unavailable'
+        ? 'preview-source-hash'
+        : undefined,
+      ...(configurationSourcePreview === 'stale'
+        ? { message: 'Latest read failed; using the last parsed snapshot.' }
+        : configurationSourcePreview === 'invalid'
+          ? { message: 'Latest content could not be parsed.' }
+          : configurationSourcePreview === 'unavailable'
+            ? { message: 'No usable observation or snapshot is available.' }
+            : {}),
+    })),
+    sourceParseSummaries: {},
+    provenance: [],
+    desired: {
+      revision: { generation, contentHash: desiredHash, createdUnixMs: Date.now() },
+      content: document.content,
+      compatibilityProfileHash: evidenceMismatch
+        ? 'preview-previous-profile-hash'
+        : compatibilityProfile.profileHash,
+      validation: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked ? 'invalid' : 'valid',
+      ...(!candidateNeedsAttention ? {
+        validationEvidence: {
+          binarySha256: 'a'.repeat(64),
+          profileHash: compatibilityProfile.profileHash,
+          configHash: desiredHash,
+          validatorContractRevision: 'preview-validator-v1',
+          nativeAccepted: true,
+          validatedUnixMs: Date.now(),
+        },
+      } : {}),
+      diagnostics,
+      conflicts: [],
+    },
+    appliedRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
+    lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
+    guidedDescriptors: guided.descriptors,
+    guidedProjection: guided.projection,
+  };
+  previewConfigurationStates.set(programId, state);
+  return structuredClone(state);
+}
+
+function rawDraftSession(programId: string): RawDraftSession {
+  const existing = previewRawDrafts.get(programId);
+  if (existing) return structuredClone(existing);
+  const state = configurationState(programId);
+  if (previewParameters.has('__ui_raw_conflict') && programId === 'xray-primary') {
+    const conflictId = 'preview-route-conflict';
+    const userContent = state.desired.content.replace('proxy-sg', 'mine-route');
+    const draft: RawDraftSession = {
+      sessionId: `preview-draft-${programId}`,
+      draftRevision: 1,
+      basedOnGeneration: state.generation,
+      baseContent: state.desired.content,
+      userContent,
+      workingContent: userContent,
+      conflicts: [{
+        conflictId,
+        segments: [
+          { kind: 'key', key: 'route' },
+          { kind: 'key', key: 'final' },
+        ],
+        semanticPath: '/route/final',
+        displayPath: '/route/final',
+        conflictType: 'value',
+        severity: 'error',
+        originalBase: 'proxy-sg',
+        updatedBase: 'source-route',
+        userValue: 'mine-route',
+        suggestedActions: ['keepMine', 'useUpdated', 'manualEdit'],
+        canCombine: false,
+      }],
+      resolutions: {},
+      unresolvedConflictIds: [conflictId],
+      updatedUnixMs: Date.now(),
+    };
+    previewRawDrafts.set(programId, structuredClone(draft));
+    return draft;
+  }
+  const draft: RawDraftSession = {
+    sessionId: `preview-draft-${programId}`,
+    draftRevision: 0,
+    basedOnGeneration: state.generation,
+    baseContent: state.desired.content,
+    userContent: state.desired.content,
+    workingContent: state.desired.content,
+    conflicts: [],
+    resolutions: {},
+    unresolvedConflictIds: [],
+    updatedUnixMs: Date.now(),
+  };
+  return draft;
+}
+
+function refreshPreviewUnresolvedConflicts(draft: RawDraftSession): void {
+  let document: unknown;
+  try {
+    document = JSON.parse(draft.workingContent);
+  } catch {
+    draft.unresolvedConflictIds = draft.conflicts.map((conflict) => conflict.conflictId);
+    return;
+  }
+  draft.unresolvedConflictIds = draft.conflicts
+    .filter((conflict) => {
+      const resolution = draft.resolutions[conflict.conflictId];
+      if (!resolution) return true;
+      const expected = previewConflictResolutionValue(conflict, resolution);
+      const observed = previewConflictPathValue(document, conflict.segments);
+      return !expected.present
+        ? observed.present
+        : !observed.present || JSON.stringify(observed.value) !== JSON.stringify(expected.value);
+    })
+    .map((conflict) => conflict.conflictId);
+}
+
+function previewConflictResolutionValue(
+  conflict: RawDraftSession['conflicts'][number],
+  resolution: RawDraftSession['resolutions'][string],
+): { present: boolean; value?: unknown } {
+  if (resolution === 'keepMine') {
+    return conflict.conflictType === 'delete-vs-modify'
+      ? { present: false }
+      : { present: true, value: conflict.userValue };
+  }
+  if (resolution === 'useUpdated') {
+    return conflict.conflictType === 'modify-vs-delete'
+      ? { present: false }
+      : { present: true, value: conflict.updatedBase };
+  }
+  if (resolution === 'combine') {
+    return {
+      present: true,
+      value: previewCombineValues(conflict.updatedBase, conflict.userValue),
+    };
+  }
+  return { present: true, value: resolution.manualEdit.value };
+}
+
+function previewCombineValues(updated: unknown, user: unknown): unknown {
+  if (
+    updated && user
+    && typeof updated === 'object' && !Array.isArray(updated)
+    && typeof user === 'object' && !Array.isArray(user)
+  ) {
+    const merged = structuredClone(updated) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(user)) {
+      merged[key] = previewCombineValues(merged[key], value);
+    }
+    return merged;
+  }
+  return structuredClone(user);
+}
+
+function previewConflictPathValue(
+  root: unknown,
+  segments: RawDraftSession['conflicts'][number]['segments'],
+): { present: boolean; value?: unknown } {
+  let current = root;
+  for (const segment of segments) {
+    if (segment.kind === 'key') {
+      if (!current || typeof current !== 'object' || Array.isArray(current)) {
+        return { present: false };
+      }
+      const object = current as Record<string, unknown>;
+      if (!(segment.key in object)) return { present: false };
+      current = object[segment.key];
+      continue;
+    }
+    if (!Array.isArray(current)) return { present: false };
+    const matches = current.filter((item) => (
+      item && typeof item === 'object' && !Array.isArray(item)
+      && (item as Record<string, unknown>)[segment.field] === segment.value
+    ));
+    if (matches.length !== 1) return { present: false };
+    current = matches[0];
+  }
+  return { present: true, value: current };
+}
+
+function updatePreviewConflictPath(
+  root: unknown,
+  segments: RawDraftSession['conflicts'][number]['segments'],
+  selected: { present: boolean; value?: unknown },
+): void {
+  if (!root || typeof root !== 'object' || segments.length === 0) return;
+  let current: unknown = root;
+  for (const segment of segments.slice(0, -1)) {
+    const next = previewConflictPathValue(current, [segment]);
+    if (!next.present) return;
+    current = next.value;
+  }
+  const last = segments[segments.length - 1];
+  if (last.kind === 'key' && current && typeof current === 'object' && !Array.isArray(current)) {
+    const object = current as Record<string, unknown>;
+    if (selected.present) object[last.key] = structuredClone(selected.value);
+    else delete object[last.key];
+    return;
+  }
+  if (last.kind === 'identity' && Array.isArray(current)) {
+    const index = current.findIndex((item) => (
+      item && typeof item === 'object' && !Array.isArray(item)
+      && (item as Record<string, unknown>)[last.field] === last.value
+    ));
+    if (selected.present && index >= 0) current[index] = structuredClone(selected.value);
+    else if (selected.present) current.push(structuredClone(selected.value));
+    else if (index >= 0) current.splice(index, 1);
+  }
+}
+
+function updateConfigurationState(
+  programId: string,
+  update: (state: ConfigurationStateView) => void,
+  advanceGeneration = true,
+): ConfigurationStateView {
+  const state = configurationState(programId);
+  update(state);
+  if (advanceGeneration) {
+    state.generation += 1;
+    state.desired.revision = {
+      ...state.desired.revision,
+      generation: state.generation,
+      createdUnixMs: Date.now(),
+    };
+  }
+  previewConfigurationStates.set(programId, structuredClone(state));
+  return state;
+}
 
 function growingLog(stream: 'stdout' | 'stderr'): string {
   const readCount = logReadCounts[stream]++;
@@ -809,6 +1315,22 @@ function detail(programId: string): ProgramDetail {
   const spec = specs[programId];
   if (!spec) throw { code: 'NOT_FOUND', message: `Unknown preview program: ${programId}` };
   return { spec: structuredClone(spec), state: structuredClone(states[programId]), workingDirectory: spec.workingDirectory };
+}
+
+function validatePreviewCompatibility(spec: ProgramSpec): void {
+  const preference = spec.executable.compatibility;
+  if (spec.type.kind === 'generic' && preference.mode !== 'automatic') {
+    throw { code: 'INVALID_SPEC', message: 'Generic programs only support automatic compatibility.' };
+  }
+  if (preference.mode === 'release' && !preference.tag.trim()) {
+    throw { code: 'INVALID_SPEC', message: 'Select an exact catalogued release before saving.' };
+  }
+  if (
+    preference.mode === 'commit'
+    && !/^[0-9a-f]{40}$/.test(preference.commitSha)
+  ) {
+    throw { code: 'INVALID_SPEC', message: 'Enter a lowercase 40-character catalogued commit SHA.' };
+  }
 }
 
 function configDocument(programId: string) {
@@ -939,8 +1461,11 @@ function requireLifecycleAccess(action: 'start' | 'restart') {
 
 export function installMockBackend() {
   const recoveredEntitlement = structuredClone(previewEntitlement);
-  mockWindows('main');
-  mockIPC((command, args) => {
+  const tauriInternals = Reflect.get(window, '__TAURI_INTERNALS__');
+  const nativeWindowAvailable = !!tauriInternals
+    && typeof tauriInternals === 'object'
+    && Reflect.has(tauriInternals, 'metadata');
+  const handlePreviewInvoke = (command: string, args?: InvokeArgs) => {
     switch (command) {
       case 'frontend_ready': return null;
       case 'log_frontend_event': return null;
@@ -1556,21 +2081,21 @@ export function installMockBackend() {
       case 'restart_program': requireLifecycleAccess('restart'); setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() }); return null;
       case 'update_program': {
         const next = objectArgs(args).spec;
-        if (next && typeof next === 'object') specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
+        if (next && typeof next === 'object') {
+          validatePreviewCompatibility(next as ProgramSpec);
+          specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
+        }
         return null;
       }
       case 'update_program_and_restart': {
         requireLifecycleAccess('restart');
         const next = objectArgs(args).spec;
-        if (next && typeof next === 'object') specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
+        if (next && typeof next === 'object') {
+          validatePreviewCompatibility(next as ProgramSpec);
+          specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
+        }
         setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() });
         return null;
-      }
-      case 'update_program_and_refresh_config': {
-        const next = objectArgs(args).spec;
-        if (next && typeof next === 'object') specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
-        const id = next && typeof next === 'object' ? (next as ProgramSpec).id : '';
-        return { sourceCount: 1, document: configDocument(id) };
       }
       case 'remove_program': delete specs[stringArg(args, 'programId')]; return null;
       case 'list_actions': {
@@ -1589,6 +2114,163 @@ export function installMockBackend() {
         return mockProgramSelectionResult(command, programId, []);
       }
       case 'load_config': return configDocument(stringArg(args, 'programId'));
+      case 'get_configuration_state':
+        return configurationState(stringArg(args, 'programId'));
+      case 'get_configuration_editor_session':
+        return rawDraftSession(stringArg(args, 'programId'));
+      case 'preview_configuration_import': {
+        const programId = stringArg(args, 'programId');
+        const targetCore = specs[programId]?.type.kind ?? 'xray';
+        const target = specs[programId]?.executable.metadata?.coreTarget
+          ?? unclassifiedCoreTarget(targetCore === 'generic' ? 'xray' : targetCore);
+        const preview: ShareImportPreview = {
+          normalized: {
+            text: 'vless://preview-redacted',
+            envelope: 'plain',
+            payload: 'singleShareLink',
+            contentHash: 'preview-share-source-hash',
+          },
+          summary: {
+            envelope: 'plain',
+            payload: 'singleShareLink',
+            parserRevision: 'share-v1-preview',
+            totalItems: 1,
+            acceptedItems: 1,
+            rejectedItems: 0,
+            warningCount: 0,
+            protocols: { VLESS: 1 },
+            fidelity: 'exact',
+            collectionStatus: 'success',
+            issues: [],
+          },
+          items: [{
+            itemId: 'share-preview-item',
+            semantic: { protocol: 'VLESS', name: 'Preview node' },
+            fragment: { type: 'vless', server: 'example.com', server_port: 443 },
+            summary: {
+              target,
+              translatorRevision: 'translator-v2-preview',
+              profileHash: 'preview-core-profile-hash',
+              catalogRevision: 'core-history-v1-20260811',
+              featureDecisions: [],
+              fidelity: 'equivalent',
+              warnings: [],
+              blockingIssues: [],
+            },
+            provenance: {},
+          }],
+        };
+        return preview;
+      }
+      case 'save_configuration_draft': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as {
+          draft?: RawDraftSession;
+          expectedRevision?: number;
+        } | undefined;
+        if (!request?.draft) throw { code: 'INVALID_SPEC', message: 'Draft is required' };
+        const draft = structuredClone(request.draft);
+        const persisted = previewRawDrafts.get(programId);
+        if (
+          request.expectedRevision !== draft.draftRevision
+          || (persisted && (
+            persisted.draftRevision !== request.expectedRevision
+            || persisted.sessionId !== draft.sessionId
+          ))
+          || (!persisted && request.expectedRevision !== 0)
+        ) {
+          throw { code: 'CONFIG_CONFLICT', message: 'Preview Raw draft revision is stale' };
+        }
+        if (persisted) {
+          draft.baseContent = persisted.baseContent;
+          draft.basedOnGeneration = persisted.basedOnGeneration;
+          draft.conflicts = structuredClone(persisted.conflicts);
+          draft.resolutions = structuredClone(persisted.resolutions);
+          draft.unresolvedConflictIds = [...persisted.unresolvedConflictIds];
+        }
+        draft.draftRevision += 1;
+        draft.updatedUnixMs = Date.now();
+        refreshPreviewUnresolvedConflicts(draft);
+        previewRawDrafts.set(programId, structuredClone(draft));
+        return draft;
+      }
+      case 'rebase_configuration_draft': {
+        const programId = stringArg(args, 'programId');
+        const draft = rawDraftSession(programId);
+        draft.basedOnGeneration = configurationState(programId).generation;
+        draft.resolutions = {};
+        draft.unresolvedConflictIds = draft.conflicts.map((conflict) => conflict.conflictId);
+        draft.draftRevision += 1;
+        draft.updatedUnixMs = Date.now();
+        previewRawDrafts.set(programId, structuredClone(draft));
+        return draft;
+      }
+      case 'resolve_configuration_conflict': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as {
+          conflictId?: string;
+          resolution?: RawDraftSession['resolutions'][string];
+        } | undefined;
+        const draft = rawDraftSession(programId);
+        const conflict = draft.conflicts.find((item) => item.conflictId === request?.conflictId);
+        if (!conflict || !request?.resolution) {
+          throw { code: 'NOT_FOUND', message: 'Preview configuration conflict was not found' };
+        }
+        const document = JSON.parse(draft.workingContent) as unknown;
+        updatePreviewConflictPath(
+          document,
+          conflict.segments,
+          previewConflictResolutionValue(conflict, request.resolution),
+        );
+        draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
+        draft.resolutions[conflict.conflictId] = request.resolution;
+        refreshPreviewUnresolvedConflicts(draft);
+        draft.draftRevision += 1;
+        draft.updatedUnixMs = Date.now();
+        previewRawDrafts.set(programId, structuredClone(draft));
+        return draft;
+      }
+      case 'discard_configuration_draft':
+        previewRawDrafts.delete(stringArg(args, 'programId'));
+        return null;
+      case 'commit_configuration_draft': {
+        const programId = stringArg(args, 'programId');
+        const draft = rawDraftSession(programId);
+        refreshPreviewUnresolvedConflicts(draft);
+        if (draft.unresolvedConflictIds.length > 0) {
+          throw { code: 'CONFIG_CONFLICT', message: 'Resolve all preview conflicts before saving' };
+        }
+        const state = updateConfigurationState(programId, (current) => {
+          current.desired.content = draft.workingContent;
+          current.desired.validation = 'valid';
+          current.desired.diagnostics = [];
+          current.desired.conflicts = [];
+        });
+        previewRawDrafts.delete(programId);
+        return state;
+      }
+      case 'set_guided_intent': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request;
+        return updateConfigurationState(programId, (state) => {
+          const guided = request && typeof request === 'object' ? request as { settingId?: string; value?: unknown } : {};
+          const settingId = guided.settingId;
+          if (!settingId) return;
+          const projection = state.guidedProjection.find((item) => item.settingId === settingId);
+          if (projection) {
+            projection.status = guided.value === undefined ? 'inherited' : 'explicit';
+            projection.value = guided.value;
+          }
+        });
+      }
+      case 'apply_configuration_candidate': {
+        const programId = stringArg(args, 'programId');
+        return updateConfigurationState(programId, (state) => {
+          state.desired.validation = 'valid';
+          state.appliedRevision = { ...state.desired.revision };
+          state.lastKnownGoodRevision = { ...state.desired.revision };
+        }, false);
+      }
       case 'load_configuration_schema': {
         const programId = stringArg(args, 'programId');
         if (specs[programId]?.type.kind !== 'singBox') return null;
@@ -1605,17 +2287,6 @@ export function installMockBackend() {
           content: singBoxConfigurationSchemaContent,
           contentHash: '0'.repeat(64),
         };
-      }
-      case 'validate_config': return { valid: true, stdout: 'Configuration is valid.', stderr: '' };
-      case 'apply_config': {
-        const programId = stringArg(args, 'programId');
-        const baseHash = stringArg(args, 'baseHash');
-        const nextHash = `${baseHash || 'preview-hash'}-next`;
-        previewConfigurationDocuments.set(programId, {
-          content: stringArg(args, 'content'),
-          baseHash: nextHash,
-        });
-        return nextHash;
       }
       case 'run_action': return { stdout: 'Diagnostic completed successfully.', stderr: '' };
       case 'read_logs': {
@@ -1647,15 +2318,71 @@ export function installMockBackend() {
       case 'open_sing_box_dashboard':
       case 'open_mihomo_dashboard':
         return mockExternalAction(command);
-      case 'refresh_config_sources':
-        return { sourceCount: 2, document: configDocument(stringArg(args, 'programId')) };
+      case 'refresh_configuration_sources':
+      case 'update_configuration_sources': {
+        const programId = stringArg(args, 'programId');
+        if (command === 'update_configuration_sources') {
+          const request = objectArgs(args).request;
+          const spec = specs[programId];
+          if (spec?.managedConfig && request && typeof request === 'object') {
+            const value = request as { sources?: ConfigSource[]; remoteUpdate?: RemoteUpdate };
+            if (Array.isArray(value.sources)) {
+              spec.managedConfig.sources = structuredClone(value.sources) as typeof spec.managedConfig.sources;
+            }
+            spec.managedConfig.remoteUpdate = value.remoteUpdate as typeof spec.managedConfig.remoteUpdate;
+          }
+        }
+        return updateConfigurationState(programId, (state) => {
+          for (const source of state.sourceStatuses) {
+            if (source.freshness !== 'disabled') source.freshness = 'fresh';
+          }
+        });
+      }
       case 'replace_package':
         return null;
       default:
         if (command.startsWith('plugin:')) return null;
         throw { code: 'MOCK_COMMAND_UNIMPLEMENTED', message: `No UI preview response for ${command}` };
     }
-  }, { shouldMockEvents: true });
+  };
+  if (nativeWindowAvailable) {
+    installPreviewInvokeTransport(handlePreviewInvoke);
+  } else {
+    mockWindows('main');
+    mockIPC(handlePreviewInvoke, { shouldMockEvents: true });
+  }
+
+  window.addEventListener('camellia-ui-preview:automatic-config-update', (event) => {
+    const detail = (event as CustomEvent<{ programId?: string }>).detail;
+    const programId = detail?.programId ?? 'xray-primary';
+    const content = '{\n  "log": { "loglevel": "debug" },\n  "automatic": true\n}\n';
+    const state = updateConfigurationState(programId, (current) => {
+      current.desired.content = content;
+      current.desired.validation = 'valid';
+      current.desired.diagnostics = [];
+      current.desired.conflicts = [];
+      const logging = current.guidedProjection.find(
+        (projection) => projection.settingId === 'logging.level',
+      );
+      if (logging) {
+        logging.status = 'inherited';
+        logging.value = 'debug';
+      }
+      if (current.sourceStatuses[0]) {
+        current.sourceStatuses[0].sourceName = 'Automatically refreshed source';
+        current.sourceStatuses[0].freshness = 'fresh';
+      }
+    });
+    state.desired.revision.contentHash = 'preview-automatic-hash';
+    state.appliedRevision = { ...state.desired.revision };
+    state.lastKnownGoodRevision = { ...state.desired.revision };
+    previewConfigurationStates.set(programId, structuredClone(state));
+    previewConfigurationDocuments.set(programId, {
+      content,
+      baseHash: state.desired.revision.contentHash,
+    });
+    void emit('automatic-config-update', { programId, succeeded: true }).catch(() => null);
+  });
 
   if (previewParameters.has('__ui_revalidation_notice')) {
     window.setTimeout(() => {

@@ -5,10 +5,10 @@ use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 
 use crate::{
     ActionContext, ActionPlan, ActionResult, AdapterRegistry, CamelliaNexusError, CommandOutput,
-    ConfigDocument, ConfigurationSchemaDocument, DynConfigStore, DynProgramStore, DynToolRunner,
-    ErrorCode, ExecutableMetadata, JsonSchemaDialect, MAX_CONFIG_BYTES,
-    MAX_CONFIGURATION_SCHEMA_BYTES, ProgramConfigTransaction, ProgramId, ProgramSpec, Result,
-    StagedConfig, ValidationResult,
+    ConfigDocument, ConfigurationSchemaDocument, CoreBinaryFingerprint, DetectedBinary,
+    DynConfigStore, DynProgramStore, DynToolRunner, ErrorCode, ExecutableMetadata,
+    JsonSchemaDialect, MAX_CONFIG_BYTES, MAX_CONFIGURATION_SCHEMA_BYTES, ProgramConfigTransaction,
+    ProgramId, ProgramSpec, Result, StagedConfig, ValidationResult,
 };
 
 const JSON_SCHEMA_2020_12_URI: &str = "https://json-schema.org/draft/2020-12/schema";
@@ -52,6 +52,12 @@ impl PreparedConfigGuard {
 }
 
 impl CommittedConfigGuard {
+    pub fn new_hash(&self) -> &str {
+        &self.new_hash
+    }
+}
+
+impl CommittedProgramConfigGuard {
     pub fn new_hash(&self) -> &str {
         &self.new_hash
     }
@@ -106,10 +112,14 @@ impl ConfigService {
     ) -> Result<ConfigurationSchemaCacheKey> {
         let workspace = self.program_store.workspace(&spec.id).await?;
         let mut metadata = self.program_store.executable_metadata(spec).await?;
-        metadata.detected_version = spec
+        if let Some(recorded) = spec
             .executable
             .metadata()
-            .and_then(|metadata| metadata.detected_version.clone());
+            .filter(|recorded| recorded.fingerprint.sha256 == metadata.fingerprint.sha256)
+        {
+            metadata.probe.clone_from(&recorded.probe);
+            metadata.core_target.clone_from(&recorded.core_target);
+        }
         Ok(ConfigurationSchemaCacheKey {
             executable: spec.executable_path(&workspace),
             metadata,
@@ -178,10 +188,16 @@ impl ConfigService {
         Ok(Some(document))
     }
 
-    pub async fn probe_binary(&self, spec: &ProgramSpec) -> Result<Option<String>> {
+    pub async fn probe_binary(&self, spec: &ProgramSpec) -> Result<ExecutableMetadata> {
         let workspace = self.program_store.workspace(&spec.id).await?;
         let executable = spec.executable_path(&workspace);
-        self.probe_executable(spec, executable, workspace).await
+        let mut metadata = self.program_store.executable_metadata(spec).await?;
+        let detected = self
+            .probe_executable(spec, executable, workspace, &metadata.fingerprint)
+            .await?;
+        metadata.probe = detected.probe;
+        metadata.core_target = detected.core_target;
+        Ok(metadata)
     }
 
     pub async fn probe_executable(
@@ -189,14 +205,100 @@ impl ConfigService {
         spec: &ProgramSpec,
         executable: std::path::PathBuf,
         workspace: std::path::PathBuf,
-    ) -> Result<Option<String>> {
+        fingerprint: &CoreBinaryFingerprint,
+    ) -> Result<DetectedBinary> {
         let adapter = self.adapters.get(spec.program_type.kind());
         let plans = adapter.probe_plans(&executable, &workspace);
         let mut outputs = Vec::with_capacity(plans.len());
         for plan in plans {
             outputs.push(self.tool_runner.run(plan).await?);
         }
-        Ok(adapter.verify_probe(&outputs)?.version)
+        let mut detected = adapter.verify_probe(&outputs)?;
+        detected.core_target = match &detected.probe {
+            Some(probe) => Some(
+                crate::embedded_core_compatibility_catalog()?.resolve_target(
+                    spec.program_type.kind(),
+                    probe,
+                    spec.executable.compatibility(),
+                    Some(fingerprint.sha256.clone()),
+                )?,
+            ),
+            None => None,
+        };
+        Ok(detected)
+    }
+
+    pub async fn activation_preflight(
+        &self,
+        spec: &ProgramSpec,
+        validated_config_hash: Option<&str>,
+    ) -> Result<()> {
+        if spec.program_type.main_config().is_none() {
+            return Ok(());
+        }
+        let recorded = spec.executable.metadata().ok_or_else(|| {
+            CamelliaNexusError::new(
+                ErrorCode::InvalidState,
+                "Core activation requires an exact binary fingerprint",
+            )
+        })?;
+        let current = self.program_store.executable_metadata(spec).await?;
+        if current.fingerprint.sha256 != recorded.fingerprint.sha256 {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Core executable changed after configuration validation",
+            ));
+        }
+        let target = recorded.core_target.as_ref().ok_or_else(|| {
+            CamelliaNexusError::new(
+                ErrorCode::InvalidState,
+                "Core activation requires a compatibility target",
+            )
+        })?;
+        if target.fingerprint_sha256.as_deref() != Some(recorded.fingerprint.sha256.as_str()) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Core compatibility target does not match the executable fingerprint",
+            ));
+        }
+        let profile = crate::CoreCompatibilityProfile::resolve(target)?;
+        let config_hash = self.store.current_hash(spec).await?;
+        // A configuration commit that is still inside the controller's
+        // stabilization transaction already carries an exact native-validator
+        // result in its committed guard.  Accept that one-shot hash here; the
+        // durable state/evidence is updated by the desktop coordinator after
+        // the runtime confirmation succeeds.  Ordinary starts (and retries
+        // after rollback) must continue to use persisted candidate evidence.
+        if let Some(validated_config_hash) = validated_config_hash {
+            if config_hash != validated_config_hash {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigConflict,
+                    "Active configuration changed after native validation",
+                ));
+            }
+            return Ok(());
+        }
+        let evidence = self
+            .program_store
+            .configuration_validation_evidence(spec)
+            .await?
+            .ok_or_else(|| {
+                CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Active configuration has no native validation evidence",
+                )
+            })?;
+        if !evidence.validates(
+            &recorded.fingerprint.sha256,
+            &profile.profile_hash,
+            &config_hash,
+        ) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Active configuration validation evidence is stale",
+            ));
+        }
+        Ok(())
     }
 
     pub async fn load(&self, spec: &ProgramSpec) -> Result<ConfigDocument> {
@@ -225,6 +327,7 @@ impl ConfigService {
         base_hash: String,
     ) -> Result<ValidationResult> {
         let _guard = self.lock(&spec.id).await;
+        self.ensure_validation_binary(spec).await?;
         self.ensure_content_size(&content)?;
         self.ensure_hash(spec, &base_hash).await?;
         let staged = self.store.stage(spec, content.as_bytes()).await?;
@@ -246,6 +349,7 @@ impl ConfigService {
         base_hash: String,
     ) -> Result<PreparedConfigGuard> {
         let guard = self.lock(&spec.id).await;
+        self.ensure_validation_binary(spec).await?;
         self.ensure_content_size(&content)?;
         self.ensure_hash(spec, &base_hash).await?;
         let staged = self.store.stage(spec, content.as_bytes()).await?;
@@ -465,6 +569,23 @@ impl ConfigService {
                 "Configuration changed since it was loaded",
             ))
         }
+    }
+
+    async fn ensure_validation_binary(&self, spec: &ProgramSpec) -> Result<()> {
+        let recorded = spec.executable.metadata().ok_or_else(|| {
+            CamelliaNexusError::new(
+                ErrorCode::InvalidState,
+                "Core validation requires an exact binary fingerprint",
+            )
+        })?;
+        let current = self.program_store.executable_metadata(spec).await?;
+        if current.fingerprint.sha256 != recorded.fingerprint.sha256 {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Core executable changed before native validation",
+            ));
+        }
+        Ok(())
     }
 
     fn ensure_content_size(&self, content: &str) -> Result<()> {

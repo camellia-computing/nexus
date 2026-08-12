@@ -13,6 +13,7 @@ Camellia Nexus 是一款 Windows 优先、兼容 Linux 与 macOS 的桌面程序
 - 支持普通程序、sing-box、Xray、Mihomo，并为特定程序提供独立扩展能力
 - 支持配置校验、格式化/导出预览、原子保存、失败回滚和实时日志
 - 支持 sing-box/Xray 原生 JSON 与 Mihomo 原生 YAML 配置源的有序合并、手动刷新与定时刷新
+- 支持 VLESS、Shadowsocks、Hysteria2 与 TUIC v5 分享链接/订阅文本的预览、逐项兼容判断和目标 Core 转换
 - 支持 sing-box 原生 API、Clash API、Xray 本地 API Dashboard 与 Mihomo 外部 Web Dashboard
 - 支持托盘控制、窗口状态恢复、系统登录启动、中英文界面和多套外观
 - 支持授权核心、设备注册、短期 entitlement 租约、能力限制和数量限制
@@ -27,11 +28,17 @@ Team 新成员需先使用属于同一 Team 授权的激活码完成设备激活
 - `managed`：导入程序目录并维护隔离副本，适用于独立部署或多实例运行
 - `external`：直接使用现有可执行文件，不复制程序文件
 
-两种模式均以可执行文件所在目录作为工作目录。sing-box、Xray 与 Mihomo 可选择手动配置或托管配置。sing-box/Xray 的手动配置保留用户命令行配置参数并可提供最终覆盖；Mihomo 可在外部配置路径与应用内存储的 YAML 配置之间选择。托管配置由有序原生配置源生成主配置，并禁止命令行配置路径覆盖。Generic 类型保持原始 argv，不进行语义改写。
+两种模式均以可执行文件所在目录作为工作目录。sing-box、Xray 与 Mihomo 始终由客户端持有的唯一活动配置 `config/active.json` 或 `config/active.yaml` 驱动；额外参数不能指定其他配置文件或配置目录。需要引用外部文件时，应将其添加为 Local 配置源。Generic 类型保持原始 argv，不进行语义改写。
 
-配置源按界面顺序合并，后置值优先，最终结果必须通过对应二进制程序的原生校验后才会原子应用。本地源可使用绝对路径或工作目录相对路径；远程源仅接受 HTTPS，并可选 HTTP Basic 认证。自动更新开关只控制调度，不会重置已选间隔；关闭后再次启用仍恢复原间隔。单源限制 4 MiB，总读取限制 16 MiB。
+配置源按界面顺序和各 Core 的真实语义合并。来源可以是内联内容、绝对路径或工作目录相对路径的本地文件，以及仅限 HTTPS 的远程内容；远程源可选 HTTP Basic 认证。自动更新开关只控制调度，不会重置已选间隔；关闭后再次启用仍恢复原间隔。单源限制 4 MiB，总读取限制 16 MiB。一次临时读取、下载或解析失败会保留最近成功解析的快照，不会把来源当作空配置；0 byte、空白内容、失败和合法空映射会被分别处理。
 
-配置编辑器将通用 JSON/YAML 语法、通用 JSON Schema 能力和程序专属语义分层处理。sing-box `1.14.0-beta.2` 及以上版本会从当前 Profile 的确切二进制文件按需生成 Draft 2020-12 Schema，用于结构诊断、属性/值补全以及 sing-box tag 引用补全；结果按可执行文件路径、文件元数据和已探测版本缓存，任一项变化后自动失效。客户端不会跟随配置或 Schema 中的外部引用，也不会自动下载任意 `$schema` 地址。Schema 暂时不可用时编辑器会降级为语法模式，而保存前的目标程序原生校验始终是最终语义门禁。
+Inline、Local 和 Remote 来源会自动区分原生配置、单条分享链接、分享集合及其单层 Base64/Base64URL 包装。分享 Parser 先形成与 Core 无关的协议语义，再由 sing-box、Xray 或 Mihomo Translator 按能力生成普通配置片段；首版覆盖 VLESS、Shadowsocks（含 SIP002）、Hysteria2 和 TUIC v5，TUIC v5 到 Xray、`hysteria2+realm`/`hy2+realm`、TUIC v4 token-only、未知 Shadowsocks plugin 以及无法无损表达的关键认证/传输/安全参数会明确拒绝。集合按 item 隔离，至少一个节点可安全转换时以 Partial Success 接受有效项并显示 accepted/rejected 与警告；零有效项保留旧 Snapshot、Applied 和 Last Known Good。原始 observation 与转换片段使用 content-addressed sidecar 保存，普通日志不记录完整 URI、密码、UUID 或 token。
+
+所有来源先生成 Base configuration；常用设置保存为 Guided semantic intent，Raw 编辑器保存为相对于当前 Base 与 Guided 结果的语义修改，而不是冻结整份旧文件。Raw 草稿以 revision CAS 自动保存到桌面数据目录，不进入 localStorage，也不会自动 Apply；重开时可恢复，Base 更新后使用 Original Base / Your Draft / Updated Base 做语义三方 rebase。能安全合并的改动自动保留，真正冲突按最小语义路径显示 Keep Mine、Use Updated、Combine 或 Manual Edit，未解决的 blocking conflict 绝不能提交。Raw 与 Guided 重叠时 Raw 优先，界面会显示 Overridden/Custom，反向修改必须显式确认。Desired 未通过 Core 原生校验时仍会持久化供修复，但不会替换 Applied 或 Last Known Good；只有有效 candidate 才会原子写入唯一活动配置。
+
+Core 源代码兼容按双通道独立跟踪：Xray 为 `main` 与 GitHub 最新稳定 Release，Mihomo 为 `Alpha` 与最新稳定 Release，sing-box 为 `testing` 与最新稳定 Release。动态选择器清单只固定当前精确 tag/commit SHA；独立历史目录索引全部正式版、预发布版和已审查功能锚点。自定义二进制的 SHA-256 fingerprint、非信任 probe report、用户 compatibility preference、解析后的 target/profile 与 candidate native evidence 相互分离：报告版本不证明官方来源，Unknown/Uncatalogued 功能仍可尝试，一次 native success 只绑定精确 binary/profile/config。目标变化会从原始 sidecar 重解析 Source、重放 Guided/Raw Intent 并重新校验；旧 Applied/LKG 不会被无证据 candidate 覆盖。完整规范见 [Core 上游版本跟踪](docs/core-upstream-tracking.md)。
+
+配置编辑器将通用 JSON/YAML 语法、通用 JSON Schema 能力和程序专属语义分层处理。sing-box `1.14.0-beta.2` 及以上版本会从当前 Profile 的确切二进制文件按需生成 Draft 2020-12 Schema，用于结构诊断、属性/值补全以及 sing-box tag 引用补全；结果按可执行文件路径、精确 binary fingerprint、probe report 和解析后的 compatibility target 缓存，任一项变化后自动失效。客户端不会跟随配置或 Schema 中的外部引用，也不会自动下载任意 `$schema` 地址。Schema 暂时不可用时编辑器会降级为语法模式，而保存前的目标程序原生校验始终是最终语义门禁。
 
 Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listeners` 由后置源原位替换，`rules` 等有序列表按界面中的源顺序连接，因此界面顺序同时决定规则优先级。
 
@@ -45,6 +52,7 @@ Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listene
 
 - [SECURITY.md](SECURITY.md)
 - [docs/dependency-management.md](docs/dependency-management.md)
+- [docs/core-upstream-tracking.md](docs/core-upstream-tracking.md)
 - [docs/licensing-architecture.md](docs/licensing-architecture.md)
 - [docs/production-readiness-audit.md](docs/production-readiness-audit.md)
 - [docs/testing.md](docs/testing.md)
@@ -150,6 +158,7 @@ Camellia Nexus is a Windows-first desktop lifecycle manager for local background
 - Generic Program, sing-box, Xray and Mihomo support with type-specific extensions
 - Configuration validation, formatting/export actions, atomic save, rollback and live logs
 - Ordered local or HTTPS native JSON sources for sing-box/Xray and native YAML sources for Mihomo
+- Preview, item-level compatibility decisions, and target-Core translation for VLESS, Shadowsocks, Hysteria2, and TUIC v5 share links or subscription text
 - Native sing-box API, Clash API, Xray local API and Mihomo external Web dashboards
 - Tray controls, window-state restore, login startup, Chinese/English UI and multiple appearance themes
 - Licensing core with device registration, short-lived entitlement leases, capability gates and numeric limits
@@ -164,11 +173,17 @@ Arguments are entered as one command line and parsed into argv before submission
 - `managed`: imports a program directory and maintains an isolated copy
 - `external`: uses an existing executable in place
 
-Both modes use the executable directory as the working folder. sing-box, Xray and Mihomo support manual or managed configuration. sing-box/Xray manual mode preserves user-provided configuration arguments and may include a final override; Mihomo can use either an external configuration path or an application-stored YAML configuration. Managed mode builds the main configuration from ordered native sources and blocks command-line configuration path overrides. Generic Program keeps argv unchanged.
+Both modes use the executable directory as the working folder. sing-box, Xray and Mihomo are always driven by the single client-owned `config/active.json` or `config/active.yaml`; extra arguments cannot select another configuration file or directory. Add an external file as a Local source instead. Generic Programs keep argv unchanged.
 
-Configuration sources are merged in UI order. Later sources take precedence, and the generated result must pass the target binary’s native validation before atomic application. Local sources may be absolute paths or paths relative to the working folder. Remote sources must use HTTPS and may use HTTP Basic authentication. The automatic-update switch controls scheduling only and preserves the selected interval while disabled. Each source is limited to 4 MiB, with a 16 MiB total read limit.
+Configuration sources are merged in UI order using each Core's real semantics. A source may contain Inline content, reference an absolute or working-folder-relative Local file, or use an HTTPS-only Remote endpoint with optional HTTP Basic authentication. The automatic-update switch controls scheduling only and preserves the selected interval while disabled. Each source is limited to 4 MiB, with a 16 MiB total read limit. A transient read, download, or parse failure retains the last successfully parsed snapshot instead of turning the source into an empty configuration; zero bytes, whitespace, failure, and a valid empty mapping remain distinct states.
 
-The configuration editor separates generic JSON/YAML syntax, generic JSON Schema behavior, and program-specific semantics. sing-box `1.14.0-beta.2` or newer lazily generates a Draft 2020-12 Schema from the exact binary owned by the current Profile. It drives structural diagnostics, property/value completion, and sing-box tag-reference completion. Results are cached by executable path, file metadata, and detected version, then invalidated when any of those values changes. The client never follows external references from configuration or Schema content and never downloads an arbitrary `$schema` URL. If Schema support is temporarily unavailable, the editor falls back to syntax mode; the target program’s native validator remains the final semantic gate before saving.
+Inline, Local, and Remote sources automatically distinguish native configuration, a single share link, a share collection, and one Base64/Base64URL envelope layer. The share parser first produces Core-independent protocol semantics, then a sing-box, Xray, or Mihomo translator produces an ordinary configuration fragment according to target capabilities. The first compatibility set covers VLESS, Shadowsocks (including SIP002), Hysteria2, and TUIC v5. TUIC v5 to Xray, `hysteria2+realm`/`hy2+realm`, token-only TUIC v4, unknown Shadowsocks plugins, and critical authentication, transport, or security semantics that the target cannot preserve are rejected explicitly. Collections isolate each item: if at least one item translates safely, Partial Success accepts only those items and reports accepted/rejected counts and warnings; zero valid items retain the previous Snapshot, Applied revision, and Last Known Good. Original observations and translated fragments use content-addressed sidecars, and normal logs never contain full URIs, passwords, UUIDs, or tokens.
+
+Sources first produce the Base configuration. Common settings are stored as Guided semantic intent, while the Raw editor stores semantic changes relative to the current Base-plus-Guided result instead of freezing an old final file. Raw drafts are autosaved with revision CAS in the desktop data directory, never in localStorage and never applied automatically. They can be recovered after reopening; when Base changes, Original Base / Your Draft / Updated Base drive a semantic three-way rebase. Safe changes merge automatically, while genuine conflicts are shown at the smallest semantic path with Keep Mine, Use Updated, Combine, or Manual Edit actions; an unresolved blocking conflict can never commit. Raw wins when it overlaps Guided; the UI reports Overridden or Custom and requires explicit confirmation before the reverse change removes that Raw operation. An invalid Desired candidate is persisted for repair but never replaces Applied or Last Known Good. Only a candidate that passes the target Core's native validator is atomically written to the single active configuration.
+
+Core source compatibility is tracked on two independent lines: Xray `main` plus latest stable, Mihomo `Alpha` plus latest stable, and sing-box `testing` plus latest stable. The dynamic-selector manifest pins the current exact tag/commit SHA, while a separate historical catalog indexes every release, prerelease, and reviewed feature anchor. A custom binary's SHA-256 fingerprint, untrusted probe report, compatibility preference, resolved target/profile, and candidate native evidence are separate: reported version never proves official source, Unknown/Uncatalogued features remain attemptable, and one native success binds only the exact binary/profile/config. A target change reparses Sources from their original sidecars, replays Guided/Raw intent, and validates again; an unevidenced candidate cannot replace Applied/LKG. See [Core upstream version tracking](docs/core-upstream-tracking.md) for the complete contract.
+
+The configuration editor separates generic JSON/YAML syntax, generic JSON Schema behavior, and program-specific semantics. sing-box `1.14.0-beta.2` or newer lazily generates a Draft 2020-12 Schema from the exact binary owned by the current Profile. It drives structural diagnostics, property/value completion, and sing-box tag-reference completion. Results are cached by executable path, exact binary fingerprint, probe report, and resolved compatibility target, then invalidated when any of those values changes. The client never follows external references from configuration or Schema content and never downloads an arbitrary `$schema` URL. If Schema support is temporarily unavailable, the editor falls back to syntax mode; the target program’s native validator remains the final semantic gate before saving.
 
 For Mihomo, mappings merge recursively; later sources replace same-name `proxies`, `proxy-groups`, and `listeners` in place, while ordered lists such as `rules` are concatenated in UI source order, so that order also defines rule priority.
 
@@ -182,6 +197,7 @@ References:
 
 - [SECURITY.md](SECURITY.md)
 - [docs/dependency-management.md](docs/dependency-management.md)
+- [docs/core-upstream-tracking.md](docs/core-upstream-tracking.md)
 - [docs/licensing-architecture.md](docs/licensing-architecture.md)
 - [docs/testing.md](docs/testing.md)
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CamelliaNexusError, ErrorCode, Result};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 6;
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CONFIGURATION_SCHEMA_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ARGUMENTS: usize = 256;
@@ -64,11 +64,15 @@ impl std::fmt::Display for ProgramId {
 pub enum ExecutableSpec {
     Managed {
         path: PathBuf,
+        #[serde(default)]
+        compatibility: crate::CoreCompatibilityPreference,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<ExecutableMetadata>,
     },
     External {
         path: PathBuf,
+        #[serde(default)]
+        compatibility: crate::CoreCompatibilityPreference,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<ExecutableMetadata>,
     },
@@ -95,6 +99,22 @@ impl ExecutableSpec {
         }
     }
 
+    pub fn compatibility(&self) -> &crate::CoreCompatibilityPreference {
+        match self {
+            Self::Managed { compatibility, .. } | Self::External { compatibility, .. } => {
+                compatibility
+            }
+        }
+    }
+
+    pub fn set_compatibility(&mut self, value: crate::CoreCompatibilityPreference) {
+        match self {
+            Self::Managed { compatibility, .. } | Self::External { compatibility, .. } => {
+                *compatibility = value
+            }
+        }
+    }
+
     pub fn is_managed(&self) -> bool {
         matches!(self, Self::Managed { .. })
     }
@@ -103,10 +123,11 @@ impl ExecutableSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutableMetadata {
-    pub size: u64,
-    pub modified_unix_ms: u64,
+    pub fingerprint: crate::CoreBinaryFingerprint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detected_version: Option<String>,
+    pub probe: Option<crate::CoreProbeReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_target: Option<crate::CoreTargetIdentity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -135,20 +156,14 @@ pub enum ProgramType {
         args: Vec<String>,
     },
     SingBox {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        main_config: Option<PathBuf>,
         #[serde(default)]
         extra_args: Vec<String>,
     },
     Xray {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        main_config: Option<PathBuf>,
         #[serde(default)]
         extra_args: Vec<String>,
     },
     Mihomo {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        main_config: Option<PathBuf>,
         #[serde(default)]
         extra_args: Vec<String>,
     },
@@ -167,9 +182,8 @@ impl ProgramType {
     pub fn main_config(&self) -> Option<&Path> {
         match self {
             Self::Generic { .. } => None,
-            Self::SingBox { main_config, .. }
-            | Self::Xray { main_config, .. }
-            | Self::Mihomo { main_config, .. } => main_config.as_deref(),
+            Self::SingBox { .. } | Self::Xray { .. } => Some(Path::new("config/active.json")),
+            Self::Mihomo { .. } => Some(Path::new("config/active.yaml")),
         }
     }
 
@@ -259,6 +273,13 @@ pub struct PrivilegeAssessment {
     deny_unknown_fields
 )]
 pub enum ConfigSourceSpec {
+    Inline {
+        id: String,
+        name: String,
+        #[serde(default = "default_true")]
+        enabled: bool,
+        content: String,
+    },
     Local {
         id: String,
         name: String,
@@ -308,19 +329,23 @@ pub struct RemoteUpdateSpec {
 impl ConfigSourceSpec {
     pub fn id(&self) -> &str {
         match self {
-            Self::Local { id, .. } | Self::Remote { id, .. } => id,
+            Self::Inline { id, .. } | Self::Local { id, .. } | Self::Remote { id, .. } => id,
         }
     }
 
     pub fn name(&self) -> &str {
         match self {
-            Self::Local { name, .. } | Self::Remote { name, .. } => name,
+            Self::Inline { name, .. } | Self::Local { name, .. } | Self::Remote { name, .. } => {
+                name
+            }
         }
     }
 
     pub fn enabled(&self) -> bool {
         match self {
-            Self::Local { enabled, .. } | Self::Remote { enabled, .. } => *enabled,
+            Self::Inline { enabled, .. }
+            | Self::Local { enabled, .. }
+            | Self::Remote { enabled, .. } => *enabled,
         }
     }
 }
@@ -461,6 +486,9 @@ impl ProgramSpec {
                 "Program name must contain 1 to 128 bytes",
             ));
         }
+        self.executable
+            .compatibility()
+            .validate_for_program(self.program_type.kind())?;
         validate_path_text(&self.working_directory)?;
         match &self.executable {
             ExecutableSpec::Managed { path, .. } => {
@@ -500,6 +528,35 @@ impl ProgramSpec {
                 }
             }
         }
+        if let Some(metadata) = self.executable.metadata() {
+            metadata.fingerprint.validate()?;
+            if let Some(probe) = &metadata.probe {
+                probe.validate()?;
+            }
+            match (&metadata.core_target, self.program_type.kind()) {
+                (Some(_), ProgramKind::Generic) => {
+                    return Err(CamelliaNexusError::invalid_spec(
+                        "Generic programs cannot carry a Core compatibility target",
+                    ));
+                }
+                (Some(target), kind) if target.program != kind => {
+                    return Err(CamelliaNexusError::invalid_spec(
+                        "Executable Core target does not match the program kind",
+                    ));
+                }
+                (Some(target), _) => {
+                    target.validate()?;
+                    if target.fingerprint_sha256.as_deref()
+                        != Some(metadata.fingerprint.sha256.as_str())
+                    {
+                        return Err(CamelliaNexusError::invalid_spec(
+                            "Executable Core target is not bound to its binary fingerprint",
+                        ));
+                    }
+                }
+                (None, _) => {}
+            }
+        }
         if let Some(path) = self.program_type.main_config() {
             validate_relative_path(path, false)?;
             validate_path_text(path)?;
@@ -522,6 +579,23 @@ impl ProgramSpec {
             ExecutableSpec::Managed { path, .. } => workspace.join(path),
             ExecutableSpec::External { path, .. } => path.clone(),
         }
+    }
+
+    /// Returns the exact detected Core identity when available.  A supported
+    /// binary without trusted package provenance remains explicitly
+    /// unclassified; callers must not infer main/Alpha/testing from its
+    /// reported version text.
+    pub fn core_target_identity(&self) -> Option<crate::CoreTargetIdentity> {
+        let kind = self.program_type.kind();
+        if kind == ProgramKind::Generic {
+            return None;
+        }
+        Some(
+            self.executable
+                .metadata()
+                .and_then(|metadata| metadata.core_target.clone())
+                .unwrap_or_else(|| crate::CoreTargetIdentity::unknown(kind, None)),
+        )
     }
 
     pub fn working_directory_path(&self, workspace: &Path) -> PathBuf {
@@ -601,6 +675,13 @@ impl ProgramSpec {
                 continue;
             }
             match source {
+                ConfigSourceSpec::Inline { content, .. } => {
+                    if content.trim().is_empty() || content.len() > MAX_CONFIG_BYTES {
+                        return Err(CamelliaNexusError::invalid_spec(
+                            "Inline configuration sources must be non-empty and no larger than 4 MiB",
+                        ));
+                    }
+                }
                 ConfigSourceSpec::Local { path, .. } => {
                     validate_path_text(path)?;
                     if !path.is_absolute() {
@@ -849,17 +930,13 @@ fn validate_config_arguments(program_type: &ProgramType) -> Result<()> {
         ProgramType::Mihomo { .. } => &["-f", "--f", "-config", "--config"],
     };
     let args = program_type.arguments();
-    for (index, argument) in args.iter().enumerate() {
-        if flags.iter().any(|flag| argument == flag)
-            && args.get(index + 1).is_none_or(String::is_empty)
+    for argument in args {
+        if flags
+            .iter()
+            .any(|flag| argument == flag || argument.starts_with(&format!("{flag}=")))
         {
             return Err(CamelliaNexusError::invalid_spec(format!(
-                "Configuration argument {argument} requires a path"
-            )));
-        }
-        if flags.iter().any(|flag| argument == &format!("{flag}=")) {
-            return Err(CamelliaNexusError::invalid_spec(format!(
-                "Configuration argument {argument} requires a path"
+                "Configuration argument {argument} is unavailable; add external files as Local Sources"
             )));
         }
     }
@@ -867,11 +944,7 @@ fn validate_config_arguments(program_type: &ProgramType) -> Result<()> {
 }
 
 fn validate_mihomo_contract(spec: &ProgramSpec) -> Result<()> {
-    let ProgramType::Mihomo {
-        main_config,
-        extra_args,
-    } = &spec.program_type
-    else {
+    let ProgramType::Mihomo { extra_args } = &spec.program_type else {
         return Ok(());
     };
     if contains_argument_option(extra_args, &["-config", "--config"]) {
@@ -879,7 +952,7 @@ fn validate_mihomo_contract(spec: &ProgramSpec) -> Result<()> {
             "Mihomo inline configuration is unavailable; use a configuration file",
         ));
     }
-    if main_config.is_some() && contains_argument_option(extra_args, &["-f", "--f"]) {
+    if contains_argument_option(extra_args, &["-f", "--f"]) {
         return Err(CamelliaNexusError::invalid_spec(
             "Mihomo configuration path arguments conflict with the editable main configuration",
         ));
@@ -1162,26 +1235,24 @@ mod tests {
     }
 
     #[test]
-    fn program_specific_args_accept_and_detect_explicit_config() {
+    fn program_specific_args_reject_explicit_config() {
         let ty = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: vec!["-config=other.json".into()],
         };
         assert!(ty.has_explicit_config());
+        assert!(validate_config_arguments(&ty).is_err());
     }
 
     #[test]
     fn explicit_config_flag_requires_a_value() {
         let ty = ProgramType::SingBox {
-            main_config: None,
             extra_args: vec!["--config".into()],
         };
         assert!(validate_config_arguments(&ty).is_err());
-        let valid = ProgramType::SingBox {
-            main_config: None,
+        let attached = ProgramType::SingBox {
             extra_args: vec!["--config".into(), "/etc/sing-box/config.json".into()],
         };
-        assert!(validate_config_arguments(&valid).is_ok());
+        assert!(validate_config_arguments(&attached).is_err());
     }
 
     #[test]
@@ -1198,6 +1269,7 @@ mod tests {
             name: "Nested tool".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/tools/program".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic { args: Vec::new() },
@@ -1221,6 +1293,7 @@ mod tests {
             name: "Strict contract".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/program".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic { args: Vec::new() },
@@ -1249,14 +1322,46 @@ mod tests {
     }
 
     #[test]
+    fn program_contract_rejects_mismatched_or_inferred_core_identity() {
+        let mut spec = mihomo_spec(Vec::new());
+        let fingerprint = crate::CoreBinaryFingerprint {
+            sha256: "a".repeat(64),
+            size: 1,
+            modified_unix_ms: 1,
+        };
+        spec.executable.set_metadata(ExecutableMetadata {
+            fingerprint: fingerprint.clone(),
+            probe: None,
+            core_target: Some(
+                crate::CoreTargetIdentity::unknown(ProgramKind::Xray, None)
+                    .bind_fingerprint(&fingerprint),
+            ),
+        });
+        assert!(spec.validate().is_err());
+
+        spec.executable.set_metadata(ExecutableMetadata {
+            fingerprint: fingerprint.clone(),
+            probe: None,
+            core_target: Some(
+                crate::CoreTargetIdentity::unknown(ProgramKind::Mihomo, None)
+                    .bind_fingerprint(&fingerprint),
+            ),
+        });
+        assert!(spec.validate().is_ok());
+        assert_eq!(
+            spec.core_target_identity().expect("Core target").basis,
+            crate::CoreCompatibilityBasis::Unknown
+        );
+    }
+
+    #[test]
     fn tagged_enum_fields_use_camel_case() {
         let value = serde_json::to_value(ProgramType::SingBox {
-            main_config: Some("config/config.json".into()),
             extra_args: vec!["--verbose".into()],
         })
         .expect("serialize");
         assert_eq!(value["kind"], "singBox");
-        assert_eq!(value["mainConfig"], "config/config.json");
+        assert!(value.get("mainConfig").is_none());
         assert!(value.get("main_config").is_none());
 
         let state = serde_json::to_value(ProgramState::Running {
@@ -1303,12 +1408,10 @@ mod tests {
             name: "Mihomo".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/mihomo".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
-            program_type: ProgramType::Mihomo {
-                main_config: Some("config/managed.yaml".into()),
-                extra_args,
-            },
+            program_type: ProgramType::Mihomo { extra_args },
             managed_config: None,
             working_directory: "bin".into(),
             environment: BTreeMap::new(),
@@ -1331,7 +1434,7 @@ mod tests {
         assert!(spec.validate().is_ok());
         let value = serde_json::to_value(&spec).expect("serialize Mihomo program");
         assert_eq!(value["type"]["kind"], "mihomo");
-        assert_eq!(value["type"]["mainConfig"], "config/managed.yaml");
+        assert!(value["type"].get("mainConfig").is_none());
         assert_eq!(
             value["managedConfig"]["mihomoDashboard"]["listenPort"],
             9092
@@ -1344,19 +1447,16 @@ mod tests {
         assert!(spec.validate().is_err());
 
         spec.program_type = ProgramType::Mihomo {
-            main_config: None,
             extra_args: vec!["-f=/tmp/other.yaml".into()],
         };
-        assert!(spec.validate().is_ok());
+        assert!(spec.validate().is_err());
 
         spec.program_type = ProgramType::Mihomo {
-            main_config: None,
             extra_args: vec!["-config=Zm9v".into()],
         };
         assert!(spec.validate().is_err());
 
         spec.program_type = ProgramType::Mihomo {
-            main_config: None,
             extra_args: Vec::new(),
         };
         spec.environment
@@ -1422,10 +1522,10 @@ mod tests {
             name: "Remote auth".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/sing-box".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::SingBox {
-                main_config: Some("config/managed.json".into()),
                 extra_args: Vec::new(),
             },
             managed_config: Some(ManagedConfigSpec {
@@ -1503,10 +1603,10 @@ mod tests {
             name: "Team sources".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/sing-box".into(),
+                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::SingBox {
-                main_config: Some("config/managed.json".into()),
                 extra_args: Vec::new(),
             },
             managed_config: Some(ManagedConfigSpec {
@@ -1532,6 +1632,28 @@ mod tests {
                 path: "config/overflow.json".into(),
             });
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn inline_configuration_source_rejects_whitespace_and_accepts_an_empty_mapping() {
+        let mut spec = mihomo_spec(Vec::new());
+        spec.managed_config = Some(ManagedConfigSpec {
+            sources: vec![ConfigSourceSpec::Inline {
+                id: "inline".into(),
+                name: "Inline".into(),
+                enabled: true,
+                content: " \n\t ".into(),
+            }],
+            ..ManagedConfigSpec::default()
+        });
+        assert!(spec.validate().is_err());
+
+        if let Some(ManagedConfigSpec { sources, .. }) = spec.managed_config.as_mut()
+            && let ConfigSourceSpec::Inline { content, .. } = &mut sources[0]
+        {
+            *content = "{}".into();
+        }
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

@@ -5,8 +5,24 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
   import { startCompletion } from '@codemirror/autocomplete';
-  import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state';
-  import { EditorView, keymap, type Command, type ViewUpdate } from '@codemirror/view';
+  import {
+    Compartment,
+    EditorState,
+    Prec,
+    StateEffect,
+    StateField,
+    type Extension,
+    type Range,
+  } from '@codemirror/state';
+  import {
+    Decoration,
+    EditorView,
+    WidgetType,
+    keymap,
+    type Command,
+    type DecorationSet,
+    type ViewUpdate,
+  } from '@codemirror/view';
   import {
     copyLineDown,
     copyLineUp,
@@ -56,6 +72,11 @@
     ConfigurationDiagnostic,
     ConfigurationLanguage,
   } from './editor/configurationLanguage';
+  import { resolveConfigurationMarkerRange } from './editor/configurationMarkers';
+  import type {
+    ConfigurationEditorMarker,
+    ConfigurationEditorMarkerResolution,
+  } from './editor/configurationMarkerModel';
   import { ConfigurationLanguageService } from './editor/configurationLanguageService';
   import {
     parseJsonSchemaDocument,
@@ -76,11 +97,18 @@
   export let configurationSchemaLoading = false;
   export let configurationSchemaError = false;
   export let jsonSchemaSemantics: JsonSchemaCompletionSemantics | undefined;
+  export let markers: ConfigurationEditorMarker[] = [];
+  export let activeMarkerId = '';
+  export let markerActionsDisabled = false;
 
   const dispatch = createEventDispatcher<{
     retrySchema: void;
     save: void;
     validate: void;
+    resolveMarker: {
+      conflictId: string;
+      resolution: ConfigurationEditorMarkerResolution;
+    };
   }>();
 
   const instanceId = ++nextEditorInstance;
@@ -94,6 +122,17 @@
   const accessibilityCompartment = new Compartment();
   const wrappingCompartment = new Compartment();
   const schemaCompletionCompartment = new Compartment();
+  const replaceMarkerDecorations = StateEffect.define<DecorationSet>();
+  const markerDecorationField = StateField.define<DecorationSet>({
+    create: () => Decoration.none,
+    update: (decorations, transaction) => {
+      for (const effect of transaction.effects) {
+        if (effect.is(replaceMarkerDecorations)) return effect.value;
+      }
+      return decorations.map(transaction.changes);
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
   const accessibleDarkHighlightStyle = HighlightStyle.define([
     { tag: tags.keyword, color: '#d99bff' },
     {
@@ -152,6 +191,73 @@
     syntaxHighlighting(accessibleDarkHighlightStyle),
   ];
 
+  class ConfigurationConflictWidget extends WidgetType {
+    readonly marker: ConfigurationEditorMarker;
+    readonly disabled: boolean;
+    readonly resolve: (
+      conflictId: string,
+      resolution: ConfigurationEditorMarkerResolution,
+    ) => void;
+
+    constructor(
+      marker: ConfigurationEditorMarker,
+      disabled: boolean,
+      resolve: (
+        conflictId: string,
+        resolution: ConfigurationEditorMarkerResolution,
+      ) => void,
+    ) {
+      super();
+      this.marker = marker;
+      this.disabled = disabled;
+      this.resolve = resolve;
+    }
+
+    eq(other: ConfigurationConflictWidget): boolean {
+      return other.marker.id === this.marker.id
+        && other.marker.message === this.marker.message
+        && other.marker.canCombine === this.marker.canCombine
+        && other.disabled === this.disabled;
+    }
+
+    toDOM(): HTMLElement {
+      const container = document.createElement('span');
+      container.className = 'cm-configuration-conflict-widget';
+      container.dataset.markerId = this.marker.id;
+      const label = document.createElement('span');
+      label.className = 'cm-configuration-conflict-label';
+      label.textContent = `${translate('Conflict')}: ${this.marker.semanticPath}`;
+      label.title = this.marker.message;
+      container.append(label);
+      container.append(
+        this.actionButton('keepMine', translate('Keep Mine')),
+        this.actionButton('useUpdated', translate('Use Updated')),
+      );
+      if (this.marker.canCombine) {
+        container.append(this.actionButton('combine', translate('Combine')));
+      }
+      return container;
+    }
+
+    private actionButton(
+      resolution: ConfigurationEditorMarkerResolution,
+      label: string,
+    ): HTMLButtonElement {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'cm-configuration-conflict-action';
+      button.textContent = label;
+      button.disabled = this.disabled;
+      button.addEventListener('mousedown', (event) => event.preventDefault());
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.resolve(this.marker.id, resolution);
+      });
+      return button;
+    }
+  }
+
   let host: HTMLDivElement;
   let view: EditorView | undefined;
   let languageService: ConfigurationLanguageService | undefined;
@@ -183,6 +289,8 @@
   let appliedUiLanguage: UiLanguage = $uiLanguage;
   let appliedReadOnly = readOnly;
   let appliedRevision = revision;
+  let appliedMarkerIdentity = '';
+  let appliedActiveMarkerId = '';
 
   $: formatAvailable = language === 'jsonc' || language === 'yaml';
   $: schemaEnhancementExpected = configurationSchemaLoading
@@ -278,9 +386,17 @@
           if (mounted) checking = true;
           try {
             const analysis = await languageService?.analyze(value, editor.state.doc.toString());
-            return analysis?.diagnostics.map(
+            const localDiagnostics = analysis?.diagnostics.map(
               (diagnostic) => editorDiagnostic(diagnostic, value),
             ) ?? [];
+            return [
+              ...localDiagnostics,
+              ...configurationMarkerDiagnostics(
+                editor.state.doc.toString(),
+                value,
+                markers,
+              ),
+            ];
           } catch {
             return [
               {
@@ -290,6 +406,11 @@
                 source: languageSource(value),
                 message: translate('Local syntax diagnostics are temporarily unavailable.'),
               },
+              ...configurationMarkerDiagnostics(
+                editor.state.doc.toString(),
+                value,
+                markers,
+              ),
             ];
           } finally {
             languageTaskCount = Math.max(0, languageTaskCount - 1);
@@ -390,6 +511,101 @@
 
   function languageSource(value: ConfigurationLanguage): string {
     return value === 'yaml' ? 'YAML' : value === 'jsonc' ? 'JSON' : 'Configuration';
+  }
+
+  function configurationMarkerDiagnostics(
+    content: string,
+    sourceLanguage: ConfigurationLanguage,
+    editorMarkers: ConfigurationEditorMarker[],
+  ): Diagnostic[] {
+    return editorMarkers.map((marker) => {
+      const range = resolveConfigurationMarkerRange(
+        sourceLanguage,
+        content,
+        marker.segments,
+      );
+      return {
+        ...range,
+        severity: marker.severity,
+        source: marker.kind === 'conflict'
+          ? translate('Conflict')
+          : marker.kind === 'validation'
+            ? translate('Core validation')
+            : translate('Configuration warning'),
+        message: `${marker.semanticPath}: ${marker.message}`,
+      };
+    });
+  }
+
+  function markerDecorationSet(editor: EditorView): DecorationSet {
+    const content = editor.state.doc.toString();
+    const decorations: Range<Decoration>[] = [];
+    for (const marker of markers) {
+      const range = resolveConfigurationMarkerRange(language, content, marker.segments);
+      const line = editor.state.doc.lineAt(range.from);
+      const active = marker.id === activeMarkerId;
+      const classes = [
+        'cm-configuration-marker',
+        `cm-configuration-marker-${marker.kind}`,
+        `cm-configuration-marker-${marker.severity}`,
+        active ? 'cm-configuration-marker-active' : '',
+      ].filter(Boolean).join(' ');
+      if (range.to > range.from) {
+        decorations.push(
+          Decoration.mark({
+            class: classes,
+            attributes: {
+              'data-marker-id': marker.id,
+              title: marker.message,
+            },
+          }).range(range.from, range.to),
+        );
+      }
+      decorations.push(
+        Decoration.line({
+          class: `${classes} cm-configuration-marker-line`,
+          attributes: { 'data-marker-id': marker.id },
+        }).range(line.from),
+      );
+      if (marker.kind === 'conflict' && marker.resolvable) {
+        decorations.push(
+          Decoration.widget({
+            widget: new ConfigurationConflictWidget(
+              marker,
+              markerActionsDisabled,
+              resolveConfigurationMarker,
+            ),
+            side: 1,
+          }).range(line.to),
+        );
+      }
+    }
+    return Decoration.set(decorations, true);
+  }
+
+  function resolveConfigurationMarker(
+    conflictId: string,
+    resolution: ConfigurationEditorMarkerResolution,
+  ) {
+    dispatch('resolveMarker', { conflictId, resolution });
+  }
+
+  function synchronizeMarkerDecorations(editor: EditorView, revealActive: boolean) {
+    editor.dispatch({
+      effects: replaceMarkerDecorations.of(markerDecorationSet(editor)),
+    });
+    if (!revealActive || !activeMarkerId) return;
+    const marker = markers.find((item) => item.id === activeMarkerId);
+    if (!marker) return;
+    const range = resolveConfigurationMarkerRange(
+      language,
+      editor.state.doc.toString(),
+      marker.segments,
+    );
+    editor.dispatch({
+      selection: { anchor: range.from, head: range.to },
+      effects: EditorView.scrollIntoView(range.from, { y: 'center' }),
+    });
   }
 
   function updateEditorStatus(state: EditorState) {
@@ -632,11 +848,16 @@
           wrappingCompartment.of(EditorView.lineWrapping),
           schemaCompletionCompartment.of([]),
           readOnlyCompartment.of(editorReadOnly(readOnly)),
+          markerDecorationField,
           EditorView.updateListener.of((update: ViewUpdate) => {
             if (update.docChanged) {
               if (!formatting) setFormatStatus('');
               externalValue = update.state.doc.toString();
               value = externalValue;
+              const editor = update.view;
+              queueMicrotask(() => {
+                if (view === editor) synchronizeMarkerDecorations(editor, false);
+              });
             }
             updateEditorStatus(update.state);
             updateScrollableRegionAccessibility(update.view);
@@ -646,6 +867,7 @@
     });
     updateEditorStatus(view.state);
     updateScrollableRegionAccessibility(view);
+    synchronizeMarkerDecorations(view, false);
     forceLinting(view);
     return () => {
       mounted = false;
@@ -695,6 +917,7 @@
           lintCompartment.reconfigure(editorLint(language)),
         ],
       });
+      synchronizeMarkerDecorations(view, false);
       forceLinting(view);
     }
   }
@@ -708,6 +931,7 @@
           accessibilityCompartment.reconfigure(editorAccessibility()),
         ],
       });
+      synchronizeMarkerDecorations(view, false);
       forceLinting(view);
     }
   }
@@ -718,6 +942,20 @@
       view.dispatch({
         effects: readOnlyCompartment.reconfigure(editorReadOnly(readOnly)),
       });
+    }
+  }
+
+  $: if (view) {
+    const markerIdentity = JSON.stringify({
+      markers,
+      markerActionsDisabled,
+    });
+    const activeChanged = activeMarkerId !== appliedActiveMarkerId;
+    if (markerIdentity !== appliedMarkerIdentity || activeChanged) {
+      appliedMarkerIdentity = markerIdentity;
+      appliedActiveMarkerId = activeMarkerId;
+      synchronizeMarkerDecorations(view, activeChanged);
+      forceLinting(view);
     }
   }
 
@@ -1110,6 +1348,93 @@
 
   .editor :global(.cm-lintRange-warning) {
     text-decoration-color: var(--ui-warning);
+  }
+
+  .editor :global(.cm-configuration-marker) {
+    border-radius: 3px;
+    text-decoration-line: underline;
+    text-decoration-style: wavy;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 3px;
+  }
+
+  .editor :global(.cm-configuration-marker-conflict),
+  .editor :global(.cm-configuration-marker-error) {
+    background: color-mix(in srgb, var(--ui-danger-soft) 46%, transparent);
+    text-decoration-color: var(--ui-danger);
+  }
+
+  .editor :global(.cm-configuration-marker-warning) {
+    background: color-mix(in srgb, var(--ui-warning-soft) 42%, transparent);
+    text-decoration-color: var(--ui-warning);
+  }
+
+  .editor :global(.cm-configuration-marker-line) {
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--ui-warning) 72%, transparent);
+  }
+
+  .editor :global(.cm-configuration-marker-line.cm-configuration-marker-error),
+  .editor :global(.cm-configuration-marker-line.cm-configuration-marker-conflict) {
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--ui-danger) 78%, transparent);
+  }
+
+  .editor :global(.cm-configuration-marker-active) {
+    outline: 1px solid currentColor;
+    outline-offset: 1px;
+  }
+
+  .editor :global(.cm-configuration-conflict-widget) {
+    display: inline-flex;
+    max-width: calc(100% - 18px);
+    min-height: 25px;
+    align-items: center;
+    gap: 5px;
+    margin: 2px 8px 2px 14px;
+    border: 1px solid color-mix(in srgb, var(--ui-danger) 32%, var(--ui-border-default));
+    border-radius: var(--ui-radius-xs);
+    background: color-mix(in srgb, var(--ui-danger-soft) 58%, var(--ui-surface-raised));
+    padding: 3px 5px 3px 8px;
+    color: var(--ui-text-primary);
+    font: var(--ui-font-size-xs)/1.25 var(--ui-font-body, system-ui, sans-serif);
+    vertical-align: middle;
+  }
+
+  .editor :global(.cm-configuration-conflict-label) {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ui-danger);
+    font-weight: var(--ui-weight-semibold, 600);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor :global(.cm-configuration-conflict-action) {
+    width: auto;
+    min-height: 21px;
+    flex: 0 0 auto;
+    margin: 0;
+    border: 1px solid color-mix(in srgb, var(--ui-danger) 25%, var(--ui-border-default));
+    border-radius: 5px;
+    background: var(--ui-surface-raised);
+    padding: 2px 6px;
+    color: var(--ui-text-secondary);
+    box-shadow: none;
+    font: var(--ui-weight-semibold, 600) var(--ui-font-size-xs)/1.2 var(--ui-font-body, system-ui, sans-serif);
+    white-space: nowrap;
+  }
+
+  .editor :global(.cm-configuration-conflict-action:hover:not(:disabled)),
+  .editor :global(.cm-configuration-conflict-action:focus-visible) {
+    border-color: var(--ui-focus-ring);
+    background: var(--ui-state-hover);
+    color: var(--ui-text-primary);
+    outline: 2px solid var(--ui-focus-ring);
+    outline-offset: 1px;
+    transform: none;
+  }
+
+  .editor :global(.cm-configuration-conflict-action:disabled) {
+    opacity: .45;
   }
 
   .editor :global(.cm-panels-top) {

@@ -50,6 +50,10 @@ import {
   formatConfiguration,
 } from '../src/editor/configurationLanguage.ts';
 import {
+  resolveConfigurationMarkerRange,
+} from '../src/editor/configurationMarkers.ts';
+import { semanticPathSegments } from '../src/editor/configurationMarkerModel.ts';
+import {
   completeJsonSchema,
   parseJsonSchemaDocument,
 } from '../src/editor/jsonSchema.ts';
@@ -120,6 +124,30 @@ assert.equal(
     (diagnostic) => diagnostic.code === 'yaml.MULTIPLE_DOCS',
   ),
   true,
+);
+
+const identityMarkerPath = [
+  { kind: 'key', key: 'outbounds' },
+  { kind: 'identity', field: 'tag', value: 'edge' },
+  { kind: 'key', key: 'server' },
+];
+const markerJson = '{"outbounds":[{"tag":"direct","server":"direct.example"},{"tag":"edge","server":"edge.example"}]}';
+const markerJsonRange = resolveConfigurationMarkerRange('jsonc', markerJson, identityMarkerPath);
+assert.equal(markerJson.slice(markerJsonRange.from, markerJsonRange.to), '"edge.example"');
+const markerYaml = [
+  'outbounds:',
+  '  - tag: direct',
+  '    server: direct.example',
+  '  - tag: edge',
+  '    server: edge.example',
+  '',
+].join('\n');
+const markerYamlRange = resolveConfigurationMarkerRange('yaml', markerYaml, identityMarkerPath);
+assert.equal(markerYaml.slice(markerYamlRange.from, markerYamlRange.to), 'edge.example');
+assert.deepEqual(
+  semanticPathSegments('/outbounds[tag=edge]/server'),
+  identityMarkerPath,
+  'display paths remain a safe fallback when structured segments are unavailable',
 );
 assert.equal(
   analyzeConfiguration('yaml', '- rule\n- direct\n').diagnostics.some(
