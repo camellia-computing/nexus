@@ -65,12 +65,12 @@ use camellia_nexus_core::ProgramManager;
 #[cfg(feature = "desktop")]
 use tauri::{Emitter, Manager};
 
-#[cfg(any(feature = "desktop", all(test, unix)))]
+#[cfg(feature = "desktop")]
 pub(crate) struct RuntimeAuthorizationCoordinator {
     gate: tokio::sync::RwLock<()>,
 }
 
-#[cfg(any(feature = "desktop", all(test, unix)))]
+#[cfg(feature = "desktop")]
 impl RuntimeAuthorizationCoordinator {
     fn new() -> Self {
         Self {
@@ -667,7 +667,7 @@ mod startup_contract_tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, feature = "desktop"))]
 mod tests {
     use std::{
         collections::BTreeMap,
