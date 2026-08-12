@@ -65,12 +65,12 @@ use camellia_nexus_core::ProgramManager;
 #[cfg(feature = "desktop")]
 use tauri::{Emitter, Manager};
 
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", all(test, unix)))]
 pub(crate) struct RuntimeAuthorizationCoordinator {
     gate: tokio::sync::RwLock<()>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", all(test, unix)))]
 impl RuntimeAuthorizationCoordinator {
     fn new() -> Self {
         Self {
@@ -667,7 +667,7 @@ mod startup_contract_tests {
     }
 }
 
-#[cfg(all(test, unix, feature = "desktop"))]
+#[cfg(all(test, unix))]
 mod tests {
     use std::{
         collections::BTreeMap,
@@ -686,9 +686,10 @@ mod tests {
         ProgramManager, ProgramSpec, ProgramState, ProgramType, RestartPolicy, SCHEMA_VERSION,
     };
 
+    #[cfg(feature = "desktop")]
+    use crate::configuration_state::ConfigurationCoordinator;
     use crate::{
         FileStore, NativeProcessDriver, NativeToolRunner, RuntimeAuthorizationCoordinator,
-        configuration_state::ConfigurationCoordinator,
     };
 
     const TEST_PROCESS_EXIT: ProcessExit = ProcessExit {
@@ -1925,6 +1926,7 @@ esac
         }
     }
 
+    #[cfg(feature = "desktop")]
     #[tokio::test]
     async fn failed_config_stabilization_restores_and_runs_the_backup() {
         let directory = tempfile::tempdir().expect("tempdir");
