@@ -104,7 +104,10 @@
     const key = messageKey && diagnosticMessageKeys[messageKey]
       ? diagnosticMessageKeys[messageKey]
       : diagnosticMessageKeys[code];
-    return localizedMessage(key ?? 'Unknown configuration diagnostic')
+    return localizedMessage(
+      key
+        ?? 'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.',
+    )
       + (key ? '' : ` (${code})`);
   }
 
@@ -126,7 +129,9 @@
     if (messageKey === 'CONFIGURATION_IDENTITY_DUPLICATED') {
       return translate('A Raw identity is duplicated and cannot be applied safely.');
     }
-    return translate('Unknown configuration diagnostic');
+    return translate(
+      'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.',
+    );
   }
 </script>
 

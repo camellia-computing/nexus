@@ -1310,7 +1310,7 @@ const zh: Record<string, string> = {
   'Following the source will remove this setting override.': '跟随配置源将移除此设置的覆盖。',
   'Configuration changed elsewhere. Review the latest state before retrying.': '配置已在其他位置更新，请查看最新状态后重试。',
   'Applied and Last Known Good were retained.': '已保留 Applied 与 Last Known Good 配置。',
-  'Unknown configuration diagnostic': '配置诊断信息暂不可用。',
+  'Unknown configuration diagnostic': '结构化诊断详情暂不可用。请检查高亮的设置或编辑器问题以及验证器输出；Applied 与 Last Known Good 已保留。',
   'The Raw operation conflicts with the current source or Guided value.': 'Raw 操作与当前配置源或常用设置值冲突。',
   'A Raw identity is duplicated and cannot be applied safely.': 'Raw 中存在重复身份，无法安全应用。',
   'The latest source content is invalid; Applied and Last Known Good were retained.': '最新配置源内容无效；已保留 Applied 与 Last Known Good 配置。',
@@ -1345,7 +1345,8 @@ const zh: Record<string, string> = {
   'The candidate is waiting for source validation.': '候选配置正在等待配置源校验。',
   'The candidate was rejected by the exact binary; Applied and Last Known Good were retained.': '当前精确二进制拒绝了候选配置；已保留 Applied 与 Last Known Good 配置。',
   'The candidate validation evidence is missing or stale.': '候选配置校验证据缺失或已过期。',
-  'Unknown configuration diagnostic.': '配置诊断信息暂不可用。',
+  'Unknown configuration diagnostic.': '结构化诊断详情暂不可用。请检查高亮的设置或编辑器问题以及验证器输出；Applied 与 Last Known Good 已保留。',
+  'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.': '结构化诊断详情暂不可用。请检查高亮的设置或编辑器问题以及验证器输出；Applied 与 Last Known Good 已保留。',
   'Configuration source status': '配置源状态',
   'Base policy': '基础策略',
   'Managed routes': '托管路由',
@@ -1583,7 +1584,8 @@ const configurationDiagnosticMessages: Record<string, string> = {
 };
 
 export function configurationDiagnosticMessage(code: string | undefined): string {
-  return (code && configurationDiagnosticMessages[code]) || 'Unknown configuration diagnostic.';
+  return (code && configurationDiagnosticMessages[code])
+    || 'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.';
 }
 
 function chineseTranslation(source: string): string | undefined {
