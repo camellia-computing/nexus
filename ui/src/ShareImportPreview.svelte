@@ -46,7 +46,7 @@
     </div>
     <footer>
       <button type="button" on:click={() => dispatch('close')} disabled={busy}>{$t('Cancel')}</button>
-      <button class="primary" type="button" on:click={() => dispatch('confirm')} disabled={busy || !canConfirm}>{busy ? `${$t('Working')}…` : $t('Use accepted items')}</button>
+      <button class="primary" type="button" on:click={() => dispatch('confirm')} disabled={busy || !canConfirm}>{busy ? `${$t('Working')}…` : $t('Close preview')}</button>
     </footer>
   </div>
 </div>

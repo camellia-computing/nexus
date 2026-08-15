@@ -340,6 +340,14 @@ export const api = {
       programId,
       request: { sources, remoteUpdate, expectedGeneration },
     }),
+  updateConfigurationCompatibility: (
+    programId: string,
+    preference: import('./types').CoreCompatibilityPreference,
+    expectedGeneration: number,
+  ) => invoke<import('./types').ConfigurationStateView>('update_configuration_compatibility', {
+    programId,
+    request: { preference, expectedGeneration },
+  }),
   runAction: (programId: string, actionId: string, content: string, baseHash: string) =>
     invoke<ActionResult>('run_action', { programId, actionId, content, baseHash }),
   readLogs: (programId: string, stream: 'stdout' | 'stderr', maxBytes = 262144) =>

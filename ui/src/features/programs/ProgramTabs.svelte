@@ -3,7 +3,7 @@
   import { t } from '../../i18n';
   import Icon, { type IconName } from '../../lib/components/Icon.svelte';
 
-  type ProgramTab = 'overview' | 'dashboard' | 'configuration' | 'logs';
+  type ProgramTab = 'overview' | 'intent' | 'sources' | 'compatibility' | 'dashboard' | 'configuration' | 'logs';
 
   interface Props {
     active: ProgramTab;
@@ -12,6 +12,7 @@
     dashboardDisabled: boolean;
     dashboardTitle: string;
     configurationVisible: boolean;
+    settingsVisible: boolean;
     onSelect: (tab: ProgramTab) => void | Promise<void>;
   }
 
@@ -30,6 +31,7 @@
     dashboardDisabled,
     dashboardTitle,
     configurationVisible,
+    settingsVisible,
     onSelect,
   }: Props = $props();
 
@@ -37,6 +39,13 @@
     { id: 'overview', label: $t('Details'), icon: 'details', disabled: false },
     ...(dashboardVisible
       ? [{ id: 'dashboard' as const, label: $t('Dashboard'), icon: 'dashboard' as const, disabled: dashboardDisabled, title: dashboardTitle }]
+      : []),
+    ...(settingsVisible
+      ? [
+          { id: 'intent' as const, label: $t('Intent'), icon: 'sliders' as const, disabled: false },
+          { id: 'sources' as const, label: $t('Sources'), icon: 'folder' as const, disabled: false },
+          { id: 'compatibility' as const, label: $t('Compatibility'), icon: 'shield' as const, disabled: false },
+        ]
       : []),
     ...(configurationVisible
       ? [{ id: 'configuration' as const, label: $t('Configuration'), icon: 'config' as const, disabled: false }]

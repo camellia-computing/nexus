@@ -14,9 +14,9 @@ use tokio::sync::{Mutex, RwLock, broadcast, watch};
 use crate::{
     ActionDescriptor, ActionResult, AdapterRegistry, CamelliaNexusError, ConfigDocument,
     ConfigService, ConfigurationSchemaDocument, CreateAssets, DynConfigStore, DynProcessDriver,
-    DynProgramStore, DynToolRunner, ErrorCode, LoadReport, LogChunk, LogStream, ManagerEvent,
-    Mutation, PreparedConfigGuard, ProgramId, ProgramSpec, ProgramState, ProgramSummary, Result,
-    ValidationResult,
+    DynProgramStore, DynToolRunner, ErrorCode, ExecutableMetadata, LoadReport, LogChunk, LogStream,
+    ManagerEvent, Mutation, PreparedConfigGuard, ProgramId, ProgramSpec, ProgramState,
+    ProgramSummary, Result, ValidationResult,
 };
 
 const EVENT_CAPACITY: usize = 256;
@@ -769,6 +769,27 @@ impl ProgramManager {
         let _lease = handle.operation_lease().await?;
         handle.mutate(Mutation::RefreshBinaryIdentity).await?;
         Ok(handle.spec().await)
+    }
+
+    /// Refresh the probed executable identity only when the on-disk fingerprint
+    /// differs from the controller snapshot. Ordinary configuration reads can
+    /// therefore share the controller's read lease instead of racing a write
+    /// mutation and producing a misleading PROGRAM_BUSY error.
+    pub async fn refresh_binary_identity_if_changed(&self, id: &ProgramId) -> Result<ProgramSpec> {
+        let handle = self.handle(id).await?;
+        let lease = handle.operation_lease().await?;
+        let spec = handle.spec().await;
+        let current: ExecutableMetadata = self.program_store.executable_metadata(&spec).await?;
+        let unchanged = spec
+            .executable
+            .metadata()
+            .is_some_and(|metadata| metadata.fingerprint == current.fingerprint);
+        drop(lease);
+        if unchanged {
+            Ok(spec)
+        } else {
+            self.refresh_binary_identity(id).await
+        }
     }
 
     pub async fn load_configuration_schema(

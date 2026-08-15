@@ -13,8 +13,9 @@ use std::{
 
 use camellia_nexus_core::{
     ActionDescriptor, ActionResult, CommandPlan, ConfigDocument, ConfigSourceSpec,
-    CreateProgramRequest, ErrorCode, ExecutableSpec, LogChunk, LogStream, ProgramId, ProgramSpec,
-    ProgramState, ProgramSummary, ProgramType, RemoteUpdateSpec, Result,
+    CoreCompatibilityPreference, CreateProgramRequest, ErrorCode, ExecutableSpec, LogChunk,
+    LogStream, ProgramId, ProgramSpec, ProgramState, ProgramSummary, ProgramType, RemoteUpdateSpec,
+    Result,
 };
 use camellia_nexus_licensing::{
     DeviceState, EntitlementState, NumericLimit, ProtectedOperation, RestrictedOperation,
@@ -4006,6 +4007,13 @@ pub struct ConfigurationSourcesCommand {
     pub expected_generation: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationCompatibilityCommand {
+    pub preference: CoreCompatibilityPreference,
+    pub expected_generation: u64,
+}
+
 #[tauri::command]
 pub async fn get_configuration_state(
     state: State<'_, AppState>,
@@ -4228,9 +4236,10 @@ pub async fn update_configuration_sources(
 ) -> Result<camellia_nexus_core::ConfigurationStateView> {
     authorize_protected(&state, ProtectedOperation::UseManagedConfigSources)?;
     let program_id = id(program_id)?;
+    let configuration_lease = state.configuration_state.acquire_lease(&program_id).await;
     let current = state
         .configuration_state
-        .load_view(&state.manager, &program_id)
+        .load_view_with_lease(&state.manager, &program_id, &configuration_lease)
         .await?;
     if current.generation != request.expected_generation {
         return Err(camellia_nexus_core::CamelliaNexusError::new(
@@ -4275,7 +4284,13 @@ pub async fn update_configuration_sources(
         };
         state
             .configuration_state
-            .refresh(&state.manager, &program_id, Some(&local_base), &credentials)
+            .refresh_with_lease(
+                &state.manager,
+                &program_id,
+                Some(&local_base),
+                &credentials,
+                &configuration_lease,
+            )
             .await
     }
     .await;
@@ -4317,6 +4332,7 @@ pub async fn update_configuration_sources(
         .configuration_state
         .finish_source_update(&program_id)
         .await?;
+    drop(configuration_lease);
     if view.desired.validation == camellia_nexus_core::CandidateValidationStatus::Valid {
         let _operation =
             authorize_runtime_protected(&state, ProtectedOperation::UseManagedConfigSources)
@@ -4327,6 +4343,68 @@ pub async fn update_configuration_sources(
             .await;
     }
     Ok(view)
+}
+
+#[tauri::command]
+pub async fn update_configuration_compatibility(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: ConfigurationCompatibilityCommand,
+) -> Result<camellia_nexus_core::ConfigurationStateView> {
+    authorize_protected(&state, ProtectedOperation::EditPremiumConfiguration)?;
+    let program_id = id(program_id)?;
+    let configuration_lease = state.configuration_state.acquire_lease(&program_id).await;
+    let current_view = state
+        .configuration_state
+        .load_view_with_lease(&state.manager, &program_id, &configuration_lease)
+        .await?;
+    if current_view.generation != request.expected_generation {
+        return Err(camellia_nexus_core::CamelliaNexusError::new(
+            ErrorCode::ConfigConflict,
+            "Configuration changed since the compatibility target was loaded",
+        )
+        .with_message_key("CONFIGURATION_GENERATION_STALE"));
+    }
+
+    let (mut next_spec, program_state) = state.manager.get(&program_id).await?;
+    if !matches!(
+        program_state,
+        ProgramState::Stopped | ProgramState::Exited { .. } | ProgramState::Error { .. }
+    ) {
+        return Err(camellia_nexus_core::CamelliaNexusError::new(
+            ErrorCode::InvalidState,
+            "Stop the program before changing its Core compatibility baseline",
+        )
+        .with_message_key("CORE_COMPATIBILITY_PROGRAM_ACTIVE"));
+    }
+    request
+        .preference
+        .validate_for_program(next_spec.program_type.kind())?;
+    let previous_spec = next_spec.clone();
+    next_spec.executable.set_compatibility(request.preference);
+
+    update_program_transaction(&state, &mut next_spec, false).await?;
+    match state
+        .configuration_state
+        .load_view_with_lease(&state.manager, &program_id, &configuration_lease)
+        .await
+    {
+        Ok(view) => Ok(view),
+        Err(error) => {
+            let mut rollback = previous_spec;
+            match update_program_transaction(&state, &mut rollback, false).await {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(camellia_nexus_core::CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Compatibility target could not be saved or restored safely",
+                )
+                .with_message_key("CORE_COMPATIBILITY_RECOVERY_REQUIRED")
+                .with_details(format!(
+                    "retarget: {error}; ProgramSpec recovery: {rollback_error}"
+                ))),
+            }
+        }
+    }
 }
 
 fn create_source_base(request: &CreateProgramRequest) -> Option<PathBuf> {

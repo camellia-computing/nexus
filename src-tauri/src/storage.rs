@@ -3584,6 +3584,7 @@ mod tests {
             diagnostics: vec![ConfigurationDiagnostic {
                 code: "RAW_PARSE_FAILED".into(),
                 message: "Configuration is not valid JSON".into(),
+                message_key: None,
                 details: None,
             }],
             conflicts: Vec::new(),

@@ -9,7 +9,8 @@ use crate::share_compatibility::{
 use crate::{
     CamelliaNexusError, CoreCompatibilityProfile, CoreTargetIdentity, CoreValidationEvidence,
     ErrorCode, ManagedConfigSpec, ProgramKind, Result, XrayDashboardSpec,
-    config_service::hash_bytes, normalize_jsonc,
+    config_service::hash_bytes, embedded_core_compatibility_catalog,
+    embedded_core_upstream_manifest, normalize_jsonc,
 };
 
 pub const CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 3;
@@ -260,6 +261,10 @@ pub struct ConfigurationConflict {
     pub semantic_path: String,
     pub reason: String,
     pub severity: ConflictSeverity,
+    /// Stable UI mapping key.  `reason` remains technical context for logs,
+    /// while clients use this key for the localized explanation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2600,6 +2605,7 @@ fn identity_index(
             semantic_path: format!("[{field}={identity}]"),
             reason: "A semantic identity is duplicated".into(),
             severity: ConflictSeverity::Error,
+            message_key: Some("CONFIGURATION_IDENTITY_DUPLICATED".into()),
             source_value: None,
             guided_value: None,
             raw_value: None,
@@ -2633,6 +2639,7 @@ fn intent_conflict(
         semantic_path: display_semantic_path(path),
         reason: reason.into(),
         severity: ConflictSeverity::Error,
+        message_key: Some("CONFIGURATION_RAW_CONFLICT".into()),
         source_value: None,
         guided_value: None,
         raw_value,
@@ -2679,6 +2686,9 @@ pub enum CandidateValidationStatus {
 pub struct ConfigurationDiagnostic {
     pub code: String,
     pub message: String,
+    /// Stable UI mapping key; the message is retained as technical context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
 }
@@ -2884,6 +2894,37 @@ impl ConfigurationState {
     pub fn view(&self) -> ConfigurationStateView {
         let effective = parse_semantic_document(self.format, self.desired.content.as_bytes())
             .unwrap_or(Value::Null);
+        let mut compatibility_references: Vec<crate::CoreCompatibilityReference> =
+            embedded_core_compatibility_catalog()
+                .ok()
+                .and_then(|catalog| catalog.program(self.kind))
+                .map(|program| {
+                    program
+                        .versions
+                        .iter()
+                        .rev()
+                        .map(|version| crate::CoreCompatibilityReference::Release {
+                            tag: version.tag.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        if let Ok(manifest) = embedded_core_upstream_manifest()
+            && let Some(tracks) = manifest.program(self.kind)
+        {
+            for commit_sha in [
+                tracks.development.commit_sha.clone(),
+                tracks.stable.commit_sha.clone(),
+            ] {
+                if !compatibility_references.iter().any(|reference| {
+                    matches!(reference, crate::CoreCompatibilityReference::Commit { commit_sha: existing } if existing == &commit_sha)
+                }) {
+                    compatibility_references.push(
+                        crate::CoreCompatibilityReference::Commit { commit_sha },
+                    );
+                }
+            }
+        }
         ConfigurationStateView {
             schema_version: self.schema_version,
             kind: self.kind,
@@ -2918,6 +2959,7 @@ impl ConfigurationState {
                 &self.guided_intent,
                 &self.raw_intent,
             ),
+            compatibility_references,
         }
     }
 }
@@ -2971,6 +3013,7 @@ fn dashboard_raw_conflicts(
             semantic_path: display_semantic_path(&target),
             reason: "Dashboard Guided intent is overridden by Raw configuration".into(),
             severity: ConflictSeverity::Error,
+            message_key: Some("CONFIGURATION_RAW_OVERRIDE".into()),
             source_value: None,
             guided_value: guided.values.get(setting).cloned(),
             raw_value: None,
@@ -2998,6 +3041,8 @@ pub struct ConfigurationStateView {
     pub last_known_good_revision: Option<ConfigurationRevision>,
     pub guided_descriptors: Vec<GuidedSettingDescriptor>,
     pub guided_projection: Vec<GuidedProjection>,
+    #[serde(default)]
+    pub compatibility_references: Vec<crate::CoreCompatibilityReference>,
 }
 
 pub fn parse_semantic_document(format: ConfigurationFormat, content: &[u8]) -> Result<Value> {
@@ -3293,6 +3338,38 @@ mod tests {
     }
 
     #[test]
+    fn deleting_all_guided_fields_is_only_regular_raw_delete_operations() {
+        let base = serde_json::json!({
+            "log": {"loglevel": "info"},
+            "routing": {"domainStrategy": "AsIs"},
+            "unknown": {"keep": true}
+        });
+        let edited = serde_json::json!({"unknown": {"keep": true}});
+        let intent = diff_raw_intent(&base, &edited);
+        assert!(
+            intent
+                .operations
+                .iter()
+                .all(|operation| matches!(operation, IntentOperation::Delete { .. }))
+        );
+        assert_eq!(intent.operations.len(), 2);
+
+        let updated_base = serde_json::json!({
+            "log": {"loglevel": "debug"},
+            "routing": {"domainStrategy": "IPIfNonMatch"},
+            "unknown": {"keep": true, "new": 1}
+        });
+        let (effective, conflicts) = apply_raw_intent(&updated_base, &intent);
+        assert!(conflicts.is_empty());
+        assert_eq!(
+            effective["unknown"],
+            serde_json::json!({"keep": true, "new": 1})
+        );
+        assert!(effective["log"].get("loglevel").is_none());
+        assert!(effective["routing"].get("domainStrategy").is_none());
+    }
+
+    #[test]
     fn identityless_sequence_conflicts_instead_of_guessing_after_source_change() {
         let old = serde_json::json!({"rules":["A","B"]});
         let edited = serde_json::json!({"rules":["A","C"]});
@@ -3539,6 +3616,7 @@ mod tests {
                 vec![ConfigurationDiagnostic {
                     code: "CORE_INVALID".into(),
                     message: "invalid".into(),
+                    message_key: None,
                     details: None,
                 }],
                 None,

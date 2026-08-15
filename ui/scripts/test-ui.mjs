@@ -19,7 +19,7 @@ import {
 } from '../src/programs/shared/configuration.ts';
 import { applySingBoxDashboardChange } from '../src/programs/sing-box/dashboard-state.ts';
 import { mihomoProgram } from '../src/programs/mihomo/index.ts';
-import { errorInfoOf } from '../src/errors.ts';
+import { configurationErrorInfo, errorInfoOf } from '../src/errors.ts';
 import {
   clientVersionAdvisory,
   compareCanonicalSemVer,
@@ -707,6 +707,18 @@ const configurationSchemaError = errorInfoOf({
 });
 assert.equal(configurationSchemaError.title, 'Program schema unavailable');
 assert.match(configurationSchemaError.suggestion, /schema command/);
+const wrappedCompatibilityError = configurationErrorInfo(
+  new Error(JSON.stringify({
+    code: 'INVALID_SPEC',
+    messageKey: 'CORE_COMPATIBILITY_INVALID',
+    message: 'Selected Core commit SHA is invalid',
+  })),
+  'compatibility-save',
+);
+assert.equal(wrappedCompatibilityError.code, 'INVALID_SPEC');
+assert.equal(wrappedCompatibilityError.messageKey, 'CORE_COMPATIBILITY_INVALID');
+assert.match(wrappedCompatibilityError.message, /not available/);
+assert.match(wrappedCompatibilityError.details, /commit SHA/);
 for (const [code, title, message] of [
   ['TIMEOUT', 'Operation timed out', 'The operation did not finish in time.'],
   ['NETWORK', 'Network error', 'The network request could not be completed.'],

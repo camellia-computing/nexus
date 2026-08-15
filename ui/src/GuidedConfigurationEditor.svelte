@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { t } from './i18n';
+  import { t, translate, translateConfigurationValue, uiLanguage } from './i18n';
   import type {
     ConfigurationStateView,
     GuidedProjection,
@@ -36,7 +36,18 @@
 
   function dependencyEnabled(descriptor: GuidedSettingDescriptor): boolean {
     if (!descriptor.enabledWhen) return true;
-    return projectionById.get(descriptor.enabledWhen)?.value === true;
+    const dependency = projectionById.get(descriptor.enabledWhen);
+    // A Raw tombstone may remove the effective value while the user still
+    // needs to re-enter the dependency chain and replace that override.
+    if (dependency?.status === 'overridden' || dependency?.status === 'custom') return true;
+    return dependency?.value === true;
+  }
+
+  function dependencyHint(descriptor: GuidedSettingDescriptor): string | undefined {
+    if (!descriptor.enabledWhen) return undefined;
+    const dependency = projectionById.get(descriptor.enabledWhen);
+    if (dependency?.status === 'overridden') return 'The parent setting is controlled by Raw configuration.';
+    return dependency?.value === true ? undefined : 'Dependency unavailable';
   }
 
   function change(descriptor: GuidedSettingDescriptor, value: unknown) {
@@ -69,6 +80,54 @@
   function categoryLabel(category: string): string {
     return `Guided category: ${category}`;
   }
+
+  function settingValueLabel(descriptor: GuidedSettingDescriptor, value: string): string {
+    // Reference the store in this component so Svelte re-renders option
+    // labels immediately when the language changes while the tab remains
+    // mounted.
+    return $uiLanguage === 'zh-CN'
+      ? translateConfigurationValue(descriptor.id, value)
+      : value;
+  }
+
+  const diagnosticMessageKeys: Record<string, string> = {
+    SOURCE_INVALID: 'The latest source content is invalid; Applied and Last Known Good were retained.',
+    SOURCE_UNAVAILABLE: 'No parsed snapshot is available for this source.',
+    CORE_PROFILE_MISMATCH: 'The candidate was validated for a different compatibility profile.',
+    CORE_VALIDATION_EVIDENCE_STALE: 'The binary, compatibility profile, or configuration changed after native validation.',
+    CORE_INVALID: 'The Core rejected this candidate; Applied and Last Known Good were retained.',
+    CORE_TARGET_CHANGED: 'The Core compatibility target changed; review and validate the candidate again.',
+    CORE_TARGET_SOURCE_REJECTED: 'A source item is not expressible for the selected Core compatibility target.',
+  };
+
+  function diagnosticMessage(code: string, message: string, messageKey?: string): string {
+    const key = messageKey && diagnosticMessageKeys[messageKey]
+      ? diagnosticMessageKeys[messageKey]
+      : diagnosticMessageKeys[code];
+    return localizedMessage(key ?? 'Unknown configuration diagnostic')
+      + (key ? '' : ` (${code})`);
+  }
+
+  function localizedMessage(source: string): string {
+    // The shared translator intentionally removes terminal punctuation for
+    // compact labels.  Diagnostics and source details are sentences; retain
+    // their English punctuation while still translating the Chinese view.
+    return $uiLanguage === 'en' ? source : translate(source);
+  }
+
+  function conflictMessage(reason: string, messageKey?: string): string {
+    if (messageKey === 'CONFIGURATION_RAW_OVERRIDE'
+      || reason === 'Dashboard Guided intent is overridden by Raw configuration') {
+      return translate('This setting is currently overridden by Raw configuration.');
+    }
+    if (messageKey === 'CONFIGURATION_RAW_CONFLICT') {
+      return translate('The Raw operation conflicts with the current source or Guided value.');
+    }
+    if (messageKey === 'CONFIGURATION_IDENTITY_DUPLICATED') {
+      return translate('A Raw identity is duplicated and cannot be applied safely.');
+    }
+    return translate('Unknown configuration diagnostic');
+  }
 </script>
 
 <section class="guided-workspace" aria-label={$t('Common settings')}>
@@ -84,6 +143,9 @@
     >
       {$t(state.desired.validation === 'valid' ? 'Validated' : state.desired.validation === 'invalid' ? 'Needs attention' : 'Pending validation')}
     </span>
+    {#if state.desired.validation === 'invalid' && state.appliedRevision}
+      <span class="candidate-state retained">{$t('Applied/LKG retained')}</span>
+    {/if}
   </header>
 
   {#if state.sourceStatuses.length > 0}
@@ -93,22 +155,22 @@
         <span
           class:warning={source.freshness === 'stale'}
           class:problem={source.freshness === 'invalid' || source.freshness === 'unavailable'}
-          title={source.message ?? source.sourceName}
+          title={source.message ? localizedMessage(source.message) : source.sourceName}
         >
-          <i></i>{source.sourceName} · {$t(source.freshness)}{#if summary} · {summary.acceptedItems}/{summary.totalItems} {$t('accepted')}{/if}
+          <i></i>{$t(source.sourceName)}: {$t(source.freshness)}{#if summary} · {summary.acceptedItems}/{summary.totalItems} {$t('accepted')}{/if}
         </span>
       {/each}
     </div>
   {/if}
 
-  {#each categories as category (category)}
-    <div class="guided-category">
-      <h3>{$t(categoryLabel(category))}</h3>
-      <div class="guided-grid">
-        {#each state.guidedDescriptors.filter((descriptor) => descriptor.category === category) as descriptor (descriptor.id)}
+  <div class="guided-grid">
+    {#each categories as category (category)}
+      {#each state.guidedDescriptors.filter((descriptor) => descriptor.category === category) as descriptor, index (descriptor.id)}
           {@const projection = projectionFor(descriptor)}
           {@const controlDisabled = disabled || !dependencyEnabled(descriptor)}
+          {@const dependencyMessage = dependencyHint(descriptor)}
           <article class:custom={projection.status === 'custom'} class:overridden={projection.status === 'overridden'}>
+            {#if index === 0}<h3 class="setting-category">{$t(categoryLabel(category))}</h3>{/if}
             <div class="setting-copy">
               <strong>{$t(descriptor.label)}</strong>
               <small>{$t(descriptor.description)}</small>
@@ -135,7 +197,7 @@
                 >
                   <option value="" disabled>{$t(projection.status === 'custom' ? 'Custom / Advanced' : 'Select a value')}</option>
                   {#each descriptor.allowedValues as value (value)}
-                    <option {value}>{$t(value)}</option>
+                    <option {value}>{settingValueLabel(descriptor, value)}</option>
                   {/each}
                 </select>
               {:else if descriptor.control === 'number'}
@@ -148,23 +210,23 @@
               </button>
             </div>
             {#if projection.status === 'overridden'}
-              <p>{$t('Changing this setting explicitly removes the overlapping Raw override.')}</p>
+              <p>{$t('This setting is currently overridden by Raw configuration.')} {$t('Changing it will remove only the overlapping Raw operation.')}</p>
             {:else if projection.status === 'custom'}
               <p>{$t('The effective configuration cannot be represented safely by this simple control.')}</p>
             {/if}
+            {#if dependencyMessage}<p class="dependency-note">{$t(dependencyMessage)}</p>{/if}
           </article>
-        {/each}
-      </div>
-    </div>
-  {/each}
+      {/each}
+    {/each}
+  </div>
 
   {#if state.desired.diagnostics.length > 0 || state.desired.conflicts.length > 0}
     <div class="guided-diagnostics" role="status">
       {#each state.desired.diagnostics as diagnostic (`diagnostic-${diagnostic.code}`)}
-        <span><strong>{diagnostic.code}</strong>{diagnostic.message}</span>
+        <span><strong>{diagnostic.code}</strong>{diagnosticMessage(diagnostic.code, diagnostic.message, diagnostic.messageKey)}</span>
       {/each}
       {#each state.desired.conflicts as conflict (`conflict-${conflict.semanticPath}`)}
-        <span><strong>{conflict.semanticPath}</strong>{conflict.reason}</span>
+        <span><strong>{conflict.semanticPath}</strong>{conflictMessage(conflict.reason, conflict.messageKey)}</span>
       {/each}
     </div>
   {/if}
@@ -178,22 +240,24 @@
   .candidate-state, .source-statuses span, .projection-status { width: fit-content; border-radius: 999px; padding: 3px 8px; font-size: .78rem; background: rgba(60, 150, 95, .12); }
   .candidate-state.pending, .source-statuses span.warning { background: rgba(220, 160, 40, .14); }
   .candidate-state.invalid, .source-statuses span.problem { background: rgba(210, 70, 70, .14); }
+  .candidate-state.retained { background: rgba(75, 120, 190, .14); }
   .source-statuses { display: flex; flex-wrap: wrap; gap: 7px; }
   .source-statuses span { display: inline-flex; align-items: center; gap: 6px; }
   .source-statuses i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .65; }
-  .guided-category { display: grid; gap: 8px; }
-  .guided-category h3 { margin: 0; font-size: .86rem; text-transform: capitalize; opacity: .7; }
-  .guided-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 9px; }
-  article { display: grid; gap: 10px; align-content: start; padding: 12px; border: 1px solid var(--border-color, rgba(127,127,127,.22)); border-radius: 11px; background: var(--surface-background, rgba(255,255,255,.025)); }
+  .guided-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; align-items: stretch; }
+  .setting-category { margin: 0; font-size: .78rem; font-weight: 700; letter-spacing: .02em; text-transform: capitalize; opacity: .7; }
+  article { display: grid; gap: 8px; align-content: start; min-width: 0; min-height: 0; padding: 11px; border: 1px solid var(--border-color, rgba(127,127,127,.22)); border-radius: 11px; background: var(--surface-background, rgba(255,255,255,.025)); }
   article.custom, article.overridden { border-style: dashed; }
   .projection-status { margin-top: 4px; background: rgba(127,127,127,.12); }
-  .setting-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .setting-control select, .setting-control input[type='number'], .setting-control input[type='text'] { min-width: 150px; min-height: 34px; }
-  .setting-control button { min-height: 32px; }
-  .guided-toggle { display: inline-flex; align-items: center; }
-  .guided-toggle input { width: 18px; height: 18px; }
+  .setting-control { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
+  .setting-control select, .setting-control input[type='number'], .setting-control input[type='text'] { flex: 1 1 150px; width: auto; min-width: 0; min-height: 34px; }
+  .setting-control button { flex: 0 0 auto; min-height: 32px; max-width: 100%; }
+  .guided-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; justify-self: start; margin-inline: 0 auto; }
+  .guided-toggle input { width: 18px; height: 18px; margin: 0; }
   article p { margin: 0; font-size: .8rem; line-height: 1.4; opacity: .78; }
+  .dependency-note { color: var(--ui-text-warning, inherit); }
   .guided-diagnostics { display: grid; gap: 5px; padding: 10px; border-radius: 9px; background: rgba(210,70,70,.09); }
   .guided-diagnostics span { display: flex; gap: 8px; font-size: .82rem; }
-  @media (max-width: 720px) { .guided-grid { grid-template-columns: 1fr; } header { align-items: stretch; flex-direction: column; } }
+  @media (max-width: 720px) { .guided-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); } header { align-items: stretch; flex-direction: column; } }
+  @media (max-width: 520px) { .guided-grid { grid-template-columns: 1fr; } .setting-control { align-items: stretch; } .setting-control button { margin-inline-start: 0; } }
 </style>

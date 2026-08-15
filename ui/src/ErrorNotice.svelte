@@ -8,6 +8,9 @@
   export let dismissible = false;
   export let autoDismissMs = 0;
   export let onDismiss: () => void = () => {};
+  export let actionLabel = '';
+  export let onAction: (() => void | Promise<void>) | null = null;
+  export let actionBusy = false;
 
   let dismissTimer: number | undefined;
   let scheduledKey = '';
@@ -45,6 +48,11 @@
     onDismiss();
   }
 
+  async function runAction() {
+    if (!onAction || actionBusy) return;
+    await onAction();
+  }
+
   function pauseForPointer(paused: boolean) {
     pointerPaused = paused;
     scheduleDismiss();
@@ -79,6 +87,11 @@
       <details class="error-details"><summary>{$t('Technical details')}</summary><pre>{error.details}</pre></details>
     {/if}
     <small>{$t(error.suggestion)}</small>
+    {#if actionLabel && onAction}
+      <button class="error-action" type="button" on:click={() => void runAction()} disabled={actionBusy}>
+        {$t(actionBusy ? 'Retrying' : actionLabel)}
+      </button>
+    {/if}
   </div>
   {#if dismissible}<button class="icon-button" type="button" aria-label={$t('Dismiss error')} on:click={dismiss}><Icon name="close" /></button>{/if}
 </div>

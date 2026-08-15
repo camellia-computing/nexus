@@ -34,6 +34,7 @@ import type {
   XrayDashboardSnapshot,
   ConfigurationStateView,
   CoreCompatibilityProfile,
+  CoreCompatibilityPreference,
   CoreTargetIdentity,
   GuidedProjection,
   GuidedSettingDescriptor,
@@ -109,6 +110,7 @@ const removedLicensePreview = previewParameters.has('__ui_removed_license');
 const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
 const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
 const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
+const rawAllOverridePreview = previewParameters.has('__ui_raw_all_override');
 const requestedTeamRole = previewParameters.get('__ui_team_role');
 const previewWorkspaceRole: WorkspaceRole = teamMemberPreview
   ? 'operator'
@@ -344,6 +346,8 @@ const slowExternalActions = previewParameters.has('__ui_slow_external');
 const controlledProgramSelection = previewParameters.has('__ui_controlled_program_selection');
 const failExternalActions = previewParameters.has('__ui_fail_external');
 const failedExternalActions = new Set<string>();
+let sourceSaveFailurePending = previewParameters.has('__ui_source_save_error');
+let compatibilitySaveFailurePending = previewParameters.has('__ui_compatibility_save_error');
 
 function mockTeamResult<T>(value: T): T | Promise<T> {
   if (!slowTeamOperations) return value;
@@ -1011,6 +1015,13 @@ function configurationState(programId: string): ConfigurationStateView {
   const kind = spec?.type.kind ?? 'generic';
   const format = document.language === 'yaml' ? 'yaml' : 'jsonc';
   const guided = previewGuidedSettings(kind);
+  if (rawAllOverridePreview && kind !== 'generic') {
+    guided.projection = guided.projection.map((projection) => ({
+      ...projection,
+      status: 'overridden',
+      value: undefined,
+    }));
+  }
   const metadataTarget = kind === 'generic'
     ? undefined
     : spec?.executable.metadata?.coreTarget;
@@ -1099,6 +1110,10 @@ function configurationState(programId: string): ConfigurationStateView {
     lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
     guidedDescriptors: guided.descriptors,
     guidedProjection: guided.projection,
+    compatibilityReferences: [
+      { kind: 'release', tag: kind === 'xray' ? 'v26.3.27' : kind === 'singBox' ? 'v1.13.18' : 'v1.19.29' },
+      { kind: 'commit', commitSha: 'a'.repeat(40) },
+    ],
   };
   previewConfigurationStates.set(programId, state);
   return structuredClone(state);
@@ -1271,13 +1286,98 @@ function updatePreviewConflictPath(
   }
 }
 
+function previewContentHash(content: string): string {
+  // The preview backend does not need cryptographic hashes, but it does need
+  // content identity to exercise the same revision/evidence rules as the
+  // native backend.  FNV-1a is deterministic, fast and deliberately marked
+  // as a preview value so it can never be mistaken for native evidence.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `preview-content-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function previewGuidedPath(kind: ProgramKind, settingId: string): string[] | undefined {
+  const paths: Record<string, string[]> = {
+    'logging.level': kind === 'xray' ? ['log', 'loglevel'] : ['log', 'level'],
+    'dns.strategy': ['dns', 'strategy'],
+    'routing.autoDetectInterface': ['route', 'auto_detect_interface'],
+    'routing.domainStrategy': ['routing', 'domainStrategy'],
+    'network.ipv6': ['ipv6'],
+    'tun.enabled': ['tun', 'enable'],
+    'tun.strictRoute': ['tun', 'auto-route'],
+    'dns.enabled': ['dns', 'enable'],
+    'dns.mode': ['dns', 'enhanced-mode'],
+    'routing.mode': ['mode'],
+  };
+  return paths[settingId];
+}
+
+function setPreviewGuidedPath(
+  root: unknown,
+  path: string[],
+  value: unknown,
+): void {
+  if (!root || typeof root !== 'object' || Array.isArray(root) || path.length === 0) return;
+  let current = root as Record<string, unknown>;
+  for (const key of path.slice(0, -1)) {
+    const next = current[key];
+    if (!next || typeof next !== 'object' || Array.isArray(next)) {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  }
+  const leaf = path[path.length - 1];
+  if (value === undefined) delete current[leaf];
+  else current[leaf] = structuredClone(value);
+}
+
+function applyPreviewGuidedValue(
+  state: ConfigurationStateView,
+  settingId: string,
+  value: unknown,
+): void {
+  const path = previewGuidedPath(state.kind, settingId);
+  if (!path) return;
+  let document: unknown;
+  try {
+    document = JSON.parse(state.desired.content);
+  } catch {
+    // The native backend owns parsing/validation.  If a preview fixture is
+    // malformed, leave its text untouched and let the normal diagnostics
+    // surface the failure instead of throwing from this projection helper.
+    return;
+  }
+  setPreviewGuidedPath(document, path, value);
+  state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+}
+
 function updateConfigurationState(
   programId: string,
   update: (state: ConfigurationStateView) => void,
   advanceGeneration = true,
 ): ConfigurationStateView {
   const state = configurationState(programId);
+  const previousContent = state.desired.content;
   update(state);
+  if (state.desired.content !== previousContent) {
+    state.desired.revision.contentHash = previewContentHash(state.desired.content);
+    if (state.desired.validationEvidence) {
+      state.desired.validationEvidence = {
+        ...state.desired.validationEvidence,
+        configHash: state.desired.revision.contentHash,
+        validatedUnixMs: Date.now(),
+      };
+    }
+    const savedDocument = previewConfigurationDocuments.get(programId);
+    previewConfigurationDocuments.set(programId, {
+      ...savedDocument,
+      content: state.desired.content,
+      baseHash: state.desired.revision.contentHash,
+    });
+  }
   if (advanceGeneration) {
     state.generation += 1;
     state.desired.revision = {
@@ -1330,6 +1430,14 @@ function validatePreviewCompatibility(spec: ProgramSpec): void {
     && !/^[0-9a-f]{40}$/.test(preference.commitSha)
   ) {
     throw { code: 'INVALID_SPEC', message: 'Enter a lowercase 40-character catalogued commit SHA.' };
+  }
+  if (preference.mode === 'unknown' && preference.reference) {
+    if (preference.reference.kind === 'release' && !preference.reference.tag.trim()) {
+      throw { code: 'INVALID_SPEC', message: 'Enter a catalogued release tag or commit SHA.' };
+    }
+    if (preference.reference.kind === 'commit' && !/^[0-9a-f]{40}$/.test(preference.reference.commitSha)) {
+      throw { code: 'INVALID_SPEC', message: 'Enter a catalogued release tag or commit SHA.' };
+    }
   }
 }
 
@@ -2097,6 +2205,95 @@ export function installMockBackend() {
         setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() });
         return null;
       }
+      case 'update_configuration_compatibility': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as {
+          preference?: CoreCompatibilityPreference;
+          expectedGeneration?: number;
+        } | undefined;
+        const spec = specs[programId];
+        if (!spec || !request?.preference) {
+          throw { code: 'INVALID_SPEC', message: 'Compatibility update request is incomplete.' };
+        }
+        const preference = request.preference;
+        if (compatibilitySaveFailurePending) {
+          compatibilitySaveFailurePending = false;
+          throw new Error(JSON.stringify({
+            code: 'INVALID_SPEC',
+            messageKey: 'CORE_COMPATIBILITY_INVALID',
+            message: 'Selected Core reference is not catalogued for this program',
+          }));
+        }
+        if (states[programId]?.status === 'running') {
+          throw {
+            code: 'INVALID_STATE',
+            messageKey: 'CORE_COMPATIBILITY_PROGRAM_ACTIVE',
+            message: 'Stop the program before changing its Core compatibility baseline',
+          };
+        }
+        const current = configurationState(programId);
+        if (request.expectedGeneration !== current.generation) {
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'CONFIGURATION_GENERATION_STALE',
+            message: 'Configuration changed since the compatibility target was loaded',
+          };
+        }
+        const candidate = structuredClone(spec) as ProgramSpec;
+        candidate.executable.compatibility = structuredClone(preference);
+        validatePreviewCompatibility(candidate);
+        specs[programId] = candidate;
+        return updateConfigurationState(programId, (state) => {
+          if (candidate.type.kind === 'generic') return;
+          const previousTarget = candidate.executable.metadata?.coreTarget;
+          const reference = preference.mode === 'unknown'
+            ? preference.reference
+            : preference.mode === 'release'
+              ? { kind: 'release' as const, tag: preference.tag }
+              : preference.mode === 'commit'
+                ? { kind: 'commit' as const, commitSha: preference.commitSha }
+                : undefined;
+          const automaticTarget = unclassifiedCoreTarget(
+            candidate.type.kind,
+            candidate.executable.metadata?.probe?.reportedVersion,
+          );
+          const target: CoreTargetIdentity = {
+            program: candidate.type.kind,
+            coordinate: preference.mode === 'automatic'
+              ? automaticTarget.coordinate
+              : reference?.kind === 'release'
+              ? {
+                  kind: 'release',
+                  tag: reference.tag,
+                  normalizedVersion: reference.tag.replace(/^v/, ''),
+                  commitSha: 'a'.repeat(40),
+                }
+              : reference?.kind === 'commit'
+                ? { kind: 'commit', commitSha: reference.commitSha }
+                : { kind: 'unknown' },
+            basis: preference.mode === 'unknown'
+              ? 'unknown'
+              : preference.mode === 'automatic'
+                ? automaticTarget.basis
+                : 'userDeclared',
+            catalogRevision: previousTarget?.catalogRevision ?? 'core-history-v1-20260811',
+            reportedVersion: previousTarget?.reportedVersion,
+            fingerprintSha256: candidate.executable.metadata?.fingerprint.sha256,
+          };
+          if (candidate.executable.metadata) candidate.executable.metadata.coreTarget = target;
+          state.compatibilityProfile = mockCompatibilityProfile(candidate.type.kind, target);
+          state.desired.compatibilityProfileHash = state.compatibilityProfile.profileHash;
+          state.desired.validation = 'valid';
+          state.desired.validationEvidence = {
+            binarySha256: candidate.executable.metadata?.fingerprint.sha256 ?? 'a'.repeat(64),
+            profileHash: state.compatibilityProfile.profileHash,
+            configHash: state.desired.revision.contentHash,
+            validatorContractRevision: 'preview-validator-v1',
+            nativeAccepted: true,
+            validatedUnixMs: Date.now(),
+          };
+        });
+      }
       case 'remove_program': delete specs[stringArg(args, 'programId')]; return null;
       case 'list_actions': {
         const programId = stringArg(args, 'programId');
@@ -2252,16 +2449,47 @@ export function installMockBackend() {
       case 'set_guided_intent': {
         const programId = stringArg(args, 'programId');
         const request = objectArgs(args).request;
-        return updateConfigurationState(programId, (state) => {
-          const guided = request && typeof request === 'object' ? request as { settingId?: string; value?: unknown } : {};
+        const nextState = updateConfigurationState(programId, (state) => {
+          const guided = request && typeof request === 'object' ? request as { settingId?: string; value?: unknown; replaceRawOverride?: boolean } : {};
           const settingId = guided.settingId;
           if (!settingId) return;
           const projection = state.guidedProjection.find((item) => item.settingId === settingId);
+          if (projection?.status === 'overridden' && !guided.replaceRawOverride) {
+            throw { code: 'CONFIG_CONFLICT', message: 'This Guided setting is overridden by Raw configuration' };
+          }
+          const descriptor = state.guidedDescriptors.find((item) => item.id === settingId);
+          if (!projection || !descriptor) {
+            throw { code: 'NOT_FOUND', message: `Preview Guided setting was not found: ${settingId}` };
+          }
+          let nextValue = guided.value;
+          if (nextValue !== undefined && descriptor.control === 'select'
+            && !descriptor.allowedValues.includes(String(nextValue))) {
+            throw { code: 'INVALID_SPEC', message: `Preview Guided value is not allowed: ${settingId}` };
+          }
+          if (nextValue === undefined) {
+            // Following source restores the fixture's source-owned value.  It
+            // is intentionally resolved from a fresh descriptor projection,
+            // not from the possibly overridden current projection.
+            nextValue = previewGuidedSettings(state.kind).projection
+              .find((item) => item.settingId === settingId)?.value;
+          }
+          applyPreviewGuidedValue(state, settingId, nextValue);
           if (projection) {
             projection.status = guided.value === undefined ? 'inherited' : 'explicit';
-            projection.value = guided.value;
+            projection.value = nextValue;
+            projection.intentValue = guided.value;
           }
         });
+        const existingDraft = previewRawDrafts.get(programId);
+        if (existingDraft && existingDraft.draftRevision === 0) {
+          existingDraft.baseContent = nextState.desired.content;
+          existingDraft.userContent = nextState.desired.content;
+          existingDraft.workingContent = nextState.desired.content;
+          existingDraft.basedOnGeneration = nextState.generation;
+          existingDraft.updatedUnixMs = Date.now();
+          previewRawDrafts.set(programId, structuredClone(existingDraft));
+        }
+        return nextState;
       }
       case 'apply_configuration_candidate': {
         const programId = stringArg(args, 'programId');
@@ -2322,6 +2550,15 @@ export function installMockBackend() {
       case 'update_configuration_sources': {
         const programId = stringArg(args, 'programId');
         if (command === 'update_configuration_sources') {
+          if (sourceSaveFailurePending) {
+            sourceSaveFailurePending = false;
+            throw {
+              code: 'PROGRAM_BUSY',
+              messageKey: 'CONFIGURATION_OPERATION_BUSY',
+              message: 'Another configuration operation is still in progress',
+              details: 'source transaction lease is currently held',
+            };
+          }
           const request = objectArgs(args).request;
           const spec = specs[programId];
           if (spec?.managedConfig && request && typeof request === 'object') {

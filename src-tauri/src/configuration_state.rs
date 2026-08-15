@@ -77,6 +77,10 @@ impl ConfigurationCoordinator {
         }
     }
 
+    pub(crate) async fn acquire_lease(&self, id: &ProgramId) -> ConfigurationLease {
+        self.lock(id).await
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn forget(&self, id: &ProgramId) {
         self.locks.write().await.remove(id);
@@ -87,8 +91,17 @@ impl ConfigurationCoordinator {
         manager: &ProgramManager,
         id: &ProgramId,
     ) -> Result<ConfigurationStateView> {
-        let _lease = self.lock(id).await;
-        let spec = manager.refresh_binary_identity(id).await?;
+        let lease = self.lock(id).await;
+        self.load_view_with_lease(manager, id, &lease).await
+    }
+
+    pub(crate) async fn load_view_with_lease(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        _lease: &ConfigurationLease,
+    ) -> Result<ConfigurationStateView> {
+        let spec = manager.refresh_binary_identity_if_changed(id).await?;
         let mut state = self.load_or_initialize(manager, id).await?;
         let previous_generation = state.generation;
         if self.retarget_state(id, &spec, &mut state).await? {
@@ -387,7 +400,14 @@ impl ConfigurationCoordinator {
         let view = self
             .validate_existing(manager, id, &spec, state, previous_generation)
             .await?;
-        if view.desired.validation != CandidateValidationStatus::Invalid {
+        // A draft is only needed while it differs from the authoritative
+        // Desired candidate.  Invalid Desired is intentionally durable, so a
+        // malformed draft that has already been committed (or was repaired to
+        // the exact candidate bytes) must not be resurrected on the next
+        // restart.  Applied/LKG remain untouched by this cleanup.
+        if view.desired.validation != CandidateValidationStatus::Invalid
+            || view.desired.content == draft.working_content
+        {
             self.store.discard_raw_draft(id).await?;
         }
         Ok(view)
@@ -454,7 +474,19 @@ impl ConfigurationCoordinator {
         local_base: Option<&std::path::Path>,
         credentials: &CredentialSnapshot,
     ) -> Result<ConfigurationStateView> {
-        let _lease = self.lock(id).await;
+        let lease = self.lock(id).await;
+        self.refresh_with_lease(manager, id, local_base, credentials, &lease)
+            .await
+    }
+
+    pub(crate) async fn refresh_with_lease(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        local_base: Option<&std::path::Path>,
+        credentials: &CredentialSnapshot,
+        _lease: &ConfigurationLease,
+    ) -> Result<ConfigurationStateView> {
         let spec = manager.refresh_binary_identity(id).await?;
         let mut state = self.load_or_initialize(manager, id).await?;
         let previous_generation = state.generation;
@@ -490,9 +522,21 @@ impl ConfigurationCoordinator {
                 .await;
         }
         let snapshots = ordered_snapshots(&spec, &state.source_snapshots);
-        if observed.unavailable && snapshots.is_empty() {
+        // Every enabled source is part of the requested Base.  If one has no
+        // previously parsed snapshot, silently merging the remaining sources
+        // would manufacture a partial candidate and could apply it while the
+        // UI merely shows a small source-status badge.  Keep the current
+        // Desired content as an invalid candidate instead; Applied/LKG remain
+        // untouched and the user can repair the missing/invalid source from
+        // the same workspace.  A failed source with a prior snapshot is
+        // reported as Stale by refresh_snapshots and remains safely usable.
+        if observed.unavailable {
             state.generation = state.generation.saturating_add(1);
-            state.desired = unavailable_candidate(&state);
+            let invalid = state
+                .source_statuses
+                .values()
+                .any(|status| status.freshness == SourceFreshness::Invalid);
+            state.desired = blocked_source_candidate(&state, invalid);
             self.store
                 .save_configuration_state(id, &state, Some(previous_generation))
                 .await?;
@@ -579,6 +623,7 @@ impl ConfigurationCoordinator {
             vec![ConfigurationDiagnostic {
                 code: "CORE_INVALID".into(),
                 message: "Core validation failed".into(),
+                message_key: Some("CORE_INVALID".into()),
                 details: Some(format!("{}\n{}", validation.stdout, validation.stderr)),
             }]
         };
@@ -663,6 +708,7 @@ impl ConfigurationCoordinator {
                 semantic_path: format!("/sources/{source_id}"),
                 reason: "Share source has no item expressible for the selected Core target".into(),
                 severity: ConflictSeverity::Error,
+                message_key: Some("CORE_TARGET_SOURCE_REJECTED".into()),
                 source_value: None,
                 guided_value: None,
                 raw_value: None,
@@ -671,6 +717,7 @@ impl ConfigurationCoordinator {
             state.desired.diagnostics.push(ConfigurationDiagnostic {
                 code: "CORE_TARGET_SOURCE_REJECTED".into(),
                 message: "Share source was retained but has no accepted item for the selected Core target".into(),
+                message_key: Some("CORE_TARGET_SOURCE_REJECTED".into()),
                 details: Some(message),
             });
             state.desired.validation = CandidateValidationStatus::Invalid;
@@ -680,6 +727,7 @@ impl ConfigurationCoordinator {
             code: "CORE_TARGET_CHANGED".into(),
             message: "Core target changed; Sources, Guided intent, and Raw intent were retargeted"
                 .into(),
+            message_key: Some("CORE_TARGET_CHANGED".into()),
             details: None,
         });
         Ok(true)
@@ -903,15 +951,28 @@ fn native_validation_evidence(
     })
 }
 
-fn unavailable_candidate(state: &ConfigurationState) -> ConfigurationCandidate {
+fn blocked_source_candidate(state: &ConfigurationState, invalid: bool) -> ConfigurationCandidate {
     let mut candidate = state.desired.clone();
     candidate.revision =
         ConfigurationRevision::new(state.generation, &candidate.content, now_unix_ms());
     candidate.validation = CandidateValidationStatus::Invalid;
     candidate.validation_evidence = None;
     candidate.diagnostics = vec![ConfigurationDiagnostic {
-        code: "SOURCE_UNAVAILABLE".into(),
-        message: "No enabled source has a successfully parsed snapshot".into(),
+        code: if invalid {
+            "SOURCE_INVALID".into()
+        } else {
+            "SOURCE_UNAVAILABLE".into()
+        },
+        message: if invalid {
+            "An enabled source is invalid and has no successfully parsed snapshot".into()
+        } else {
+            "An enabled source is unavailable and has no successfully parsed snapshot".into()
+        },
+        message_key: Some(if invalid {
+            "SOURCE_INVALID".into()
+        } else {
+            "SOURCE_UNAVAILABLE".into()
+        }),
         details: None,
     }];
     candidate
@@ -1057,9 +1118,10 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use camellia_nexus_core::{
-        ConfigSourceSpec, ConfigurationFormat, CoreBinaryFingerprint, CoreTargetIdentity,
-        ExecutableMetadata, ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType,
-        RestartPolicy, SCHEMA_VERSION,
+        ConfigSourceSpec, ConfigurationFormat, CoreBinaryFingerprint, CoreCompatibilityPreference,
+        CoreCompatibilityReference, CoreProbeReport, CoreTargetIdentity, ExecutableMetadata,
+        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType, RestartPolicy, SCHEMA_VERSION,
+        embedded_core_compatibility_catalog,
     };
 
     use super::*;
@@ -1163,6 +1225,35 @@ mod tests {
     }
 
     #[test]
+    fn guided_replace_removes_only_overlapping_raw_operations() {
+        let program = spec(Vec::new());
+        let key =
+            |value: &str| vec![camellia_nexus_core::SemanticPathSegment::Key { key: value.into() }];
+        let mut intent = RawManualIntent {
+            based_on_revision: None,
+            operations: vec![
+                camellia_nexus_core::IntentOperation::Set {
+                    path: [key("log"), key("loglevel")].concat(),
+                    value: serde_json::json!("debug"),
+                },
+                camellia_nexus_core::IntentOperation::Set {
+                    path: key("routing"),
+                    value: serde_json::json!({"domainStrategy": "IPOnDemand"}),
+                },
+            ],
+        };
+
+        assert!(raw_overrides_setting(&program, &intent, "logging.level"));
+        remove_raw_override(&program, &mut intent, "logging.level");
+        assert_eq!(intent.operations.len(), 1);
+        assert!(matches!(
+            &intent.operations[0],
+            camellia_nexus_core::IntentOperation::Set { path, .. }
+                if path == &key("routing")
+        ));
+    }
+
+    #[test]
     fn created_managed_state_uses_real_source_observations() {
         let spec = spec(vec![
             inline("base", true),
@@ -1237,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_candidate_uses_the_new_state_generation() {
+    fn blocked_source_candidate_uses_the_new_state_generation_and_reason() {
         let merge = camellia_nexus_core::merge_configuration_sources(
             ProgramKind::Xray,
             &[snapshot("initial")],
@@ -1262,7 +1353,7 @@ mod tests {
         state.mark_applied().expect("applied");
         state.generation = 2;
 
-        let candidate = unavailable_candidate(&state);
+        let candidate = blocked_source_candidate(&state, false);
 
         assert_eq!(candidate.revision.generation, state.generation);
         assert_eq!(
@@ -1271,5 +1362,122 @@ mod tests {
         );
         assert_eq!(candidate.validation, CandidateValidationStatus::Invalid);
         assert_eq!(candidate.diagnostics[0].code, "SOURCE_UNAVAILABLE");
+
+        let invalid = blocked_source_candidate(&state, true);
+        assert_eq!(invalid.validation, CandidateValidationStatus::Invalid);
+        assert_eq!(invalid.diagnostics[0].code, "SOURCE_INVALID");
+        assert!(state.applied.is_some());
+        assert!(state.last_known_good.is_some());
+    }
+
+    #[tokio::test]
+    async fn unknown_without_reference_retargets_without_replacing_applied_or_lkg() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let coordinator = ConfigurationCoordinator::new(Arc::new(
+            FileStore::new(directory.path().join("store")).expect("file store"),
+        ));
+        let mut referenced_spec = spec(Vec::new());
+        let fingerprint = referenced_spec
+            .executable
+            .metadata()
+            .expect("metadata")
+            .fingerprint
+            .clone();
+        let catalog = embedded_core_compatibility_catalog().expect("catalog");
+        let release = catalog
+            .program(ProgramKind::Xray)
+            .expect("xray catalog")
+            .versions
+            .first()
+            .expect("catalogued release");
+        let referenced_preference = CoreCompatibilityPreference::Unknown {
+            reference: Some(CoreCompatibilityReference::Release {
+                tag: release.tag.clone(),
+            }),
+        };
+        let probe = CoreProbeReport::from_reported_version(Some("private xray build".into()));
+        let referenced_target = catalog
+            .resolve_target(
+                ProgramKind::Xray,
+                &probe,
+                &referenced_preference,
+                Some(fingerprint.sha256.clone()),
+            )
+            .expect("referenced target");
+        referenced_spec
+            .executable
+            .set_compatibility(referenced_preference);
+        referenced_spec.executable.set_metadata(ExecutableMetadata {
+            fingerprint: fingerprint.clone(),
+            probe: Some(probe.clone()),
+            core_target: Some(referenced_target),
+        });
+
+        let merge = camellia_nexus_core::merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot("initial")],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(&referenced_spec).expect("referenced profile"),
+        )
+        .expect("configuration state");
+        state
+            .mark_validation(
+                true,
+                Vec::new(),
+                Some(
+                    native_validation_evidence(&referenced_spec, &state)
+                        .expect("validation evidence"),
+                ),
+            )
+            .expect("validation");
+        state.mark_applied().expect("applied");
+        let applied = state.applied.clone();
+        let last_known_good = state.last_known_good.clone();
+
+        let mut unreferenced_spec = referenced_spec.clone();
+        let unreferenced_preference = CoreCompatibilityPreference::Unknown { reference: None };
+        let unreferenced_target = catalog
+            .resolve_target(
+                ProgramKind::Xray,
+                &probe,
+                &unreferenced_preference,
+                Some(fingerprint.sha256.clone()),
+            )
+            .expect("unreferenced target");
+        unreferenced_spec
+            .executable
+            .set_compatibility(unreferenced_preference);
+        unreferenced_spec
+            .executable
+            .set_metadata(ExecutableMetadata {
+                fingerprint,
+                probe: Some(probe),
+                core_target: Some(unreferenced_target),
+            });
+
+        assert!(
+            coordinator
+                .retarget_state(&referenced_spec.id, &unreferenced_spec, &mut state)
+                .await
+                .expect("retarget")
+        );
+        assert!(matches!(
+            state.compatibility_profile.target.coordinate,
+            camellia_nexus_core::CoreVersionCoordinate::Unknown
+        ));
+        assert_eq!(
+            state.compatibility_profile.target.basis,
+            camellia_nexus_core::CoreCompatibilityBasis::Unknown
+        );
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.last_known_good, last_known_good);
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
+        assert!(state.desired.validation_evidence.is_none());
     }
 }

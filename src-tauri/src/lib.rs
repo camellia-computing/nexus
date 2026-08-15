@@ -523,6 +523,7 @@ pub fn run() {
             commands::apply_configuration_candidate,
             commands::refresh_configuration_sources,
             commands::update_configuration_sources,
+            commands::update_configuration_compatibility,
             commands::read_logs,
             commands::clear_logs,
             commands::open_working_directory,

@@ -140,7 +140,24 @@ pub enum CoreCompatibilityPreference {
     Commit {
         commit_sha: String,
     },
-    Unknown,
+    Unknown {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reference: Option<CoreCompatibilityReference>,
+    },
+}
+
+/// An optional reviewed upstream target used only as a feature reference for
+/// an otherwise unknown/custom binary.  It never proves the binary's origin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum CoreCompatibilityReference {
+    Release { tag: String },
+    Commit { commit_sha: String },
 }
 
 impl CoreCompatibilityPreference {
@@ -159,7 +176,13 @@ impl CoreCompatibilityPreference {
             invalid_compatibility("No historical compatibility catalog exists for this program")
         })?;
         match self {
-            Self::Automatic | Self::Unknown => Ok(()),
+            Self::Automatic => Ok(()),
+            Self::Unknown { reference } => {
+                if let Some(reference) = reference {
+                    validate_reference(program, reference, catalog_program)?;
+                }
+                Ok(())
+            }
             Self::Release { tag } => {
                 if tag.trim() != tag || tag.is_empty() || tag.len() > 128 {
                     return Err(invalid_compatibility(
@@ -746,10 +769,36 @@ impl CoreCompatibilityCatalog {
             invalid_compatibility("No historical compatibility catalog exists for this program")
         })?;
         let (coordinate, basis) = match preference {
-            CoreCompatibilityPreference::Unknown => (
-                CoreVersionCoordinate::Unknown,
-                CoreCompatibilityBasis::Unknown,
-            ),
+            CoreCompatibilityPreference::Unknown { reference } => {
+                let Some(reference) = reference else {
+                    return Ok(CoreTargetIdentity {
+                        program: kind,
+                        coordinate: CoreVersionCoordinate::Unknown,
+                        basis: CoreCompatibilityBasis::Unknown,
+                        catalog_revision: self.extractor_revision.clone(),
+                        reported_version: probe.reported_version.clone(),
+                        fingerprint_sha256,
+                    });
+                };
+                validate_reference(kind, reference, program)?;
+                let coordinate = match reference {
+                    CoreCompatibilityReference::Release { tag } => {
+                        let version = program
+                            .versions
+                            .iter()
+                            .find(|version| version.tag == *tag)
+                            .expect("validated release reference");
+                        release_coordinate(version)
+                    }
+                    CoreCompatibilityReference::Commit { commit_sha } => {
+                        CoreVersionCoordinate::Commit {
+                            commit_sha: commit_sha.clone(),
+                            branch: None,
+                        }
+                    }
+                };
+                (coordinate, CoreCompatibilityBasis::Unknown)
+            }
             CoreCompatibilityPreference::Release { tag } => {
                 let version = program
                     .versions
@@ -803,6 +852,54 @@ impl CoreCompatibilityCatalog {
         target.validate()?;
         Ok(target)
     }
+}
+
+fn validate_reference(
+    program: ProgramKind,
+    reference: &CoreCompatibilityReference,
+    catalog_program: &CoreCatalogProgram,
+) -> Result<()> {
+    match reference {
+        CoreCompatibilityReference::Release { tag } => {
+            if tag.trim() != tag || tag.is_empty() || tag.len() > 128 {
+                return Err(invalid_compatibility(
+                    "Selected Core reference release tag is invalid",
+                ));
+            }
+            if !catalog_program
+                .versions
+                .iter()
+                .any(|version| version.tag == *tag)
+            {
+                return Err(invalid_compatibility(
+                    "Selected Core reference release is not catalogued",
+                ));
+            }
+        }
+        CoreCompatibilityReference::Commit { commit_sha } => {
+            if !is_commit_sha(commit_sha) {
+                return Err(invalid_compatibility(
+                    "Selected Core reference commit SHA is invalid",
+                ));
+            }
+            let known = catalog_program
+                .versions
+                .iter()
+                .any(|version| version.commit_sha == *commit_sha)
+                || crate::embedded_core_upstream_manifest()?
+                    .program(program)
+                    .is_some_and(|tracks| {
+                        tracks.development.commit_sha == *commit_sha
+                            || tracks.stable.commit_sha == *commit_sha
+                    });
+            if !known {
+                return Err(invalid_compatibility(
+                    "Selected Core reference commit is not catalogued",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn embedded_core_compatibility_catalog() -> Result<&'static CoreCompatibilityCatalog> {
@@ -943,6 +1040,7 @@ fn short_revision(value: &str) -> &str {
 
 fn invalid_compatibility(message: impl Into<String>) -> CamelliaNexusError {
     CamelliaNexusError::new(ErrorCode::InvalidSpec, message)
+        .with_message_key("CORE_COMPATIBILITY_INVALID")
 }
 
 #[cfg(test)]
@@ -990,7 +1088,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            CoreCompatibilityPreference::Unknown
+            CoreCompatibilityPreference::Unknown { reference: None }
                 .validate_for_program(ProgramKind::Generic)
                 .is_err()
         );
@@ -1014,6 +1112,33 @@ mod tests {
             }
             .validate_for_program(ProgramKind::Xray)
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn unknown_reference_uses_reviewed_features_without_claiming_origin() {
+        let catalog = embedded_core_compatibility_catalog().unwrap();
+        let version = &catalog.program(ProgramKind::Xray).unwrap().versions[0];
+        let preference = CoreCompatibilityPreference::Unknown {
+            reference: Some(CoreCompatibilityReference::Release {
+                tag: version.tag.clone(),
+            }),
+        };
+        let probe = CoreProbeReport::from_reported_version(Some("private-xray".into()));
+        let target = catalog
+            .resolve_target(ProgramKind::Xray, &probe, &preference, Some("b".repeat(64)))
+            .unwrap();
+        assert_eq!(target.basis, CoreCompatibilityBasis::Unknown);
+        assert!(matches!(
+            target.coordinate,
+            CoreVersionCoordinate::Release { .. }
+        ));
+        let profile = CoreCompatibilityProfile::resolve(&target).unwrap();
+        assert!(
+            profile
+                .decisions
+                .iter()
+                .all(|decision| decision.attempt_allowed)
         );
     }
 

@@ -1,11 +1,24 @@
 export interface ErrorInfo {
   code?: string;
+  messageKey?: string;
   title: string;
   message: string;
   fallbackMessage: string;
   details: string;
   suggestion: string;
 }
+
+export type ConfigurationErrorContext =
+  | 'details-save'
+  | 'configuration-load'
+  | 'sources-save'
+  | 'sources-refresh'
+  | 'compatibility-save'
+  | 'guided-change'
+  | 'raw-draft'
+  | 'configuration-validate'
+  | 'configuration-apply'
+  | 'configuration-rebase';
 
 export const TRANSIENT_ERROR_DISMISS_MS = 12_000;
 
@@ -170,9 +183,15 @@ function isLicenseTrustConfigurationError(details: string) {
 }
 
 export function errorInfoOf(error: unknown): ErrorInfo {
-  if (error && typeof error === 'object') {
-    const value = error as Record<string, unknown>;
+  const normalized = normalizeErrorRecord(error);
+  if (normalized) {
+    const value = normalized;
     const code = typeof value.code === 'string' ? value.code : '';
+    const messageKey = typeof value.messageKey === 'string'
+      ? value.messageKey
+      : typeof value.message_key === 'string'
+        ? value.message_key
+        : undefined;
     const presentation = presentations[code] ?? {
       title: 'Operation failed',
       message: 'The operation could not be completed.',
@@ -188,6 +207,7 @@ export function errorInfoOf(error: unknown): ErrorInfo {
     if (isLicenseTrustConfigurationError(details)) {
       return {
         code,
+        messageKey,
         title: 'License configuration error',
         message: 'The license service is not trusted by this build.',
         fallbackMessage: 'The operation could not be completed.',
@@ -197,6 +217,7 @@ export function errorInfoOf(error: unknown): ErrorInfo {
     }
     return {
       code,
+      messageKey,
       title: presentation.title,
       message,
       fallbackMessage: presentation.message,
@@ -209,7 +230,165 @@ export function errorInfoOf(error: unknown): ErrorInfo {
     title: 'Operation failed',
     message,
     fallbackMessage: 'The operation could not be completed.',
-    details: '',
+    details: message,
     suggestion: defaultSuggestion,
+  };
+}
+
+/** Tauri normally rejects with the serialized Rust error object. Some native
+ * WebView versions wrap that payload in an Error or JSON string, so normalize
+ * those transport shapes before classifying the operation. */
+function normalizeErrorRecord(error: unknown): Record<string, unknown> | null {
+  if (error instanceof Error) {
+    return parseErrorText(error.message) ?? {
+      message: error.message || 'Operation failed',
+      details: error.message || 'Operation failed',
+    };
+  }
+  if (typeof error === 'string') {
+    return parseErrorText(error) ?? {
+      message: error.replace(/^Error:\s*/, '') || 'Operation failed',
+      details: error.replace(/^Error:\s*/, '') || 'Operation failed',
+    };
+  }
+  return error && typeof error === 'object'
+    ? error as Record<string, unknown>
+    : null;
+}
+
+function parseErrorText(value: string): Record<string, unknown> | null {
+  const text = value.trim().replace(/^Error:\s*/, '');
+  if (!text.startsWith('{') || !text.endsWith('}')) return null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const configurationContextLabels: Record<ConfigurationErrorContext, { title: string }> = {
+  'details-save': { title: 'Program details could not be saved' },
+  'configuration-load': { title: 'Configuration workspace could not be loaded' },
+  'sources-save': { title: 'Configuration sources could not be saved' },
+  'sources-refresh': { title: 'Configuration sources could not be updated' },
+  'compatibility-save': { title: 'Compatibility baseline could not be saved' },
+  'guided-change': { title: 'Guided setting could not be applied' },
+  'raw-draft': { title: 'Raw configuration draft could not be saved' },
+  'configuration-validate': { title: 'Configuration validation could not be completed' },
+  'configuration-apply': { title: 'Configuration could not be applied' },
+  'configuration-rebase': { title: 'Configuration draft could not be rebased' },
+};
+
+/**
+ * Turn a backend configuration error into a context-aware, actionable notice.
+ * The backend message/details remain available under Technical details, while
+ * the stable message and suggestion are safe to translate in the UI.
+ */
+export function configurationErrorInfo(
+  error: unknown,
+  context: ConfigurationErrorContext,
+): ErrorInfo {
+  const base = errorInfoOf(error);
+  const technical = `${base.message}\n${base.details}`.toLowerCase();
+  const contextTitle = configurationContextLabels[context].title;
+  if (base.messageKey === 'CORE_COMPATIBILITY_INVALID') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The selected compatibility target is not available for this program.',
+      fallbackMessage: '所选兼容目标不适用于当前程序，原有兼容基线未被覆盖。',
+      details: base.details || base.message,
+      suggestion: 'Choose a release or commit from this program’s compatibility catalog, then retry.',
+    };
+  }
+  if (base.messageKey === 'CORE_COMPATIBILITY_PROGRAM_ACTIVE') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The compatibility baseline was not changed because the program is still active.',
+      fallbackMessage: '程序仍处于活动状态，因此兼容基线未发生变化。',
+      details: base.details || base.message,
+      suggestion: 'Stop the program, review the target, and retry the same save.',
+    };
+  }
+  if (base.messageKey === 'CORE_COMPATIBILITY_RECOVERY_REQUIRED') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The compatibility state could not be restored automatically. The current effective configuration was not replaced.',
+      fallbackMessage: '兼容状态无法自动恢复；当前有效配置未被替换，需要检查恢复状态。',
+      suggestion: 'Reload the program state. If the recovery notice remains, inspect diagnostic logs before editing again.',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_GENERATION_STALE') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The configuration changed elsewhere before this request was committed.',
+      fallbackMessage: '配置在本次操作提交前已在其他位置更新。当前草稿和有效配置均已保留。',
+      details: base.details || base.message,
+      suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
+    };
+  }
+  if (base.code === 'PROGRAM_BUSY' || /program is busy|another operation/.test(technical)) {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'This configuration operation is waiting for another program operation to finish.',
+      fallbackMessage: '配置操作正在等待程序完成另一项操作。',
+      suggestion: 'Wait for the current operation to finish, then retry the same request.',
+    };
+  }
+  if (base.code === 'CONFIG_CONFLICT' || /generation|revision|changed since|stale/.test(technical)) {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The configuration changed elsewhere before this request was committed.',
+      fallbackMessage: '配置在本次操作提交前已在其他位置更新。当前草稿和有效配置均已保留。',
+      suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
+    };
+  }
+  if (base.code === 'CONFIG_INVALID' || /native validator|core rejected|validation failed/.test(technical)) {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The selected Core rejected this candidate. Applied and Last Known Good were retained.',
+      fallbackMessage: '当前 Core 拒绝了这份候选配置；Applied 和 Last Known Good 已保留。',
+      suggestion: 'Review the validator output, correct the candidate, and validate it again.',
+    };
+  }
+  if (base.code === 'INVALID_STATE' && context === 'compatibility-save') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The compatibility baseline was not committed because the program must be stopped first.',
+      fallbackMessage: '兼容基线尚未保存，因为必须先停止程序。',
+      suggestion: 'Stop the program, review the target, and save the baseline again.',
+    };
+  }
+  if (base.code === 'STORAGE' || /transaction|restore|recovery|write/.test(technical)) {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The configuration state could not be written safely. The previous usable configuration was kept.',
+      fallbackMessage: '配置状态无法安全写入；之前可用的配置已保留。',
+      suggestion: 'Retry once. If it continues, inspect the diagnostic logs and available disk space.',
+    };
+  }
+  return {
+    ...base,
+    title: contextTitle,
+    message: base.message === 'The operation could not be completed.'
+      ? 'The configuration request could not be completed.'
+      : base.message,
+    fallbackMessage: base.fallbackMessage === 'The operation could not be completed.'
+      ? '配置请求未能完成。'
+      : base.fallbackMessage,
+    suggestion: base.suggestion === defaultSuggestion
+      ? 'Review the configuration details and retry the same request.'
+      : base.suggestion,
   };
 }

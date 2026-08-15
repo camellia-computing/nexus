@@ -27,7 +27,13 @@
     reconcileCatalog,
     saveCatalog,
   } from './catalog';
-  import { setLanguage, t, translate, uiLanguage } from './i18n';
+  import {
+    configurationDiagnosticMessage,
+    setLanguage,
+    t,
+    translate,
+    uiLanguage,
+  } from './i18n';
   import ProgramContextMenu from './ProgramContextMenu.svelte';
   import { managedWorkingDirectory } from './paths';
   import {
@@ -54,6 +60,10 @@
   } from './programs/shared/configuration';
   import { isRuntimeActive } from './programState';
   import { api, errorInfoOf, type ErrorInfo } from './api';
+  import {
+    configurationErrorInfo,
+    type ConfigurationErrorContext,
+  } from './errors';
   import { PROGRAM_SPEC_SCHEMA_VERSION } from './types';
   import {
     applyAppearancePreferences,
@@ -97,6 +107,7 @@
     ConfigurationStateView,
     ConfigurationSchemaDocument,
     ConfigSource,
+    CoreCompatibilityReference,
     CoreCompatibilityPreference,
     CoreTargetIdentity,
     CreateTeamInvitation,
@@ -137,13 +148,14 @@
     XrayDashboardSnapshot,
   } from './types';
 
-  type Tab = 'overview' | 'configuration' | 'logs' | 'dashboard';
+  type Tab = 'overview' | 'intent' | 'sources' | 'compatibility' | 'configuration' | 'logs' | 'dashboard';
   type LogView = 'both' | 'stdout' | 'stderr';
   type LogPaneKind = 'stdout' | 'stderr';
   type LogPaneScrollState = { followLatest: boolean; scrollTop: number };
   type XrayTrafficSort = 'scope' | 'tag' | 'uplink' | 'downlink';
   type ProgramFilter = 'all' | 'running' | 'inactive' | 'issues' | ProgramKind;
   type ConfigUpdateStatus = { message: string; sourceCount?: number };
+  type ConfigurationWorkspaceScope = 'details' | 'intent' | 'sources' | 'compatibility' | 'configuration';
   type ConfirmationRequest = {
     title: string;
     message: string;
@@ -274,8 +286,10 @@
   let notificationTimer: number | undefined;
   let licensePrompt: LicensePrompt | null = null;
   let licensePromptTimer: number | undefined;
-  let panelError: ErrorInfo | null = null;
   let configError: ErrorInfo | null = null;
+  let workspaceErrors: Partial<Record<ConfigurationWorkspaceScope, ErrorInfo>> = {};
+  let workspaceErrorActions: Partial<Record<ConfigurationWorkspaceScope, () => Promise<void>>> = {};
+  let workspaceErrorBusyScope: ConfigurationWorkspaceScope | '' = '';
   let appSettingsError: ErrorInfo | null = null;
   let licenseError: ErrorInfo | null = null;
   let aboutError: ErrorInfo | null = null;
@@ -369,6 +383,8 @@
   let activeRawConflictId = '';
   let rawDraftAutosaveTimer: number | undefined;
   let rawDraftAutosaveContent = '';
+  let rawDraftSavePromise: Promise<RawDraftSession> | null = null;
+  let rawDraftSaveProgramId = '';
   let configContent = '';
   let configDirty = false;
   let configSaveRequiresRestart = false;
@@ -402,12 +418,71 @@
     draft.workingContent = configContent;
     rawDraftAutosaveTimer = window.setTimeout(() => {
       rawDraftAutosaveTimer = undefined;
-      void api.saveConfigurationDraft(draftId, draft, draft.draftRevision)
-        .then((saved) => {
-          if (selectedId === draftId) rawDraftSession = saved;
-        })
-        .catch((error) => reportConfigError(error));
+      void persistRawDraft(draftId, draft).catch((error) => {
+        rawDraftAutosaveContent = '';
+        reportConfigError(error, 'raw-draft');
+      });
     }, 750);
+  }
+
+  async function persistRawDraft(id: string, draft: RawDraftSession): Promise<RawDraftSession> {
+    // A draft revision is a CAS token.  Queue behind an in-flight save and
+    // carry its returned revision forward; otherwise an autosave followed by
+    // an explicit Validate/Save would submit the same revision twice.
+    if (rawDraftSavePromise && rawDraftSaveProgramId === id) {
+      const previous = await rawDraftSavePromise;
+      if (draft.draftRevision < previous.draftRevision) {
+        draft = {
+          ...draft,
+          sessionId: previous.sessionId,
+          draftRevision: previous.draftRevision,
+          baseContent: previous.baseContent,
+          basedOnGeneration: previous.basedOnGeneration,
+          conflicts: structuredClone(previous.conflicts),
+          resolutions: structuredClone(previous.resolutions),
+          unresolvedConflictIds: [...previous.unresolvedConflictIds],
+        };
+      }
+    }
+
+    const save = async (candidate: RawDraftSession): Promise<RawDraftSession> => {
+      const request = api.saveConfigurationDraft(id, candidate, candidate.draftRevision);
+      rawDraftSavePromise = request;
+      rawDraftSaveProgramId = id;
+      try {
+        const saved = await request;
+        if (selectedId === id) rawDraftSession = saved;
+        return saved;
+      } finally {
+        if (rawDraftSavePromise === request) {
+          rawDraftSavePromise = null;
+          rawDraftSaveProgramId = '';
+        }
+      }
+    };
+
+    try {
+      return await save(draft);
+    } catch (error) {
+      // External edits may advance the revision between the queue check and
+      // the CAS.  Refresh once, preserve the caller's text, and retry safely.
+      const info = errorInfoOf(error);
+      if (info.code !== 'CONFIG_CONFLICT' || !/revision|changed|stale/i.test(info.details || info.message)) {
+        throw error;
+      }
+      const latest = await api.getConfigurationEditorSession(id);
+      const retry = {
+        ...draft,
+        sessionId: latest.sessionId,
+        draftRevision: latest.draftRevision,
+        baseContent: latest.baseContent,
+        basedOnGeneration: latest.basedOnGeneration,
+        conflicts: structuredClone(latest.conflicts),
+        resolutions: structuredClone(latest.resolutions),
+        unresolvedConflictIds: [...latest.unresolvedConflictIds],
+      };
+      return save(retry);
+    }
   }
 
   function buildConfigurationEditorMarkers(
@@ -494,6 +569,8 @@
   let stderrLogElement: HTMLPreElement | null = null;
   let replacementPackageSource = '';
   let configUpdateStatus: ConfigUpdateStatus | null = null;
+  let compatibilitySaveStatus = '';
+  let sourceSaveStatus = '';
   let runtimeArgumentLine = '';
   let environmentEntries: EnvironmentEntry[] = [];
   let createDraft: CreateDraft = defaultDraft('generic');
@@ -527,6 +604,8 @@
   let privilegeAssessment: PrivilegeAssessment | null = null;
   let privilegeAssessmentLoadingId = '';
   let savedManagedConfigFingerprint = '';
+  let savedRuntimeIntegrationFingerprint = '';
+  let savedCompatibilityFingerprint = '';
   let createDashboardOptionsValue: SingBoxDashboardOptions = {};
   let detailDashboardOptionsValue: SingBoxDashboardOptions = {};
   let savedDashboardOptionsValue: SingBoxDashboardOptions = {};
@@ -602,7 +681,22 @@
     settingsFingerprint(detail.spec, runtimeArgumentParse.args, environmentEntries) !==
       savedSettingsFingerprint;
   $: managedConfigChanged =
-    !!detail && managedConfigFingerprint(detail.spec) !== savedManagedConfigFingerprint;
+    !!detail && managedSourcesFingerprint(detail.spec) !== savedManagedConfigFingerprint;
+  $: runtimeIntegrationChanged =
+    !!detail && runtimeIntegrationFingerprint(detail.spec) !== savedRuntimeIntegrationFingerprint;
+  $: detailsChanged = settingsChanged || runtimeIntegrationChanged;
+  $: compatibilityChanged =
+    !!detail && JSON.stringify(detail.spec.executable.compatibility) !== savedCompatibilityFingerprint;
+  // Keep the Unknown reference as an explicit reactive value.  Referencing a
+  // helper function from several template branches can leave one branch stale
+  // after the compatibility preference object is replaced, which made the
+  // release/commit input disappear even though the selector showed the new
+  // reference kind.  A reactive value gives Svelte one stable dependency and
+  // keeps the editor re-enterable after every mode/reference change.
+  $: unknownReferenceValueState =
+    detail?.spec.executable.compatibility.mode === 'unknown'
+      ? detail.spec.executable.compatibility.reference
+      : undefined;
   $: configDirty = configDocument !== null && (
     configContent !== configDocument.content
     || (configurationState !== null && (
@@ -649,7 +743,8 @@
     runtimeSettingsChanged && !!detail && isRuntimeActive(detail.state);
   $: saveRequiresRestart =
     saveRequiresStop ||
-    (managedConfigChanged && !!detail && isRuntimeActive(detail.state));
+    (managedConfigChanged && !!detail && isRuntimeActive(detail.state)) ||
+    (runtimeIntegrationChanged && !!detail && isRuntimeActive(detail.state));
   $: filteredStdout = filterLog(logContents.stdout, logFilter);
   $: filteredStderr = filterLog(logContents.stderr, logFilter);
   $: if ($uiLanguage && notificationLicenseNotice) {
@@ -824,7 +919,7 @@
     colorScheme.addEventListener('change', colorSchemeChanged);
     mobileLayout.addEventListener('change', mobileLayoutChanged);
     const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (configDirty || settingsChanged) {
+      if (configDirty || detailsChanged || managedConfigChanged || compatibilityChanged) {
         event.preventDefault();
         event.returnValue = '';
       }
@@ -1130,8 +1225,10 @@
     actions = nextActions;
     if (hasEditableConfig(nextDetail.spec)) void ensureCodeEditor();
     activeTab = 'overview';
-    panelError = null;
-    configError = null;
+    workspaceErrors = {};
+    workspaceErrorActions = {};
+    workspaceErrorBusyScope = '';
+    clearConfigurationError();
     configDocument = null;
     configurationState = null;
     configurationStateLoadingId = '';
@@ -1143,6 +1240,8 @@
     configResult = null;
     clearConfigOutput();
     configUpdateStatus = null;
+    compatibilitySaveStatus = '';
+    sourceSaveStatus = '';
     xrayDashboardSnapshot = null;
     xrayDashboardError = null;
     xrayDashboardRefreshing = false;
@@ -1170,7 +1269,9 @@
       programArgs(detail.spec),
       environmentEntries,
     );
-    savedManagedConfigFingerprint = managedConfigFingerprint(detail.spec);
+    savedManagedConfigFingerprint = managedSourcesFingerprint(detail.spec);
+    savedRuntimeIntegrationFingerprint = runtimeIntegrationFingerprint(detail.spec);
+    savedCompatibilityFingerprint = JSON.stringify(detail.spec.executable.compatibility);
     savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(detail.spec.managedConfig);
     savedXrayDashboardValue = detail.spec.managedConfig?.xrayDashboard;
     savedMihomoDashboardValue = detail.spec.managedConfig?.mihomoDashboard;
@@ -1198,17 +1299,98 @@
     return request;
   }
 
+  /**
+   * Adopt the state returned by a configuration transaction in one place.
+   *
+   * The Rust view is authoritative for every projection.  A recoverable Raw
+   * draft is kept when it is based on the returned generation; an unsaved
+   * editor value is left in place and will be autosaved against the refreshed
+   * draft session instead of being silently discarded.
+   */
+  async function adoptConfigurationState(
+    programId: string,
+    state: ConfigurationStateView,
+    refreshDraft = true,
+  ): Promise<void> {
+    if (selectedId !== programId) return;
+    const localEditorDraft = configDirty ? configContent : null;
+    configurationState = state;
+    configurationStateLoadError = false;
+    let draft: RawDraftSession | null = null;
+    if (refreshDraft) {
+      try {
+        draft = await api.getConfigurationEditorSession(programId);
+      } catch {
+        // The candidate is already committed.  Keep the authoritative state
+        // visible and let the Configuration tab's explicit reload surface a
+        // draft-session read failure rather than reporting a false write
+        // failure in the originating tab.
+        configurationStateLoadError = true;
+      }
+      if (draft && selectedId === programId) {
+        rawDraftSession = draft;
+        activeRawConflictId = firstUnresolvedConflictId(draft);
+      }
+    }
+    const draftContent = draft
+      && draft.draftRevision > 0
+      && draft.basedOnGeneration === state.generation
+      ? draft.workingContent
+      : state.desired.content;
+    if (localEditorDraft !== null) {
+      configContent = localEditorDraft;
+      rawDraftAutosaveContent = draft?.workingContent ?? state.desired.content;
+    } else {
+      configContent = draftContent;
+      rawDraftAutosaveContent = draftContent;
+    }
+    if (configDocument) {
+      configDocument = {
+        ...configDocument,
+        content: state.desired.content,
+        baseHash: state.desired.revision.contentHash,
+        language: state.format,
+      };
+    }
+    // A source/compatibility/guided transaction can invalidate the candidate
+    // while the Configuration tab is not active. Clear any stale success text
+    // (for example “Configuration saved.”) and expose the stable diagnostic
+    // label instead of leaving a misleading result behind.
+    clearConfigOutput();
+    if (state.desired.validation !== 'valid') {
+      const diagnostic = state.desired.diagnostics[0];
+      setConfigOutputMessage(
+        configurationDiagnosticMessage(diagnostic?.messageKey ?? diagnostic?.code),
+      );
+    }
+    configResult = {
+      valid: state.desired.validation === 'valid',
+      stdout: state.desired.validation === 'valid' ? 'Configuration is valid.' : '',
+      stderr: state.desired.diagnostics.map((diagnostic) => diagnostic.message).join('\n'),
+    };
+  }
+
+  async function reloadConfigurationProjection(
+    programId: string,
+    refreshDraft = true,
+  ): Promise<void> {
+    const state = await requestConfigurationState(programId);
+    await adoptConfigurationState(programId, state, refreshDraft);
+  }
+
   async function loadConfigurationStateSummary(programId: string): Promise<void> {
     if (selectedId !== programId || detail?.spec.type.kind === 'generic') return;
+    clearIntentError();
     configurationStateLoadingId = programId;
     configurationStateLoadError = false;
     try {
       const state = await requestConfigurationState(programId);
       if (selectedId !== programId || detail?.spec.id !== programId) return;
       configurationState = state;
-    } catch {
+    } catch (error) {
       if (selectedId === programId && detail?.spec.id === programId) {
         configurationStateLoadError = true;
+        reportIntentError(error, async () => { await loadConfigurationStateSummary(programId); }, 'configuration-load');
       }
     } finally {
       if (configurationStateLoadingId === programId) configurationStateLoadingId = '';
@@ -1253,8 +1435,10 @@
     privilegeAssessmentLoadingId = '';
     resetLogScrollState('');
     activeTab = 'overview';
-    panelError = null;
-    configError = null;
+    workspaceErrors = {};
+    workspaceErrorActions = {};
+    workspaceErrorBusyScope = '';
+    clearConfigurationError();
     configDocument = null;
     configurationState = null;
     configurationStateLoadingId = '';
@@ -1265,11 +1449,15 @@
     configContent = '';
     configResult = null;
     clearConfigOutput();
+    compatibilitySaveStatus = '';
+    sourceSaveStatus = '';
     closeProgramMenu(false);
     closeSidebarDrawer();
     savedRuntimeFingerprint = '';
     savedSettingsFingerprint = '';
     savedManagedConfigFingerprint = '';
+    savedRuntimeIntegrationFingerprint = '';
+    savedCompatibilityFingerprint = '';
     savedDashboardOptionsValue = {};
     savedXrayDashboardValue = undefined;
     savedMihomoDashboardValue = undefined;
@@ -1283,9 +1471,9 @@
   }
 
   async function confirmDetailDiscard() {
-    if (!configDirty && !settingsChanged) return true;
+    if (!configDirty && !detailsChanged && !managedConfigChanged && !compatibilityChanged) return true;
     const parts = [
-      settingsChanged ? translate('program settings') : '',
+      detailsChanged || managedConfigChanged || compatibilityChanged ? translate('program settings') : '',
       configDirty ? translate('configuration') : '',
     ].filter(Boolean);
     return askConfirmation(
@@ -1318,6 +1506,8 @@
     void restoreFocusAfterModal(returnFocus);
   }
 
+  const configurationMutationQueues = new Map<string, Promise<void>>();
+
   async function mutate(
     label: string,
     operation: () => Promise<unknown>,
@@ -1333,6 +1523,27 @@
       return false;
     } finally {
       if (busy === label) busy = '';
+    }
+  }
+
+  /** Serialize configuration writes per program while preserving the
+   * operation's existing idempotent error/retry handling. */
+  async function mutateConfiguration(
+    programId: string,
+    label: string,
+    operation: () => Promise<unknown>,
+    onError: (value: unknown) => unknown | Promise<unknown> = reportGlobalError,
+  ): Promise<boolean> {
+    const previous = configurationMutationQueues.get(programId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(() => mutate(label, operation, onError));
+    const settled = run.then(() => undefined, () => undefined);
+    configurationMutationQueues.set(programId, settled);
+    try {
+      return await run;
+    } finally {
+      if (configurationMutationQueues.get(programId) === settled) {
+        configurationMutationQueues.delete(programId);
+      }
     }
   }
 
@@ -1706,11 +1917,77 @@
   }
 
   function reportPanelError(value: unknown) {
-    panelError = errorInfoOf(value);
+    reportWorkspaceError('details', value, 'details-save');
   }
 
-  function reportConfigError(value: unknown) {
-    configError = errorInfoOf(value);
+  function clearWorkspaceError(scope: ConfigurationWorkspaceScope) {
+    const nextErrors = { ...workspaceErrors };
+    delete nextErrors[scope];
+    workspaceErrors = nextErrors;
+    const nextActions = { ...workspaceErrorActions };
+    delete nextActions[scope];
+    workspaceErrorActions = nextActions;
+  }
+
+  function reportWorkspaceError(
+    scope: ConfigurationWorkspaceScope,
+    value: unknown,
+    context: ConfigurationErrorContext,
+    retry?: () => Promise<void>,
+  ) {
+    workspaceErrors = {
+      ...workspaceErrors,
+      [scope]: configurationErrorInfo(value, context),
+    };
+    workspaceErrorActions = {
+      ...workspaceErrorActions,
+      [scope]: retry,
+    };
+  }
+
+  async function retryWorkspaceError(scope: ConfigurationWorkspaceScope) {
+    const retry = workspaceErrorActions[scope];
+    if (!retry || workspaceErrorBusyScope) return;
+    workspaceErrorBusyScope = scope;
+    clearWorkspaceError(scope);
+    try {
+      await retry();
+    } finally {
+      if (workspaceErrorBusyScope === scope) workspaceErrorBusyScope = '';
+    }
+  }
+
+  function clearConfigurationError() {
+    configError = null;
+    clearWorkspaceError('configuration');
+  }
+
+  function clearIntentError() {
+    clearWorkspaceError('intent');
+  }
+
+  function reportIntentError(
+    value: unknown,
+    retry?: () => Promise<void>,
+    context: ConfigurationErrorContext = 'guided-change',
+  ) {
+    reportWorkspaceError('intent', value, context, retry);
+  }
+
+  function reportConfigError(
+    value: unknown,
+    context: ConfigurationErrorContext = 'configuration-apply',
+    retry?: () => Promise<void>,
+  ) {
+    const info = configurationErrorInfo(value, context);
+    configError = info;
+    reportWorkspaceError('configuration', value, context, retry);
+  }
+
+  function isRetryableConfigurationConflict(value: unknown): boolean {
+    const info = errorInfoOf(value);
+    return info.code === 'CONFIG_CONFLICT'
+      && /revision|generation|changed|stale/i.test(info.details || info.message);
   }
 
   function normalizeAppSettings(settings: AppSettings): AppSettings {
@@ -1775,7 +2052,6 @@
       executable: {
         mode: spec.executable.mode,
         path: spec.executable.path,
-        compatibility: spec.executable.compatibility,
       },
       args,
       environment: environment.filter((entry) => entry.key || entry.value),
@@ -1793,14 +2069,50 @@
       autoStart: spec.autoStart,
       restartPolicy: spec.restartPolicy,
       privilegePolicy: spec.privilegePolicy,
-      compatibility: spec.executable.compatibility,
-      managedConfig: spec.managedConfig ?? null,
-      runtime: JSON.parse(runtimeFingerprint(spec, args, environment)),
+      runtime: {
+        args,
+        environment: environment.filter((entry) => entry.key || entry.value),
+      },
     });
   }
 
-  function managedConfigFingerprint(spec: ProgramSpec) {
-    return JSON.stringify(spec.managedConfig ?? null);
+  function managedSourcesFingerprint(spec: ProgramSpec) {
+    return JSON.stringify(spec.managedConfig
+      ? { sources: spec.managedConfig.sources, remoteUpdate: spec.managedConfig.remoteUpdate }
+      : null);
+  }
+
+  function mergeManagedConfigDraft(
+    persisted: ProgramSpec['managedConfig'],
+    draft: ProgramSpec['managedConfig'],
+    preserveSources: boolean,
+    preserveIntegrations: boolean,
+  ): ProgramSpec['managedConfig'] {
+    if (!persisted && !draft) return undefined;
+    const base = structuredClone(persisted ?? draft) as NonNullable<ProgramSpec['managedConfig']>;
+    if (!preserveSources && !preserveIntegrations) return base;
+    if (preserveSources) {
+      base.sources = structuredClone(draft?.sources ?? base.sources);
+      base.remoteUpdate = structuredClone(draft?.remoteUpdate);
+    }
+    if (preserveIntegrations) {
+      base.singBoxDashboard = structuredClone(draft?.singBoxDashboard);
+      base.singBoxClashDashboard = structuredClone(draft?.singBoxClashDashboard);
+      base.xrayDashboard = structuredClone(draft?.xrayDashboard);
+      base.mihomoDashboard = structuredClone(draft?.mihomoDashboard);
+    }
+    return base;
+  }
+
+  function runtimeIntegrationFingerprint(spec: ProgramSpec) {
+    return JSON.stringify(spec.managedConfig
+      ? {
+          singBoxDashboard: spec.managedConfig.singBoxDashboard,
+          singBoxClashDashboard: spec.managedConfig.singBoxClashDashboard,
+          xrayDashboard: spec.managedConfig.xrayDashboard,
+          mihomoDashboard: spec.managedConfig.mihomoDashboard,
+        }
+      : null);
   }
 
   function validHttpsUrl(value: string) {
@@ -1981,8 +2293,58 @@
     const mode = (event.currentTarget as HTMLSelectElement).value;
     if (mode === 'release') updateCompatibilityPreference({ mode, tag: '' });
     else if (mode === 'commit') updateCompatibilityPreference({ mode, commitSha: '' });
-    else if (mode === 'unknown') updateCompatibilityPreference({ mode });
+    else if (mode === 'unknown') updateCompatibilityPreference({ mode, reference: undefined });
     else updateCompatibilityPreference({ mode: 'automatic' });
+  }
+
+  function unknownReference(): CoreCompatibilityReference | undefined {
+    const preference = detail?.spec.executable.compatibility;
+    return preference?.mode === 'unknown' ? preference.reference : undefined;
+  }
+
+  function unknownReferenceValue(): string {
+    const reference = unknownReference();
+    return reference?.kind === 'release' ? reference.tag : reference?.commitSha ?? '';
+  }
+
+  function changeUnknownReferenceKind(event: Event) {
+    if (!detail || detail.spec.executable.compatibility.mode !== 'unknown') return;
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (!value) {
+      updateCompatibilityPreference({ mode: 'unknown' });
+      return;
+    }
+    const kind = value as 'release' | 'commit';
+    updateCompatibilityPreference({
+      mode: 'unknown',
+      reference: kind === 'release' ? { kind, tag: '' } : { kind, commitSha: '' },
+    });
+  }
+
+  function changeUnknownReference(event: Event) {
+    if (!detail || detail.spec.executable.compatibility.mode !== 'unknown') return;
+    const reference = unknownReference();
+    const value = (event.currentTarget as HTMLInputElement).value.trim();
+    if (reference?.kind === 'commit') {
+      updateCompatibilityPreference({ mode: 'unknown', reference: { kind: 'commit', commitSha: value.toLowerCase() } });
+    } else {
+      updateCompatibilityPreference({ mode: 'unknown', reference: { kind: 'release', tag: value } });
+    }
+  }
+
+  function sourceStatusExplanation(
+    source: import('./types').ConfigurationStateView['sourceStatuses'][number],
+  ): string | undefined {
+    switch (source.freshness) {
+      case 'stale':
+        return 'The latest source read failed, so the last parsed snapshot remains in use.';
+      case 'invalid':
+        return 'The current source content is invalid. Desired is blocked and Applied/Last Known Good remain unchanged.';
+      case 'unavailable':
+        return 'The source is unavailable and has no parsed snapshot. Desired is blocked and Applied/Last Known Good remain unchanged.';
+      default:
+        return undefined;
+    }
   }
 
   function stateNameKey(state: ProgramState) {
@@ -2306,19 +2668,68 @@
     persistCatalog(moveCatalogItemBy(catalog, id, offset));
   }
 
-  async function saveSettings(confirmRestart = true, applyManagedConfiguration = true) {
+  async function saveSettings(
+    confirmRestart = true,
+    applyManagedConfiguration = true,
+    scope: 'all' | 'details' | 'sources' | 'compatibility' = 'all',
+  ) {
     if (!detail) return false;
-    panelError = null;
+    const workspaceScope: ConfigurationWorkspaceScope = scope === 'compatibility'
+      ? 'compatibility'
+      : scope === 'sources'
+        ? 'sources'
+        : 'details';
+    const workspaceContext: ConfigurationErrorContext = scope === 'compatibility'
+      ? 'compatibility-save'
+      : scope === 'sources'
+        ? 'sources-save'
+        : 'details-save';
+    clearWorkspaceError(workspaceScope);
+    if (workspaceScope === 'compatibility') compatibilitySaveStatus = '';
+    if (workspaceScope === 'sources') sourceSaveStatus = '';
     const id = detail.spec.id;
+    const draftBeforeSave = structuredClone(detail.spec) as ProgramSpec;
+    const preserveDetailsDraft = scope !== 'all' && detailsChanged;
+    const preserveSourcesDraft = scope !== 'all' && scope !== 'sources' && managedConfigChanged;
+    const preserveIntegrationsDraft = scope !== 'all' && scope !== 'details' && runtimeIntegrationChanged;
+    const preserveCompatibilityDraft = scope !== 'all' && scope !== 'compatibility' && compatibilityChanged;
     const spec = structuredClone(detail.spec) as ProgramSpec;
-    try {
-      if (runtimeArgumentView.error) throw new Error(runtimeArgumentView.error);
-      if (spec.type.kind === 'generic') {
-        spec.type = { ...spec.type, args: [...runtimeArgumentParse.args] };
+    let persistedSpecForScope: ProgramSpec | null = null;
+    if (scope !== 'all') {
+      const persisted = await api.getProgram(id);
+      persistedSpecForScope = persisted.spec;
+      if (scope === 'details') {
+        spec.managedConfig = mergeManagedConfigDraft(
+          persisted.spec.managedConfig,
+          spec.managedConfig,
+          false,
+          true,
+        );
+        spec.executable.compatibility = structuredClone(persisted.spec.executable.compatibility);
+      } else if (scope === 'sources') {
+        Object.assign(spec, structuredClone(persisted.spec));
+        spec.managedConfig = mergeManagedConfigDraft(
+          persisted.spec.managedConfig,
+          detail.spec.managedConfig,
+          true,
+          false,
+        );
       } else {
-        spec.type = { ...spec.type, extraArgs: [...runtimeArgumentParse.args] };
+        const compatibility = structuredClone(spec.executable.compatibility);
+        Object.assign(spec, structuredClone(persisted.spec));
+        spec.executable.compatibility = compatibility;
       }
-      spec.environment = environmentToRecord(environmentEntries);
+    }
+    try {
+      if (scope === 'all' || scope === 'details') {
+        if (runtimeArgumentView.error) throw new Error(runtimeArgumentView.error);
+        if (spec.type.kind === 'generic') {
+          spec.type = { ...spec.type, args: [...runtimeArgumentParse.args] };
+        } else {
+          spec.type = { ...spec.type, extraArgs: [...runtimeArgumentParse.args] };
+        }
+        spec.environment = environmentToRecord(environmentEntries);
+      }
       if (spec.managedConfig) {
         spec.managedConfig.sources = spec.managedConfig.sources.map(normalizeConfigSource);
         if (spec.managedConfig.singBoxDashboard) {
@@ -2343,17 +2754,30 @@
         spec.workingDirectory = parentHostPath(spec.executable.path);
       }
     } catch (value) {
-      reportPanelError(value);
+      reportWorkspaceError(
+        workspaceScope,
+        value,
+        workspaceContext,
+        async () => { await saveSettings(confirmRestart, applyManagedConfiguration, scope); },
+      );
       return false;
     }
-    const compatibilityChanged = JSON.stringify(spec.executable.compatibility) !==
-      JSON.stringify(detail.spec.executable.compatibility);
+    const comparisonSpec = persistedSpecForScope ?? detail.spec;
+    const compatibilityChangedForCommit =
+      (scope === 'all' || scope === 'compatibility') &&
+      JSON.stringify(spec.executable.compatibility) !== JSON.stringify(comparisonSpec.executable.compatibility);
+    const managedConfigChangedForCommit =
+      (scope === 'all' || scope === 'sources') &&
+      managedSourcesFingerprint(spec) !== managedSourcesFingerprint(comparisonSpec);
+    const runtimeSettingsChangedForCommit = scope === 'all' || scope === 'details'
+      ? runtimeSettingsChanged || runtimeIntegrationChanged
+      : false;
     // Compatibility changes are only editable while stopped. They must pass
     // the explicit retarget -> native validation -> apply path below and must
     // not start a previously stopped program as a side effect.
-    const restartAfterSave = saveRequiresStop;
+    const restartAfterSave = runtimeSettingsChangedForCommit && !!detail && isRuntimeActive(detail.state);
     const updateManagedConfiguration =
-      applyManagedConfiguration && managedConfigChanged && !!spec.managedConfig;
+      applyManagedConfiguration && managedConfigChangedForCommit && !!spec.managedConfig;
     const stopBeforeManagedUpdate =
       updateManagedConfiguration && !!detail &&
       isRuntimeActive(detail.state) && detail.state.status !== 'running';
@@ -2365,7 +2789,8 @@
         translate('Save and restart'),
       ))
     ) return false;
-    return mutate(
+    return mutateConfiguration(
+      id,
       'save',
       async () => {
         if (restartAfterSave && !updateManagedConfiguration) {
@@ -2389,7 +2814,15 @@
                   detail?.spec.managedConfig?.remoteUpdate,
                 );
               }
-              await api.updateProgram(nonSourceSpec);
+              // A Sources-only save is committed by the dedicated Rust
+              // source transaction below.  Sending the full ProgramSpec
+              // first duplicates that write and can race the controller's
+              // mutation lease, surfacing a misleading PROGRAM_BUSY even
+              // though the program is stopped.  Details/all saves still
+              // persist their non-source fields first, then the source
+              // transaction rebases the candidate against that authoritative
+              // generation.
+              if (scope !== 'sources') await api.updateProgram(nonSourceSpec);
               const currentState = await api.getConfigurationState(id);
               const state = await api.updateConfigurationSources(
                 id,
@@ -2397,38 +2830,28 @@
                 requestedRemoteUpdate,
                 currentState.generation,
               );
-              configurationState = state;
-              if (state.desired.validation !== 'valid') {
-                throw new Error(
-                  [
-                    ...state.desired.diagnostics.map((diagnostic) => diagnostic.message),
-                    ...state.desired.conflicts.map((conflict) => conflict.reason),
-                  ].join('\n') || 'Configuration validation failed.',
-                );
+              await adoptConfigurationState(id, state);
+              if (state.desired.validation !== 'valid' && selectedId === id) {
+                sourceSaveStatus = 'Sources saved; the candidate needs attention before activation.';
               }
-              configDocument = {
-                content: state.desired.content,
-                baseHash: state.desired.revision.contentHash,
-                language: state.format,
-                documentationUrl: configDocument?.documentationUrl ?? '',
-              };
-              configContent = state.desired.content;
+            } else if (scope === 'compatibility' && spec.type.kind !== 'generic') {
+              const currentState = await api.getConfigurationState(id);
+              const retargeted = await api.updateConfigurationCompatibility(
+                id,
+                spec.executable.compatibility,
+                currentState.generation,
+              );
+              await adoptConfigurationState(id, retargeted);
+              if (selectedId === id) {
+                compatibilitySaveStatus = retargeted.desired.validation === 'valid'
+                  ? 'Compatibility target saved; the candidate is validated and ready to apply.'
+                  : 'Compatibility target saved; validation is required before activation.';
+              }
             } else {
               await api.updateProgram(spec);
-              if (compatibilityChanged && spec.type.kind !== 'generic') {
+              if (compatibilityChangedForCommit && spec.type.kind !== 'generic') {
                 const retargeted = await api.getConfigurationState(id);
-                if (retargeted.desired.validation !== 'valid') {
-                  throw new Error(
-                    [
-                      ...retargeted.desired.diagnostics.map((diagnostic) => diagnostic.message),
-                      ...retargeted.desired.conflicts.map((conflict) => conflict.reason),
-                    ].join('\n') || 'The selected compatibility target could not validate the candidate.',
-                  );
-                }
-                configurationState = await api.applyConfigurationCandidate(
-                  id,
-                  retargeted.generation,
-                );
+                await adoptConfigurationState(id, retargeted);
               }
             }
             if (stoppedForSave) {
@@ -2441,8 +2864,34 @@
           }
         }
         if (selectedId !== id) return;
-        detail = await api.getProgram(id);
+        const persistedDetail = await api.getProgram(id);
         if (selectedId !== id) return;
+        const mergedSpec = structuredClone(persistedDetail.spec) as ProgramSpec;
+        if (preserveDetailsDraft) {
+          mergedSpec.name = draftBeforeSave.name;
+          mergedSpec.autoStart = draftBeforeSave.autoStart;
+          mergedSpec.restartPolicy = draftBeforeSave.restartPolicy;
+          mergedSpec.privilegePolicy = draftBeforeSave.privilegePolicy;
+          mergedSpec.type = structuredClone(draftBeforeSave.type);
+          mergedSpec.environment = structuredClone(draftBeforeSave.environment);
+          mergedSpec.workingDirectory = draftBeforeSave.workingDirectory;
+          mergedSpec.executable = {
+            ...structuredClone(draftBeforeSave.executable),
+            compatibility: structuredClone(persistedDetail.spec.executable.compatibility),
+          };
+        }
+        if (preserveCompatibilityDraft) {
+          mergedSpec.executable.compatibility = structuredClone(draftBeforeSave.executable.compatibility);
+        }
+        if (preserveSourcesDraft || preserveIntegrationsDraft) {
+          mergedSpec.managedConfig = mergeManagedConfigDraft(
+            mergedSpec.managedConfig,
+            draftBeforeSave.managedConfig,
+            preserveSourcesDraft,
+            preserveIntegrationsDraft,
+          );
+        }
+        detail = { ...persistedDetail, spec: mergedSpec };
         if (configDocument) {
           void refreshConfigurationSchemaCapability(id);
         }
@@ -2451,59 +2900,120 @@
           key,
           value,
         }));
-        savedRuntimeFingerprint = runtimeFingerprint(
-          detail.spec,
-          programArgs(detail.spec),
-          environmentEntries,
-        );
-        savedSettingsFingerprint = settingsFingerprint(
-          detail.spec,
-          programArgs(detail.spec),
-          environmentEntries,
-        );
-        savedManagedConfigFingerprint = managedConfigFingerprint(detail.spec);
-        savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(detail.spec.managedConfig);
-        savedXrayDashboardValue = detail.spec.managedConfig?.xrayDashboard;
-        savedMihomoDashboardValue = detail.spec.managedConfig?.mihomoDashboard;
+        if (scope === 'all' || scope === 'details') {
+          savedRuntimeFingerprint = runtimeFingerprint(detail.spec, programArgs(detail.spec), environmentEntries);
+          savedSettingsFingerprint = settingsFingerprint(detail.spec, programArgs(detail.spec), environmentEntries);
+          savedRuntimeIntegrationFingerprint = runtimeIntegrationFingerprint(detail.spec);
+          savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(detail.spec.managedConfig);
+          savedXrayDashboardValue = detail.spec.managedConfig?.xrayDashboard;
+          savedMihomoDashboardValue = detail.spec.managedConfig?.mihomoDashboard;
+        }
+        if (scope === 'all' || scope === 'sources') {
+          savedManagedConfigFingerprint = managedSourcesFingerprint(persistedDetail.spec);
+        }
+        if (scope === 'all' || scope === 'compatibility') {
+          savedCompatibilityFingerprint = JSON.stringify(persistedDetail.spec.executable.compatibility);
+        }
         await refreshPrograms();
       },
-      reportPanelError,
+      async (value) => {
+        reportWorkspaceError(
+          workspaceScope,
+          value,
+          workspaceContext,
+          async () => { await saveSettings(confirmRestart, applyManagedConfiguration, scope); },
+        );
+      },
     );
   }
 
-  async function revertSettings() {
+  async function revertSettings(
+    scope: 'all' | 'details' | 'sources' | 'compatibility' = 'all',
+  ) {
     if (!selectedId) return;
-    panelError = null;
+    const workspaceScope: ConfigurationWorkspaceScope = scope === 'compatibility'
+      ? 'compatibility'
+      : scope === 'sources'
+        ? 'sources'
+        : 'details';
+    clearWorkspaceError(workspaceScope);
     const id = selectedId;
     await mutate(
       'revert-settings',
       async () => {
         const nextDetail = await api.getProgram(id);
         if (selectedId !== id) return;
-        detail = nextDetail;
-        runtimeArgumentLine = formatArgumentLine(programArgs(nextDetail.spec));
-        environmentEntries = Object.entries(nextDetail.spec.environment).map(([key, value]) => ({
+        const currentSpec = structuredClone(detail?.spec) as ProgramSpec | undefined;
+        const nextSpec = structuredClone(nextDetail.spec) as ProgramSpec;
+        if (currentSpec && scope !== 'all') {
+          if (scope !== 'details') {
+            nextSpec.name = currentSpec.name;
+            nextSpec.autoStart = currentSpec.autoStart;
+            nextSpec.restartPolicy = currentSpec.restartPolicy;
+            nextSpec.privilegePolicy = currentSpec.privilegePolicy;
+            nextSpec.type = structuredClone(currentSpec.type);
+            nextSpec.environment = structuredClone(currentSpec.environment);
+            nextSpec.workingDirectory = currentSpec.workingDirectory;
+            nextSpec.executable = structuredClone(currentSpec.executable);
+          }
+          if (scope !== 'compatibility') {
+            nextSpec.executable.compatibility = structuredClone(currentSpec.executable.compatibility);
+          }
+          if (scope === 'compatibility') {
+            nextSpec.executable.compatibility = structuredClone(nextDetail.spec.executable.compatibility);
+          }
+          if (scope === 'details') {
+            nextSpec.managedConfig = mergeManagedConfigDraft(
+              nextDetail.spec.managedConfig,
+              currentSpec.managedConfig,
+              true,
+              false,
+            );
+          } else if (scope === 'sources') {
+            nextSpec.managedConfig = mergeManagedConfigDraft(
+              nextDetail.spec.managedConfig,
+              currentSpec.managedConfig,
+              false,
+              true,
+            );
+          } else if (scope === 'compatibility') {
+            nextSpec.managedConfig = mergeManagedConfigDraft(
+              nextDetail.spec.managedConfig,
+              currentSpec.managedConfig,
+              true,
+              true,
+            );
+          }
+        }
+        detail = { ...nextDetail, spec: nextSpec };
+        runtimeArgumentLine = formatArgumentLine(programArgs(nextSpec));
+        environmentEntries = Object.entries(nextSpec.environment).map(([key, value]) => ({
           key,
           value,
         }));
-        savedRuntimeFingerprint = runtimeFingerprint(
-          nextDetail.spec,
-          programArgs(nextDetail.spec),
-          environmentEntries,
-        );
-        savedSettingsFingerprint = settingsFingerprint(
-          nextDetail.spec,
-          programArgs(nextDetail.spec),
-          environmentEntries,
-        );
-        savedManagedConfigFingerprint = managedConfigFingerprint(nextDetail.spec);
-        savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(
-          nextDetail.spec.managedConfig,
-        );
-        savedXrayDashboardValue = nextDetail.spec.managedConfig?.xrayDashboard;
-        savedMihomoDashboardValue = nextDetail.spec.managedConfig?.mihomoDashboard;
+        if (scope === 'all' || scope === 'details') {
+          savedRuntimeFingerprint = runtimeFingerprint(nextDetail.spec, programArgs(nextDetail.spec), environmentEntries);
+          savedSettingsFingerprint = settingsFingerprint(nextDetail.spec, programArgs(nextDetail.spec), environmentEntries);
+          savedRuntimeIntegrationFingerprint = runtimeIntegrationFingerprint(nextDetail.spec);
+          savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(nextDetail.spec.managedConfig);
+          savedXrayDashboardValue = nextDetail.spec.managedConfig?.xrayDashboard;
+          savedMihomoDashboardValue = nextDetail.spec.managedConfig?.mihomoDashboard;
+        }
+        if (scope === 'all' || scope === 'sources') {
+          savedManagedConfigFingerprint = managedSourcesFingerprint(nextDetail.spec);
+        }
+        if (scope === 'all' || scope === 'compatibility') {
+          savedCompatibilityFingerprint = JSON.stringify(nextDetail.spec.executable.compatibility);
+        }
       },
-      reportPanelError,
+      async (value) => {
+        reportWorkspaceError(
+          workspaceScope,
+          value,
+          workspaceScope === 'compatibility' ? 'compatibility-save' : workspaceScope === 'sources' ? 'sources-save' : 'details-save',
+          async () => { await revertSettings(scope); },
+        );
+      },
     );
   }
 
@@ -2680,13 +3190,14 @@
 
   async function refreshManagedConfiguration() {
     if (!detail || !selectedId || !detail.spec.managedConfig) return;
-    panelError = null;
+    clearWorkspaceError('sources');
     configUpdateStatus = null;
     const id = selectedId;
-    if (settingsChanged && !(await saveSettings(true, false))) return;
+    if (settingsChanged && !(await saveSettings(true, false, 'details'))) return;
     const stopBeforeUpdate =
       !!detail && isRuntimeActive(detail.state) && detail.state.status !== 'running';
-    await mutate(
+    await mutateConfiguration(
+      id,
       'refresh-config-sources',
       async () => {
         let stoppedForUpdate = false;
@@ -2706,16 +3217,7 @@
           throw value;
         }
         if (selectedId !== id) return;
-        configContent = result.desired.content;
-        configDocument = {
-          content: result.desired.content,
-          baseHash: result.desired.revision.contentHash,
-          language: result.format,
-          documentationUrl: configDocument?.documentationUrl ?? '',
-        };
-        configResult = result.desired.validation === 'valid'
-          ? { valid: true, stdout: '', stderr: '' }
-          : { valid: false, stdout: '', stderr: result.desired.diagnostics.map((item) => item.message).join('\n') };
+        await adoptConfigurationState(id, result);
         clearConfigOutput();
         const sourceCount = result.sourceStatuses.filter((source) => source.freshness === 'fresh').length;
         configUpdateStatus = sourceCount
@@ -2725,18 +3227,25 @@
         if (selectedId === id) detail = nextDetail;
         await refreshPrograms();
       },
-      reportPanelError,
+      async (value) => {
+        reportWorkspaceError(
+          'sources',
+          value,
+          'sources-refresh',
+          async () => { await refreshManagedConfiguration(); },
+        );
+      },
     );
   }
 
   async function previewShareImport(content: string) {
     if (!selectedId || !content.trim()) return;
     busy = 'preview-share-import';
-    configError = null;
+    clearConfigurationError();
     try {
       shareImportPreview = await api.previewConfigurationImport(selectedId, content);
     } catch (error) {
-      reportConfigError(error);
+      reportConfigError(error, 'sources-refresh');
     } finally {
       busy = '';
     }
@@ -2744,38 +3253,50 @@
 
   async function rebaseRawDraft() {
     if (!selectedId) return;
-    busy = 'rebase-raw-draft';
-    try {
-      const draft = await api.rebaseConfigurationDraft(selectedId);
-      rawDraftSession = draft;
-      configContent = draft.workingContent;
-      rawDraftAutosaveContent = draft.workingContent;
-      activeRawConflictId = firstUnresolvedConflictId(draft);
-    } catch (error) {
-      reportConfigError(error);
-    } finally {
-      busy = '';
-    }
+    const id = selectedId;
+    clearConfigurationError();
+    await mutateConfiguration(
+      id,
+      'rebase-raw-draft',
+      async () => {
+        if (rawDraftSavePromise && rawDraftSaveProgramId === id) await rawDraftSavePromise;
+        const draft = await api.rebaseConfigurationDraft(id);
+        if (selectedId !== id) return;
+        rawDraftSession = draft;
+        configContent = draft.workingContent;
+        rawDraftAutosaveContent = draft.workingContent;
+        activeRawConflictId = firstUnresolvedConflictId(draft);
+      },
+      async (error) => {
+        reportConfigError(error, 'configuration-rebase', async () => { await rebaseRawDraft(); });
+      },
+    );
   }
 
   async function resolveRawConflict(event: CustomEvent<{ conflictId: string; resolution: RawConflictResolution }>) {
     if (!selectedId) return;
-    busy = 'resolve-raw-conflict';
-    try {
-      const draft = await api.resolveConfigurationConflict(
-        selectedId,
-        event.detail.conflictId,
-        event.detail.resolution,
-      );
-      rawDraftSession = draft;
-      configContent = draft.workingContent;
-      rawDraftAutosaveContent = draft.workingContent;
-      activeRawConflictId = firstUnresolvedConflictId(draft);
-    } catch (error) {
-      reportConfigError(error);
-    } finally {
-      busy = '';
-    }
+    const id = selectedId;
+    clearConfigurationError();
+    await mutateConfiguration(
+      id,
+      'resolve-raw-conflict',
+      async () => {
+        if (rawDraftSavePromise && rawDraftSaveProgramId === id) await rawDraftSavePromise;
+        const draft = await api.resolveConfigurationConflict(
+          id,
+          event.detail.conflictId,
+          event.detail.resolution,
+        );
+        if (selectedId !== id) return;
+        rawDraftSession = draft;
+        configContent = draft.workingContent;
+        rawDraftAutosaveContent = draft.workingContent;
+        activeRawConflictId = firstUnresolvedConflictId(draft);
+      },
+      async (error) => {
+        reportConfigError(error, 'raw-draft', async () => { await resolveRawConflict(event); });
+      },
+    );
   }
 
   function navigateRawConflict(event: CustomEvent<{ conflictId: string }>) {
@@ -2784,16 +3305,30 @@
 
   async function discardRawDraft() {
     if (!selectedId) return;
-    try {
-      await api.discardConfigurationDraft(selectedId);
-      const draft = await api.getConfigurationEditorSession(selectedId);
-      rawDraftSession = draft;
-      configContent = draft.workingContent;
-      rawDraftAutosaveContent = draft.workingContent;
-      activeRawConflictId = '';
-    } catch (error) {
-      reportConfigError(error);
-    }
+    const id = selectedId;
+    clearConfigurationError();
+    await mutate(
+      'discard-draft',
+      async () => {
+        if (rawDraftAutosaveTimer !== undefined) {
+          window.clearTimeout(rawDraftAutosaveTimer);
+          rawDraftAutosaveTimer = undefined;
+        }
+        if (rawDraftSavePromise && rawDraftSaveProgramId === id) await rawDraftSavePromise;
+        await api.discardConfigurationDraft(id);
+        const draft = await api.getConfigurationEditorSession(id);
+        if (selectedId !== id) return;
+        rawDraftSession = draft;
+        configContent = draft.workingContent;
+        rawDraftAutosaveContent = draft.workingContent;
+        activeRawConflictId = firstUnresolvedConflictId(draft);
+        configResult = null;
+        clearConfigOutput();
+      },
+      async (error) => {
+        reportConfigError(error, 'raw-draft', async () => { await discardRawDraft(); });
+      },
+    );
   }
 
   async function handleAutomaticConfigUpdate(event: AutomaticConfigUpdateEvent) {
@@ -2808,14 +3343,8 @@
         api.loadConfig(event.programId),
       ]);
       if (selectedId !== event.programId || configDirty) return;
-      configurationState = state;
-      configDocument = {
-        ...document,
-        content: state.desired.content,
-        baseHash: state.desired.revision.contentHash,
-        language: state.format,
-      };
-      configContent = state.desired.content;
+      if (!configDocument) configDocument = document;
+      await adoptConfigurationState(event.programId, state);
     } catch {
       // The next automatic or manual refresh can update the editor.
     }
@@ -2872,6 +3401,30 @@
       spec: {
         ...detail.spec,
         managedConfig: { ...detail.spec.managedConfig, remoteUpdate },
+      },
+    };
+  }
+
+  /**
+   * ConfigSourceEditor owns its local editing array and emits a semantic
+   * `change` event for every edit.  A Svelte `bind:sources` binding listens
+   * for a `sources` event, not this domain event, so relying on the binding
+   * leaves the textarea visually changed while the ProgramSpec (and the Save
+   * button fingerprint) still contains the old source.  Treat the event as
+   * the authoritative source draft and replace the immutable detail object
+   * immediately; this keeps Sources, status fingerprints and every sibling
+   * workspace projection in sync before a save is attempted.
+   */
+  function updateDetailSources(sources: ConfigSource[]) {
+    if (!detail?.spec.managedConfig) return;
+    detail = {
+      ...detail,
+      spec: {
+        ...detail.spec,
+        managedConfig: {
+          ...detail.spec.managedConfig,
+          sources: structuredClone(sources),
+        },
       },
     };
   }
@@ -3191,7 +3744,6 @@
 
   async function replacePackage() {
     if (!detail || detail.spec.executable.mode !== 'managed') return;
-    panelError = null;
     if (!isAbsoluteHostPath(replacementPackageSource.trim())) {
       reportPanelError(new Error(translate('Enter an absolute directory path for this operating system.')));
       return;
@@ -3225,7 +3777,7 @@
     stopLogPolling();
     stopXrayDashboardPolling();
     activeTab = 'configuration';
-    configError = null;
+    clearConfigurationError();
     try {
       const editor = ensureCodeEditor();
       if (!selectedId || configDocument) {
@@ -3265,10 +3817,12 @@
           rawDraftAutosaveContent = configContent;
           void loadConfigurationSchemaForEditor(id, document.configurationSchema);
         },
-        reportConfigError,
+        async (value) => {
+          reportConfigError(value, 'configuration-load', async () => { await showConfiguration(); });
+        },
       );
     } catch (value) {
-      reportConfigError(value);
+      reportConfigError(value, 'configuration-load', async () => { await showConfiguration(); });
     } finally {
       await restoreMainScrollAfterTabRender(previousMainScrollTop, 'configuration', programId);
     }
@@ -3392,30 +3946,29 @@
 
   async function validateConfiguration() {
     if (!configDocument || !selectedId) return;
-    configError = null;
+    clearConfigurationError();
     const id = selectedId;
     const content = configContent;
-    await mutate(
+    await mutateConfiguration(
+      id,
       'validate',
       async () => {
         const state = await commitRawEditorDraft(id, content);
-        if (selectedId !== id || activeTab !== 'configuration') return;
-        configurationState = state;
-        configDocument = {
-          ...configDocument,
-          content: state.desired.content,
-          baseHash: state.desired.revision.contentHash,
-          language: state.format,
-          documentationUrl: configDocument?.documentationUrl ?? '',
-        };
-        configResult = {
-          valid: state.desired.validation === 'valid',
-          stdout: state.desired.validation === 'valid' ? 'Configuration is valid.' : '',
-          stderr: state.desired.diagnostics.map((item) => item.message).join('\n'),
-        };
-        setConfigOutput(configResult.stdout, configResult.stderr);
+        if (selectedId !== id || (activeTab !== 'intent' && activeTab !== 'configuration')) return;
+        await adoptConfigurationState(id, state);
+        if (state.desired.validation === 'valid') {
+          setConfigOutput('Configuration is valid.');
+        } else {
+          setConfigOutputMessage(
+            configurationDiagnosticMessage(
+              state.desired.diagnostics[0]?.messageKey ?? state.desired.diagnostics[0]?.code,
+            ),
+          );
+        }
       },
-      reportConfigError,
+      async (value) => {
+        reportConfigError(value, 'configuration-validate', async () => { await validateConfiguration(); });
+      },
     );
   }
 
@@ -3424,11 +3977,12 @@
       window.clearTimeout(rawDraftAutosaveTimer);
       rawDraftAutosaveTimer = undefined;
     }
+    if (rawDraftSavePromise && rawDraftSaveProgramId === id) await rawDraftSavePromise;
     let draft = rawDraftSession ?? await api.getConfigurationEditorSession(id);
     draft = structuredClone(draft);
     draft.userContent = content;
     draft.workingContent = content;
-    draft = await api.saveConfigurationDraft(id, draft, draft.draftRevision);
+    draft = await persistRawDraft(id, draft);
     if (selectedId === id) {
       rawDraftSession = draft;
       rawDraftAutosaveContent = draft.workingContent;
@@ -3458,48 +4012,58 @@
   ) {
     if (!selectedId || configDirty || !canEditConfigurationByLicense) return;
     const id = selectedId;
-    if (
-      event.detail.replaceRawOverride
-      && !(await askConfirmation(
+    if (event.detail.replaceRawOverride) {
+      const confirmed = await askConfirmation(
         translate('Replace the overlapping Raw override?'),
         translate('Only the Raw operation that overlaps this Guided setting will be removed.'),
         translate('Use Guided setting'),
-      ))
-    ) {
-      return;
+      );
+      if (!confirmed) {
+        // A select/checkbox updates its DOM value before the async handler
+        // returns.  Re-read the authoritative state so cancelling the dialog
+        // cannot leave a transient value that disagrees with Raw projection.
+        try {
+          await reloadConfigurationProjection(id);
+        } catch (error) {
+          reportIntentError(error, async () => { await reloadConfigurationProjection(id); });
+        }
+        return;
+      }
     }
-    configError = null;
-    await mutate(
+    clearIntentError();
+    await mutateConfiguration(
+      id,
       'guided-setting',
       async () => {
         let state = configurationState ?? await api.getConfigurationState(id);
-        state = await api.setGuidedIntent(id, {
-          settingId: event.detail.settingId,
-          value: event.detail.value,
-          expectedGeneration: state.generation,
-          replaceRawOverride: event.detail.replaceRawOverride,
-        });
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            state = await api.setGuidedIntent(id, {
+              settingId: event.detail.settingId,
+              value: event.detail.value,
+              expectedGeneration: state.generation,
+              replaceRawOverride: event.detail.replaceRawOverride,
+            });
+            break;
+          } catch (error) {
+            if (attempt !== 0 || !isRetryableConfigurationConflict(error)) throw error;
+            // Refresh the authoritative projection once.  The same semantic
+            // edit is safe to retry because Rust validates the setting and
+            // removes only overlapping Raw operations in one transaction.
+            state = await api.getConfigurationState(id);
+            if (selectedId !== id) throw error;
+            configurationState = state;
+          }
+        }
         if (state.desired.validation === 'valid') {
           state = await api.applyConfigurationCandidate(id, state.generation);
         }
-        if (selectedId !== id || activeTab !== 'configuration') return;
-        configurationState = state;
-        if (configDocument) {
-          configDocument = {
-            ...configDocument,
-            content: state.desired.content,
-            baseHash: state.desired.revision.contentHash,
-            language: state.format,
-          };
-        }
-        configContent = state.desired.content;
-        configResult = {
-          valid: state.desired.validation === 'valid',
-          stdout: state.desired.validation === 'valid' ? 'Configuration is valid.' : '',
-          stderr: state.desired.diagnostics.map((diagnostic) => diagnostic.message).join('\n'),
-        };
+        if (selectedId !== id || (activeTab !== 'intent' && activeTab !== 'configuration')) return;
+        await adoptConfigurationState(id, state);
       },
-      reportConfigError,
+      async (value) => {
+        reportIntentError(value, async () => { await changeGuidedSetting(event); });
+      },
     );
   }
 
@@ -3515,12 +4079,13 @@
 
   async function applyConfiguration() {
     if (!configDocument || !selectedId) return false;
-    configError = null;
+    clearConfigurationError();
     const id = selectedId;
     const content = configContent;
     const restartsProgram = !!detail && isRuntimeActive(detail.state);
     const stopBeforeApply = restartsProgram && detail?.state.status !== 'running';
-    return mutate(
+    return mutateConfiguration(
+      id,
       'apply',
       async () => {
         let stoppedForApply = false;
@@ -3531,12 +4096,11 @@
           }
           let state = await commitRawEditorDraft(id, content);
           if (state.desired.validation !== 'valid') {
-            configurationState = state;
+            await adoptConfigurationState(id, state);
             throw new Error(state.desired.diagnostics.map((item) => item.message).join('\n') || 'Configuration validation failed.');
           }
           state = await api.applyConfigurationCandidate(id, state.generation);
-          configurationState = state;
-          rawDraftSession = await api.getConfigurationEditorSession(id);
+          await adoptConfigurationState(id, state);
           if (stoppedForApply) {
             stoppedForApply = false;
             await api.startProgram(id);
@@ -3546,15 +4110,7 @@
           throw value;
         }
         if (selectedId !== id || activeTab !== 'configuration' || !configDocument) return;
-        if (configurationState) {
-          configDocument = {
-            ...configDocument,
-            content: configurationState.desired.content,
-            baseHash: configurationState.desired.revision.contentHash,
-            language: configurationState.format,
-          } as ConfigDocument;
-          configContent = configurationState.desired.content;
-        }
+        if (configurationState) await adoptConfigurationState(id, configurationState);
         configResult = { valid: true, stdout: '', stderr: '' };
         setConfigOutputMessage(
           restartsProgram
@@ -3571,7 +4127,9 @@
         }
         await refreshPrograms();
       },
-      reportConfigError,
+      async (value) => {
+        reportConfigError(value, 'configuration-apply', async () => { await applyConfiguration(); });
+      },
     );
   }
 
@@ -3580,7 +4138,7 @@
     configContent = configDocument.content;
     configResult = null;
     clearConfigOutput();
-    configError = null;
+    clearConfigurationError();
   }
 
   async function runProgramAction(action: ActionDescriptor) {
@@ -3589,7 +4147,7 @@
       action.confirmation &&
       !(await askConfirmation(translate('Run this action?'), translate(action.label), translate('Run action')))
     ) return;
-    configError = null;
+    clearConfigurationError();
     const id = selectedId;
     await mutate(
       action.id,
@@ -3919,7 +4477,17 @@
     if (tab === 'overview') void showOverview();
     else if (tab === 'dashboard') void showXrayDashboard();
     else if (tab === 'configuration') void showConfiguration();
+    else if (tab === 'intent' || tab === 'sources' || tab === 'compatibility') void showConfigurationWorkspace(tab);
     else void showLogs();
+  }
+
+  async function showConfigurationWorkspace(tab: Extract<Tab, 'intent' | 'sources' | 'compatibility'>) {
+    captureVisibleLogScrollState();
+    stopLogPolling();
+    stopXrayDashboardPolling();
+    activeTab = tab;
+    if (!selectedId || detail?.spec.type.kind === 'generic') return;
+    await loadConfigurationStateSummary(selectedId);
   }
 
   function filterLog(content: string, query: string) {
@@ -5128,13 +5696,14 @@
         dashboardDisabled={!dashboardCanOpen}
         dashboardTitle={$t(dashboardCanOpen ? 'Open Xray Dashboard' : 'Start the program to refresh live metrics')}
         configurationVisible={hasEditableConfig(detail.spec)}
+        settingsVisible={hasEditableConfig(detail.spec)}
         onSelect={activateTab}
       />
 
       {#if activeTab === 'overview'}
         <div id="program-panel-overview" role="tabpanel" tabindex="0" aria-labelledby="program-tab-overview" class="panel settings-panel">
-          {#if panelError}<ErrorNotice error={panelError} />{/if}
-          {#if settingsChanged}<div class="change-notice"><span><i></i><span><strong>{$t('Unsaved program changes')}</strong></span></span><div><button type="button" on:click={() => void revertSettings()} disabled={!!busy}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings()} disabled={!!busy}>{busy === 'save' ? `${$t('Saving')}…` : $t(saveRequiresRestart ? 'Save and restart' : 'Save')}</button></div></div>{/if}
+          {#if workspaceErrors.details}<ErrorNotice error={workspaceErrors.details} dismissible onDismiss={() => clearWorkspaceError('details')} actionLabel="Retry" onAction={() => retryWorkspaceError('details')} actionBusy={workspaceErrorBusyScope === 'details'} />{/if}
+          {#if detailsChanged}<div class="change-notice"><span><i></i><span><strong>{$t('Unsaved program changes')}</strong></span></span><div><button type="button" on:click={() => void revertSettings('details')} disabled={!!busy}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(true, true, 'details')} disabled={!!busy}>{busy === 'save' ? `${$t('Saving')}…` : $t(saveRequiresRestart ? 'Save and restart' : 'Save')}</button></div></div>{/if}
           <section class="detail-section general-detail-section">
             <div class="section-heading"><div><h2>{$t('General')}</h2></div></div>
             <div class="form-grid">
@@ -5145,43 +5714,6 @@
               {#if detail.spec.executable.mode === 'external'}<label class="wide">{$t('Executable')}<input bind:value={detail.spec.executable.path} /></label>{/if}
             </div>
           </section>
-
-          {#if detail.spec.type.kind !== 'generic'}
-            <section class="detail-section managed-detail-section">
-              <div class="section-heading managed-heading"><div><h2>{$t('Managed configuration')}</h2><p>{$t(programDefinition(detail.spec.type.kind).configuration?.language === 'yaml' ? 'Combine ordered native YAML sources into the active configuration' : 'Combine ordered native JSON sources into the active configuration')}</p></div>{#if !detail.spec.managedConfig}<button type="button" on:click={enableManagedConfiguration}>{$t('Enable')}</button>{/if}</div>
-              {#if detail.spec.managedConfig}
-                <ConfigSourceEditor
-                  bind:sources={detail.spec.managedConfig.sources}
-                  {platform}
-                  disabled={!!busy}
-                  maxSources={maxConfigSourcesLimit}
-                  remoteUpdate={detail.spec.managedConfig.remoteUpdate}
-                  on:remoteUpdate={(event) => updateDetailRemoteUpdate(event.detail)}
-                  on:preview={(event) => void previewShareImport(event.detail)}
-                />
-                {#if detail.spec.type.kind === 'singBox'}
-                  <SingBoxDashboardEditor
-                    value={detailDashboardOptionsValue}
-                    disabled={!!busy}
-                    on:change={(event) => updateDetailDashboard(event.detail)}
-                  />
-                {:else if detail.spec.type.kind === 'xray'}
-                  <XrayDashboardEditor
-                    value={detailXrayDashboardValue}
-                    disabled={!!busy}
-                    on:change={(event) => updateDetailXrayDashboard(event.detail)}
-                  />
-                {:else if detail.spec.type.kind === 'mihomo'}
-                  <MihomoDashboardEditor
-                    value={detailMihomoDashboardValue}
-                    disabled={!!busy}
-                    on:change={(event) => updateDetailMihomoDashboard(event.detail)}
-                  />
-                {/if}
-                <div class="managed-config-actions"><span role="status" aria-live="polite">{#if configUpdateStatus}{#if configUpdateStatus.sourceCount !== undefined}{configUpdateStatus.sourceCount} {/if}{$t(configUpdateStatus.message)}{/if}</span><button type="button" on:click={() => void refreshManagedConfiguration()} disabled={!!busy}>{$t('Update configuration')}</button></div>
-              {/if}
-            </section>
-          {/if}
 
           <section class="detail-section runtime-detail-section">
             <div class="section-heading"><div><h2>{$t('Runtime')}</h2></div></div>
@@ -5199,104 +5731,12 @@
               <EnvironmentEditor bind:entries={environmentEntries} />
             </details>
 
-            {#if detail.spec.type.kind !== 'generic'}
-              <section class="compatibility-card" aria-labelledby="core-compatibility-heading">
-                <div class="compatibility-card-heading">
-                  <div>
-                    <h3 id="core-compatibility-heading">{$t('Core compatibility')}</h3>
-                    <p>{$t('Compatibility is resolved separately from binary origin and verified again against the exact executable before activation.')}</p>
-                  </div>
-                  <span class:warning={detail.spec.executable.metadata?.coreTarget?.basis !== 'verifiedOfficialArtifact' && detail.spec.executable.metadata?.coreTarget?.basis !== 'trustedPackage'} class="compatibility-badge">
-                    {$t(detail.spec.executable.metadata?.coreTarget?.basis ?? 'unknown')}
-                  </span>
-                </div>
-                <div class="compatibility-grid">
-                  <label>
-                    <span>{$t('Compatibility baseline')}</span>
-                    <select value={detail.spec.executable.compatibility.mode} on:change={changeCompatibilityMode} disabled={!!busy || isRuntimeActive(detail.state)}>
-                      <option value="automatic">{$t('Automatic from binary report')}</option>
-                      <option value="release">{$t('Catalogued release')}</option>
-                      <option value="commit">{$t('Catalogued commit')}</option>
-                      <option value="unknown">{$t('Unknown / custom build')}</option>
-                    </select>
-                  </label>
-                  {#if detail.spec.executable.compatibility.mode === 'release'}
-                    <label>
-                      <span>{$t('Exact release tag')}</span>
-                      <input
-                        value={detail.spec.executable.compatibility.tag}
-                        on:input={(event) => updateCompatibilityPreference({ mode: 'release', tag: (event.currentTarget as HTMLInputElement).value.trim() })}
-                        placeholder="v1.13.18"
-                        disabled={!!busy || isRuntimeActive(detail.state)}
-                      />
-                    </label>
-                  {:else if detail.spec.executable.compatibility.mode === 'commit'}
-                    <label>
-                      <span>{$t('Exact commit SHA')}</span>
-                      <input
-                        value={detail.spec.executable.compatibility.commitSha}
-                        on:input={(event) => updateCompatibilityPreference({ mode: 'commit', commitSha: (event.currentTarget as HTMLInputElement).value.trim().toLowerCase() })}
-                        placeholder="40-character commit SHA"
-                        maxlength="40"
-                        disabled={!!busy || isRuntimeActive(detail.state)}
-                      />
-                    </label>
-                  {/if}
-                  <div class="compatibility-fact">
-                    <span>{$t('Resolved target')}</span>
-                    <strong>{coreTargetLabel(detail.spec.executable.metadata?.coreTarget) ?? $t('Not reported')}</strong>
-                    <small>{coreCoordinateLabel(detail.spec.executable.metadata?.coreTarget)}</small>
-                  </div>
-                  <div class="compatibility-fact">
-                    <span>{$t('Binary fingerprint')}</span>
-                    <strong>{detail.spec.executable.metadata?.fingerprint.sha256.slice(0, 16) ?? $t('Not available')}</strong>
-                    <small>{detail.spec.executable.metadata ? `${detail.spec.executable.metadata.fingerprint.size.toLocaleString()} bytes` : $t('The executable has not been probed yet.')}</small>
-                  </div>
-                  <div class="compatibility-fact">
-                    <span>{$t('Feature decisions')}</span>
-                    {#if configurationState}
-                      <strong>{configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'supported').length} {$t('supported')}</strong>
-                      <small>{configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'unknown').length} {$t('unknown')} · {configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'unsupported').length} {$t('unsupported')}</small>
-                    {:else if configurationStateLoadingId === detail.spec.id}
-                      <strong>{$t('Loading')}…</strong>
-                      <small>{$t('Loading compatibility profile')}</small>
-                    {:else}
-                      <strong>{$t('Unavailable')}</strong>
-                      <small>{$t('Compatibility state could not be loaded.')}</small>
-                    {/if}
-                  </div>
-                  <div class:warning={!!configurationState && !configurationState.desired.validationEvidence?.nativeAccepted} class="compatibility-fact">
-                    <span>{$t('Native evidence')}</span>
-                    {#if configurationState}
-                      <strong>{configurationState.desired.validationEvidence?.nativeAccepted ? $t('Accepted for this candidate') : $t('Validation required')}</strong>
-                      <small>{$t('Evidence is valid only for this fingerprint, profile, and configuration hash.')}</small>
-                    {:else if configurationStateLoadingId === detail.spec.id}
-                      <strong>{$t('Loading')}…</strong>
-                      <small>{$t('Loading candidate validation evidence')}</small>
-                    {:else}
-                      <strong>{$t('Unavailable')}</strong>
-                      <small>{$t('Candidate validation evidence could not be loaded.')}</small>
-                    {/if}
-                  </div>
-                </div>
-                {#if configurationStateLoadError}
-                  <div class="compatibility-load-error" role="alert">
-                    <span>{$t('Compatibility state could not be loaded.')}</span>
-                    <button type="button" on:click={() => void loadConfigurationStateSummary(selectedId)} disabled={configurationStateLoadingId === selectedId}>{$t('Retry')}</button>
-                  </div>
-                {/if}
-                {#if detail.spec.executable.metadata?.coreTarget?.basis === 'binaryReported'}
-                  <p class="compatibility-notice" role="status">{$t('The reported version is used as a compatibility baseline, but the binary source is not verified.')}</p>
-                {/if}
-                {#if detail.spec.executable.metadata?.coreTarget?.coordinate.kind === 'uncatalogued' && detail.spec.executable.metadata.coreTarget.coordinate.reason === 'futureVersion'}
-                  <p class="compatibility-notice" role="status">{$t('This reported version is newer than the local compatibility catalog. Features remain attemptable and require validation by the exact binary.')}</p>
-                {:else if detail.spec.executable.metadata?.coreTarget?.coordinate.kind === 'uncatalogued'}
-                  <p class="compatibility-notice" role="status">{$t('This version is not uniquely catalogued. All features remain attemptable and the exact native validator is authoritative for the candidate.')}</p>
-                {/if}
-                {#if configurationState && !configurationState.desired.validationEvidence?.nativeAccepted}
-                  <p class="compatibility-notice" role="status">{$t('Native validation evidence is missing or stale. Validate this candidate again before activation.')}</p>
-                {/if}
-              </section>
+            {#if detail.spec.type.kind === 'singBox'}
+              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><SingBoxDashboardEditor value={detailDashboardOptionsValue} disabled={!!busy} on:change={(event) => updateDetailDashboard(event.detail)} /></section>
+            {:else if detail.spec.type.kind === 'xray'}
+              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><XrayDashboardEditor value={detailXrayDashboardValue} disabled={!!busy} on:change={(event) => updateDetailXrayDashboard(event.detail)} /></section>
+            {:else if detail.spec.type.kind === 'mihomo'}
+              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><MihomoDashboardEditor value={detailMihomoDashboardValue} disabled={!!busy} on:change={(event) => updateDetailMihomoDashboard(event.detail)} /></section>
             {/if}
 
             <div class="metadata">
@@ -5310,6 +5750,94 @@
             {/if}
           </section>
           <div class="panel-actions"><button class="danger" on:click={() => void removeSelected()} disabled={!!busy}>{$t('Delete program')}</button></div>
+        </div>
+      {:else if activeTab === 'intent'}
+        <div id="program-panel-intent" role="tabpanel" tabindex="0" aria-labelledby="program-tab-intent" class="panel configuration-workspace">
+          {#if workspaceErrors.intent}<ErrorNotice error={workspaceErrors.intent} dismissible onDismiss={() => clearWorkspaceError('intent')} actionLabel="Retry" onAction={() => retryWorkspaceError('intent')} actionBusy={workspaceErrorBusyScope === 'intent'} />{/if}
+          <header class="workspace-header">
+            <div><p class="eyebrow">{$t('Intent')}</p><h2>{$t('Common settings')}</h2><p>{$t('Choose the settings you want to own explicitly. Source updates and the final compiler preserve these choices.')}</p></div>
+            {#if configurationState}<span class="workspace-status">{$t(configurationState.desired.validation === 'valid' ? 'Validated' : configurationState.desired.validation === 'invalid' ? 'Needs attention' : 'Pending validation')}</span>{/if}
+          </header>
+          {#if configurationState && configurationState.guidedDescriptors.length > 0}
+            <GuidedConfigurationEditor
+              state={configurationState}
+              disabled={!!busy || configDirty || !canEditConfigurationByLicense}
+              on:change={changeGuidedSetting}
+            />
+          {:else if configurationStateLoadingId === detail.spec.id}
+            <div class="loading configuration-loading">{$t('Loading compatibility profile')}…</div>
+          {:else if configurationStateLoadError}
+            <div class="workspace-error" role="alert"><span>{$t('Compatibility state could not be loaded.')}</span><button type="button" on:click={() => void loadConfigurationStateSummary(selectedId)}>{$t('Retry')}</button></div>
+          {:else}
+            <div class="workspace-empty"><strong>{$t('No Guided settings available')}</strong><span>{$t('Use Configuration for the full native editor.')}</span></div>
+          {/if}
+        </div>
+      {:else if activeTab === 'sources'}
+        <div id="program-panel-sources" role="tabpanel" tabindex="0" aria-labelledby="program-tab-sources" class="panel configuration-workspace">
+          <header class="workspace-header">
+            <div><p class="eyebrow">{$t('Sources')}</p><h2>{$t('Managed configuration')}</h2><p>{$t(programDefinition(detail.spec.type.kind).configuration?.language === 'yaml' ? 'Combine ordered native YAML sources into the active configuration' : 'Combine ordered native JSON sources into the active configuration')}</p></div>
+            <div class="workspace-actions"><button type="button" on:click={() => void revertSettings('sources')} disabled={!!busy || !managedConfigChanged}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(false, true, 'sources')} disabled={!!busy || !managedConfigChanged}>{busy === 'save' ? `${$t('Saving')}…` : $t('Save sources')}</button></div>
+          </header>
+          {#if sourceSaveStatus}<p class="workspace-success" role="status" aria-live="polite">{$t(sourceSaveStatus)}</p>{/if}
+          {#if workspaceErrors.sources}<ErrorNotice error={workspaceErrors.sources} dismissible onDismiss={() => clearWorkspaceError('sources')} actionLabel="Retry" onAction={() => retryWorkspaceError('sources')} actionBusy={workspaceErrorBusyScope === 'sources'} />{/if}
+          {#if !detail.spec.managedConfig}
+            <section class="workspace-empty"><strong>{$t('Managed configuration is disabled')}</strong><span>{$t('Enable it to combine ordered local, inline or HTTPS sources.')}</span><button type="button" on:click={enableManagedConfiguration} disabled={!!busy}>{$t('Enable')}</button></section>
+          {:else}
+            <ConfigSourceEditor
+              sources={detail.spec.managedConfig.sources}
+              {platform}
+              disabled={!!busy}
+              maxSources={maxConfigSourcesLimit}
+              remoteUpdate={detail.spec.managedConfig.remoteUpdate}
+              on:change={(event) => updateDetailSources(event.detail)}
+              on:remoteUpdate={(event) => updateDetailRemoteUpdate(event.detail)}
+              on:preview={(event) => void previewShareImport(event.detail)}
+            />
+            <div class="source-status-summary" aria-live="polite">
+              {#if configurationState}
+                {#each configurationState.sourceStatuses as source (source.sourceId)}
+                  <div class="source-status-item" class:warning={source.freshness === 'stale'} class:problem={source.freshness === 'invalid' || source.freshness === 'unavailable'}>
+                    <span>{source.sourceName}: {$t(source.freshness)}</span>
+                    {#if sourceStatusExplanation(source)}<small title={source.message ?? ''}>{$t(sourceStatusExplanation(source) ?? '')}</small>{/if}
+                  </div>
+                {/each}
+              {:else if configurationStateLoadingId === detail.spec.id}{$t('Loading')}…{:else}{$t('Unavailable')}{/if}
+            </div>
+            <div class="managed-config-actions"><span role="status" aria-live="polite">{#if configUpdateStatus}{#if configUpdateStatus.sourceCount !== undefined}{configUpdateStatus.sourceCount} {/if}{$t(configUpdateStatus.message)}{/if}</span><button type="button" on:click={() => void refreshManagedConfiguration()} disabled={!!busy || managedConfigChanged}>{$t('Update configuration')}</button></div>
+          {/if}
+        </div>
+      {:else if activeTab === 'compatibility'}
+        <div id="program-panel-compatibility" role="tabpanel" tabindex="0" aria-labelledby="program-tab-compatibility" class="panel configuration-workspace">
+          {#if workspaceErrors.compatibility}<ErrorNotice error={workspaceErrors.compatibility} dismissible onDismiss={() => clearWorkspaceError('compatibility')} actionLabel="Retry" onAction={() => retryWorkspaceError('compatibility')} actionBusy={workspaceErrorBusyScope === 'compatibility'} />{/if}
+          <header class="workspace-header">
+            <div><p class="eyebrow">{$t('Compatibility')}</p><h2 id="core-compatibility-heading">{$t('Core compatibility')}</h2><p>{$t('Compatibility is resolved separately from binary origin and verified again against the exact executable before activation.')}</p></div>
+            <div class="workspace-actions"><button type="button" on:click={() => void revertSettings('compatibility')} disabled={!!busy || !compatibilityChanged}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(false, false, 'compatibility')} disabled={!!busy || !compatibilityChanged}>{busy === 'save' ? `${$t('Saving')}…` : $t('Save target')}</button></div>
+          </header>
+          {#if compatibilitySaveStatus}<p class="workspace-success" role="status" aria-live="polite">{$t(compatibilitySaveStatus)}</p>{/if}
+          <section class="compatibility-card">
+            <div class="compatibility-card-heading"><span class:warning={detail.spec.executable.metadata?.coreTarget?.basis !== 'verifiedOfficialArtifact' && detail.spec.executable.metadata?.coreTarget?.basis !== 'trustedPackage'} class="compatibility-badge">{$t(detail.spec.executable.metadata?.coreTarget?.basis ?? 'unknown')}</span></div>
+            <div class="compatibility-grid">
+              <label><span>{$t('Compatibility baseline')}</span><select value={detail.spec.executable.compatibility.mode} on:change={changeCompatibilityMode} disabled={!!busy || isRuntimeActive(detail.state)}><option value="automatic">{$t('Automatic detection')}</option><option value="release">{$t('Official release baseline')}</option><option value="commit">{$t('Official commit baseline')}</option><option value="unknown">{$t('Unknown / custom build')}</option></select></label>
+              {#if detail.spec.executable.compatibility.mode === 'release'}
+                <label><span>{$t('Exact release tag')}</span><input list="core-release-options" value={detail.spec.executable.compatibility.tag} on:input={(event) => updateCompatibilityPreference({ mode: 'release', tag: (event.currentTarget as HTMLInputElement).value.trim() })} placeholder="v1.13.18" disabled={!!busy || isRuntimeActive(detail.state)} /></label>
+              {:else if detail.spec.executable.compatibility.mode === 'commit'}
+                <label><span>{$t('Exact commit SHA')}</span><input list="core-commit-options" value={detail.spec.executable.compatibility.commitSha} on:input={(event) => updateCompatibilityPreference({ mode: 'commit', commitSha: (event.currentTarget as HTMLInputElement).value.trim().toLowerCase() })} placeholder="40-character commit SHA" maxlength="40" disabled={!!busy || isRuntimeActive(detail.state)} /></label>
+              {:else if detail.spec.executable.compatibility.mode === 'unknown'}
+                <label><span>{$t('Reference compatibility target')}</span><select value={unknownReferenceValueState?.kind ?? ''} on:change={changeUnknownReferenceKind} disabled={!!busy || isRuntimeActive(detail.state)}><option value="">{$t('No reference selected')}</option><option value="release">{$t('Release reference')}</option><option value="commit">{$t('Commit reference')}</option></select></label>
+                {#if unknownReferenceValueState?.kind === 'release'}<label><span>{$t('Exact release tag')}</span><input list="core-release-options" value={unknownReferenceValueState.tag} on:input={changeUnknownReference} placeholder="v1.13.18" disabled={!!busy || isRuntimeActive(detail.state)} /></label>{:else if unknownReferenceValueState?.kind === 'commit'}<label><span>{$t('Exact commit SHA')}</span><input list="core-commit-options" value={unknownReferenceValueState.commitSha} on:input={changeUnknownReference} placeholder="40-character commit SHA" maxlength="40" disabled={!!busy || isRuntimeActive(detail.state)} /></label>{/if}
+                <p class="compatibility-notice" role="status">{$t('Unknown builds remain attemptable and require validation by this exact binary.')} {$t('The reference target describes feature history only; it does not verify binary origin.')}</p>
+              {/if}
+              <datalist id="core-release-options">{#each (configurationState?.compatibilityReferences ?? []).filter((reference) => reference.kind === 'release') as reference (reference.tag)}<option value={reference.tag}>{reference.tag}</option>{/each}</datalist>
+              <datalist id="core-commit-options">{#each (configurationState?.compatibilityReferences ?? []).filter((reference) => reference.kind === 'commit') as reference (reference.commitSha)}<option value={reference.commitSha}>{reference.commitSha}</option>{/each}</datalist>
+              <div class="compatibility-fact"><span>{$t('Resolved target')}</span><strong>{coreTargetLabel(detail.spec.executable.metadata?.coreTarget) ?? $t('Not reported')}</strong><small>{coreCoordinateLabel(detail.spec.executable.metadata?.coreTarget)}</small></div>
+              <div class="compatibility-fact"><span>{$t('Binary fingerprint')}</span><strong>{detail.spec.executable.metadata?.fingerprint.sha256.slice(0, 16) ?? $t('Not available')}</strong><small>{detail.spec.executable.metadata ? `${detail.spec.executable.metadata.fingerprint.size.toLocaleString()} bytes` : $t('The executable has not been probed yet.')}</small></div>
+              <div class="compatibility-fact"><span>{$t('Feature decisions')}</span>{#if configurationState}<strong>{configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'supported').length} {$t('supported')}</strong><small>{configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'unknown').length} {$t('unknown')} · {configurationState.compatibilityProfile.decisions.filter((decision) => decision.availability === 'unsupported').length} {$t('unsupported')}</small>{:else if configurationStateLoadingId === detail.spec.id}<strong>{$t('Loading')}…</strong><small>{$t('Loading compatibility profile')}</small>{:else}<strong>{$t('Unavailable')}</strong><small>{$t('Compatibility state could not be loaded.')}</small>{/if}</div>
+              <div class:warning={!!configurationState && !configurationState.desired.validationEvidence?.nativeAccepted} class="compatibility-fact"><span>{$t('Native evidence')}</span>{#if configurationState}<strong>{configurationState.desired.validationEvidence?.nativeAccepted ? $t('Accepted for this candidate') : $t('Validation required')}</strong><small>{$t('Evidence is valid only for this fingerprint, profile, and configuration hash.')}</small>{:else}<strong>{$t('Unavailable')}</strong><small>{$t('Candidate validation evidence could not be loaded.')}</small>{/if}</div>
+            </div>
+            {#if configurationStateLoadError}<div class="compatibility-load-error" role="alert"><span>{$t('Compatibility state could not be loaded.')}</span><button type="button" on:click={() => void loadConfigurationStateSummary(selectedId)}>{$t('Retry')}</button></div>{/if}
+            {#if detail.spec.executable.metadata?.coreTarget?.coordinate.kind === 'uncatalogued'}<p class="compatibility-notice" role="status">{$t(detail.spec.executable.metadata.coreTarget.coordinate.reason === 'futureVersion' ? 'This reported version is newer than the local compatibility catalog. Features remain attemptable and require validation by the exact binary.' : 'This version is not uniquely catalogued. All features remain attemptable and the exact native validator is authoritative for the candidate.')}</p>{/if}
+            {#if configurationState && !configurationState.desired.validationEvidence?.nativeAccepted}<p class="compatibility-notice" role="status">{$t('Native validation evidence is missing or stale. Validate this candidate again before activation.')}</p>{/if}
+          </section>
         </div>
       {:else if activeTab === 'dashboard'}
         <XrayDashboardView
@@ -5341,16 +5869,9 @@
         />
       {:else if activeTab === 'configuration'}
         <div id="program-panel-configuration" role="tabpanel" tabindex="0" aria-labelledby="program-tab-configuration" class="panel configuration">
-          {#if configError}<ErrorNotice error={configError} />{/if}
+          {#if configError}<ErrorNotice error={configError} dismissible onDismiss={() => { configError = null; clearWorkspaceError('configuration'); }} actionLabel="Retry" onAction={() => retryWorkspaceError('configuration')} actionBusy={workspaceErrorBusyScope === 'configuration'} />{/if}
           {#if configDocument}
             {#if detail.spec.managedConfig}<div class="generated-config-note"><strong>{$t('Managed configuration')}</strong><span>{$t(detail.spec.managedConfig.sources.some((source) => source.enabled) ? 'Source updates preserve Guided and Raw intent' : 'Enable a source to rebuild the Base configuration')}</span></div>{/if}
-            {#if configurationState && configurationState.guidedDescriptors.length > 0}
-              <GuidedConfigurationEditor
-                state={configurationState}
-                disabled={!!busy || configDirty || !canEditConfigurationByLicense}
-                on:change={changeGuidedSetting}
-              />
-            {/if}
             {#if rawDraftSession}
               <RawConfigurationConflictPanel
                 draft={rawDraftSession}
@@ -5370,6 +5891,9 @@
                 {/each}
               </div>
               <div class="config-toolbar-commit">
+                {#if rawDraftSession?.draftRevision}
+                  <button type="button" on:click={() => void discardRawDraft()} disabled={!!busy || !canEditConfigurationByLicense}>{$t('Discard draft')}</button>
+                {/if}
                 <button type="button" on:click={revertConfiguration} disabled={!!busy || !configDirty}>{$t('Revert')}</button>
                 <button class="primary config-save" type="button" on:click={() => void applyConfiguration()} disabled={!!busy || !configDirty || !canEditConfigurationByLicense} title={$t(canEditConfigurationByLicense ? (configSaveRequiresRestart ? 'Save and restart' : 'Save configuration') : licenseActionHint)}>{busy === 'apply' ? `${$t('Saving')}…` : $t(configSaveRequiresRestart ? 'Save and restart' : 'Save configuration')}</button>
               </div>

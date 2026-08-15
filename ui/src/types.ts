@@ -54,11 +54,14 @@ export const PROGRAM_SPEC_SCHEMA_VERSION = 6;
 
 export type CoreTrackedChannel = 'development' | 'stable';
 export type CoreTrackingPolicy = 'branchHead' | 'latestStableRelease';
+export type CoreCompatibilityReference =
+  | { kind: 'release'; tag: string }
+  | { kind: 'commit'; commitSha: string };
 export type CoreCompatibilityPreference =
   | { mode: 'automatic' }
   | { mode: 'release'; tag: string }
   | { mode: 'commit'; commitSha: string }
-  | { mode: 'unknown' };
+  | { mode: 'unknown'; reference?: CoreCompatibilityReference };
 export interface CoreBinaryFingerprint {
   sha256: string;
   size: number;
@@ -366,11 +369,15 @@ export interface ConfigurationDiagnostic {
   code: string;
   message: string;
   details?: string;
+  messageKey?: string;
+  parameters?: Record<string, string | number>;
 }
 export interface ConfigurationConflict {
   semanticPath: string;
   reason: string;
   severity: 'warning' | 'error';
+  messageKey?: string;
+  parameters?: Record<string, string | number>;
   sourceValue?: unknown;
   guidedValue?: unknown;
   rawValue?: unknown;
@@ -422,6 +429,7 @@ export interface ConfigurationStateView {
   lastKnownGoodRevision?: ConfigurationRevision;
   guidedDescriptors: GuidedSettingDescriptor[];
   guidedProjection: GuidedProjection[];
+  compatibilityReferences?: CoreCompatibilityReference[];
 }
 
 export interface ActionDescriptor {
