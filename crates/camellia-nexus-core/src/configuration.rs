@@ -13,7 +13,8 @@ use crate::{
     embedded_core_upstream_manifest, normalize_jsonc,
 };
 
-pub const CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 3;
+pub const CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 4;
+pub const LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 3;
 const DASHBOARD_INTENT_PREFIX: &str = "dashboard.";
 const MANAGED_SING_BOX_API_TAG: &str = "camellia-nexus-api";
 const MANAGED_SING_BOX_CLASH_UI: &str = "clash-dashboard";
@@ -265,6 +266,8 @@ pub struct ConfigurationConflict {
     /// while clients use this key for the localized explanation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_key: Option<String>,
+    #[serde(default)]
+    pub scope: ConfigurationIssueScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1258,6 +1261,106 @@ pub struct GuidedIntent {
     pub values: BTreeMap<String, Value>,
 }
 
+/// Settings owned by the Details surface (currently the managed dashboard
+/// integrations).  Keeping this in a separate store is important: these
+/// values are not Common Guided settings and must never create an Intent-page
+/// conflict or projection entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedIntegrationIntent {
+    #[serde(default)]
+    pub values: BTreeMap<String, Value>,
+}
+
+impl ManagedIntegrationIntent {
+    pub fn set(&mut self, setting_id: impl Into<String>, value: Value) {
+        self.values.insert(setting_id.into(), value);
+    }
+
+    pub fn reset(&mut self, setting_id: &str) {
+        self.values.remove(setting_id);
+    }
+}
+
+/// The UI surface that owns an issue.  Consumers must filter by this value;
+/// Configuration is the only surface that intentionally shows all issues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigurationSurface {
+    Intent,
+    Details,
+    Sources,
+    Compatibility,
+    #[default]
+    Configuration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationIssueScope {
+    pub surface: ConfigurationSurface,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+}
+
+impl ConfigurationIssueScope {
+    pub fn intent(owner_id: impl Into<String>) -> Self {
+        Self {
+            surface: ConfigurationSurface::Intent,
+            owner_id: Some(owner_id.into()),
+        }
+    }
+
+    pub fn details(owner_id: impl Into<String>) -> Self {
+        Self {
+            surface: ConfigurationSurface::Details,
+            owner_id: Some(owner_id.into()),
+        }
+    }
+
+    pub fn sources(owner_id: impl Into<String>) -> Self {
+        Self {
+            surface: ConfigurationSurface::Sources,
+            owner_id: Some(owner_id.into()),
+        }
+    }
+
+    pub fn compatibility() -> Self {
+        Self {
+            surface: ConfigurationSurface::Compatibility,
+            owner_id: None,
+        }
+    }
+
+    pub fn configuration() -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ManagedIntegrationStatus {
+    Inactive,
+    Explicit,
+    Overridden,
+    RawOnly,
+    NeedsAttention,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedIntegrationProjection {
+    pub integration_id: String,
+    pub status: ManagedIntegrationStatus,
+    pub effective_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_value: Option<Value>,
+    #[serde(default)]
+    pub raw_paths: Vec<String>,
+    #[serde(default)]
+    pub issue_ids: Vec<String>,
+}
+
 impl GuidedIntent {
     pub fn set(&mut self, setting_id: impl Into<String>, value: Value) {
         self.values.insert(setting_id.into(), value);
@@ -1265,6 +1368,29 @@ impl GuidedIntent {
 
     pub fn reset(&mut self, setting_id: &str) {
         self.values.remove(setting_id);
+    }
+}
+
+pub trait IntentValueStore {
+    fn values(&self) -> &BTreeMap<String, Value>;
+    fn values_mut(&mut self) -> &mut BTreeMap<String, Value>;
+}
+
+impl IntentValueStore for GuidedIntent {
+    fn values(&self) -> &BTreeMap<String, Value> {
+        &self.values
+    }
+    fn values_mut(&mut self) -> &mut BTreeMap<String, Value> {
+        &mut self.values
+    }
+}
+
+impl IntentValueStore for ManagedIntegrationIntent {
+    fn values(&self) -> &BTreeMap<String, Value> {
+        &self.values
+    }
+    fn values_mut(&mut self) -> &mut BTreeMap<String, Value> {
+        &mut self.values
     }
 }
 
@@ -1500,34 +1626,45 @@ pub fn apply_guided_intent(
         };
         set_object_path(&mut effective, path, value.clone())?;
     }
-    apply_dashboard_intent(kind, &mut effective, intent)?;
+    // Keep accepting legacy callers that still pass dashboard values, while
+    // the authoritative ConfigurationState stores them in managed_intent.
+    if intent
+        .values
+        .keys()
+        .any(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
+    {
+        apply_dashboard_intent(kind, &mut effective, intent)?;
+    }
     Ok(effective)
 }
 
-/// Synchronize the Dashboard form's semantic values into the same Guided intent store.
-/// The form remains a presentation of these values; it no longer gets to mutate the generated
-/// Core document directly. Source snapshots and Raw operations continue to rebase around them.
-pub fn sync_managed_dashboard_intent(intent: &mut GuidedIntent, managed: &ManagedConfigSpec) {
+/// Synchronize the Dashboard form into its dedicated Managed Integration
+/// intent store.  The generic store bound remains only for deterministic v3
+/// migration tests; authoritative state always passes ManagedIntegrationIntent.
+pub fn sync_managed_dashboard_intent<T: IntentValueStore>(
+    intent: &mut T,
+    managed: &ManagedConfigSpec,
+) {
     intent
-        .values
+        .values_mut()
         .retain(|setting, _| !setting.starts_with(DASHBOARD_INTENT_PREFIX));
     if let Some(dashboard) = managed.sing_box_dashboard.as_ref() {
-        intent.values.insert(
+        intent.values_mut().insert(
             "dashboard.singBoxApi.listenPort".into(),
             Value::from(dashboard.listen_port),
         );
-        intent.values.insert(
+        intent.values_mut().insert(
             "dashboard.singBoxApi.updateInterval".into(),
             Value::String(dashboard.update_interval.clone()),
         );
     }
     if let Some(dashboard) = managed.sing_box_clash_dashboard.as_ref() {
-        intent.values.insert(
+        intent.values_mut().insert(
             "dashboard.singBoxClash.listenPort".into(),
             Value::from(dashboard.listen_port),
         );
         if let Some(url) = &dashboard.download_url {
-            intent.values.insert(
+            intent.values_mut().insert(
                 "dashboard.singBoxClash.downloadUrl".into(),
                 Value::String(url.clone()),
             );
@@ -1537,12 +1674,12 @@ pub fn sync_managed_dashboard_intent(intent: &mut GuidedIntent, managed: &Manage
         sync_xray_dashboard_intent(intent, dashboard);
     }
     if let Some(dashboard) = managed.mihomo_dashboard.as_ref() {
-        intent.values.insert(
+        intent.values_mut().insert(
             "dashboard.mihomo.listenPort".into(),
             Value::from(dashboard.listen_port),
         );
         if let Some(url) = &dashboard.download_url {
-            intent.values.insert(
+            intent.values_mut().insert(
                 "dashboard.mihomo.downloadUrl".into(),
                 Value::String(url.clone()),
             );
@@ -1550,21 +1687,21 @@ pub fn sync_managed_dashboard_intent(intent: &mut GuidedIntent, managed: &Manage
     }
 }
 
-fn sync_xray_dashboard_intent(intent: &mut GuidedIntent, dashboard: &XrayDashboardSpec) {
-    intent.values.insert(
+fn sync_xray_dashboard_intent<T: IntentValueStore>(intent: &mut T, dashboard: &XrayDashboardSpec) {
+    intent.values_mut().insert(
         "dashboard.xray.apiPort".into(),
         Value::from(dashboard.api_port),
     );
-    intent.values.insert(
+    intent.values_mut().insert(
         "dashboard.xray.metricsPort".into(),
         Value::from(dashboard.metrics_port),
     );
 }
 
-fn apply_dashboard_intent(
+fn apply_dashboard_intent<T: IntentValueStore>(
     kind: ProgramKind,
     root: &mut Value,
-    intent: &GuidedIntent,
+    intent: &T,
 ) -> Result<()> {
     match kind {
         ProgramKind::SingBox => {
@@ -1578,8 +1715,8 @@ fn apply_dashboard_intent(
     Ok(())
 }
 
-fn intent_port(intent: &GuidedIntent, id: &str) -> Result<Option<u16>> {
-    let Some(value) = intent.values.get(id) else {
+fn intent_port<T: IntentValueStore>(intent: &T, id: &str) -> Result<Option<u16>> {
+    let Some(value) = intent.values().get(id) else {
         return Ok(None);
     };
     let port = value.as_u64().and_then(|port| u16::try_from(port).ok());
@@ -1591,8 +1728,8 @@ fn intent_port(intent: &GuidedIntent, id: &str) -> Result<Option<u16>> {
     Ok(port)
 }
 
-fn intent_text(intent: &GuidedIntent, id: &str) -> Result<Option<String>> {
-    let Some(value) = intent.values.get(id) else {
+fn intent_text<T: IntentValueStore>(intent: &T, id: &str) -> Result<Option<String>> {
+    let Some(value) = intent.values().get(id) else {
         return Ok(None);
     };
     value
@@ -1604,7 +1741,10 @@ fn intent_text(intent: &GuidedIntent, id: &str) -> Result<Option<String>> {
         .map(Some)
 }
 
-fn apply_sing_box_dashboard_intent(root: &mut Value, intent: &GuidedIntent) -> Result<()> {
+fn apply_sing_box_dashboard_intent<T: IntentValueStore>(
+    root: &mut Value,
+    intent: &T,
+) -> Result<()> {
     let Some(port) = intent_port(intent, "dashboard.singBoxApi.listenPort")? else {
         return Ok(());
     };
@@ -1631,7 +1771,10 @@ fn apply_sing_box_dashboard_intent(root: &mut Value, intent: &GuidedIntent) -> R
     Ok(())
 }
 
-fn apply_sing_box_clash_dashboard_intent(root: &mut Value, intent: &GuidedIntent) -> Result<()> {
+fn apply_sing_box_clash_dashboard_intent<T: IntentValueStore>(
+    root: &mut Value,
+    intent: &T,
+) -> Result<()> {
     let Some(port) = intent_port(intent, "dashboard.singBoxClash.listenPort")? else {
         return Ok(());
     };
@@ -1670,7 +1813,7 @@ fn apply_sing_box_clash_dashboard_intent(root: &mut Value, intent: &GuidedIntent
     Ok(())
 }
 
-fn apply_xray_dashboard_intent(root: &mut Value, intent: &GuidedIntent) -> Result<()> {
+fn apply_xray_dashboard_intent<T: IntentValueStore>(root: &mut Value, intent: &T) -> Result<()> {
     let Some(api_port) = intent_port(intent, "dashboard.xray.apiPort")? else {
         return Ok(());
     };
@@ -1739,7 +1882,7 @@ fn apply_xray_dashboard_intent(root: &mut Value, intent: &GuidedIntent) -> Resul
     Ok(())
 }
 
-fn apply_mihomo_dashboard_intent(root: &mut Value, intent: &GuidedIntent) -> Result<()> {
+fn apply_mihomo_dashboard_intent<T: IntentValueStore>(root: &mut Value, intent: &T) -> Result<()> {
     let Some(port) = intent_port(intent, "dashboard.mihomo.listenPort")? else {
         return Ok(());
     };
@@ -2606,6 +2749,7 @@ fn identity_index(
             reason: "A semantic identity is duplicated".into(),
             severity: ConflictSeverity::Error,
             message_key: Some("CONFIGURATION_IDENTITY_DUPLICATED".into()),
+            scope: ConfigurationIssueScope::configuration(),
             source_value: None,
             guided_value: None,
             raw_value: None,
@@ -2640,6 +2784,7 @@ fn intent_conflict(
         reason: reason.into(),
         severity: ConflictSeverity::Error,
         message_key: Some("CONFIGURATION_RAW_CONFLICT".into()),
+        scope: ConfigurationIssueScope::configuration(),
         source_value: None,
         guided_value: None,
         raw_value,
@@ -2689,6 +2834,8 @@ pub struct ConfigurationDiagnostic {
     /// Stable UI mapping key; the message is retained as technical context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_key: Option<String>,
+    #[serde(default)]
+    pub scope: ConfigurationIssueScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
 }
@@ -2728,6 +2875,8 @@ pub struct ConfigurationState {
     #[serde(default)]
     pub guided_intent: GuidedIntent,
     #[serde(default)]
+    pub managed_intent: ManagedIntegrationIntent,
+    #[serde(default)]
     pub raw_intent: RawManualIntent,
     pub desired: ConfigurationCandidate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2737,6 +2886,49 @@ pub struct ConfigurationState {
 }
 
 impl ConfigurationState {
+    /// Upgrade the v3 persisted shape where dashboard settings lived in the
+    /// Common Guided map.  This is intentionally deterministic and does not
+    /// touch Applied/LKG; callers can rebuild Desired after loading the owning
+    /// ProgramSpec.
+    pub fn migrate_legacy_schema(&mut self) -> bool {
+        if self.schema_version != LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION {
+            return false;
+        }
+        let legacy_dashboard = self
+            .guided_intent
+            .values
+            .keys()
+            .filter(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in legacy_dashboard {
+            if let Some(value) = self.guided_intent.values.remove(&key) {
+                self.managed_intent.values.insert(key, value);
+            }
+        }
+        self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
+        true
+    }
+
+    /// Canonicalize only v3 Raw operations that overlap managed fields.  Old
+    /// clients could persist a whole generated Dashboard container as Raw;
+    /// comparing that operation with the newly separated Managed layer turns
+    /// identical generated fields into leaf no-ops while retaining genuine
+    /// overrides and unrelated extension fields.  Non-overlapping tombstones
+    /// are left byte-for-byte untouched.
+    pub fn canonicalize_legacy_managed_raw(&mut self) -> Result<()> {
+        let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
+        let mut generated = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
+        apply_dashboard_intent(self.kind, &mut generated, &self.managed_intent)?;
+        canonicalize_managed_raw_operations(
+            self.kind,
+            &generated,
+            &self.managed_intent,
+            &mut self.raw_intent,
+        );
+        Ok(())
+    }
+
     pub fn from_merge(
         kind: ProgramKind,
         generation: u64,
@@ -2775,6 +2967,7 @@ impl ConfigurationState {
             provenance: base_provenance.clone(),
             base_provenance,
             guided_intent: GuidedIntent::default(),
+            managed_intent: ManagedIntegrationIntent::default(),
             raw_intent: RawManualIntent::default(),
             desired: candidate,
             applied: None,
@@ -2784,6 +2977,22 @@ impl ConfigurationState {
 
     pub fn rebuild_desired(&mut self, created_unix_ms: u64) -> Result<()> {
         let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
+        // Deterministically migrate dashboard values that may have been loaded
+        // from a v3 state (or supplied by an older caller) before building the
+        // new semantic pipeline.  They are never treated as Common Guided
+        // settings after this point.
+        let legacy_dashboard = self
+            .guided_intent
+            .values
+            .keys()
+            .filter(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in legacy_dashboard {
+            if let Some(value) = self.guided_intent.values.remove(&key) {
+                self.managed_intent.values.insert(key, value);
+            }
+        }
         let guided = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
         let guided_provenance = apply_provenance_layer(
             &base,
@@ -2791,16 +3000,20 @@ impl ConfigurationState {
             &self.base_provenance,
             ProvenanceLayer::Guided,
         );
-        let (effective, mut conflicts) = apply_raw_intent(&guided, &self.raw_intent);
+        // apply_dashboard_intent mutates its argument; keep the common Guided
+        // provenance separate from the managed layer.
+        let mut effective_guided = guided;
+        apply_dashboard_intent(self.kind, &mut effective_guided, &self.managed_intent)?;
+        let (effective, mut conflicts) = apply_raw_intent(&effective_guided, &self.raw_intent);
         self.provenance = apply_provenance_layer(
-            &guided,
+            &effective_guided,
             &effective,
             &guided_provenance,
             ProvenanceLayer::Raw,
         );
         conflicts.extend(dashboard_raw_conflicts(
             self.kind,
-            &self.guided_intent,
+            &self.managed_intent,
             &self.raw_intent,
         ));
         let content = serialize_semantic_document(self.format, &effective)?;
@@ -2826,7 +3039,8 @@ impl ConfigurationState {
 
     pub fn replace_raw_from_edited(&mut self, edited: &[u8], created_unix_ms: u64) -> Result<()> {
         let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
-        let guided = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
+        let mut guided = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
+        apply_dashboard_intent(self.kind, &mut guided, &self.managed_intent)?;
         let edited = parse_semantic_document(self.format, edited)?;
         self.raw_intent = diff_raw_intent(&guided, &edited);
         self.rebuild_desired(created_unix_ms)
@@ -2959,67 +3173,448 @@ impl ConfigurationState {
                 &self.guided_intent,
                 &self.raw_intent,
             ),
+            managed_integrations: project_managed_integrations(
+                self.kind,
+                &effective,
+                &self.managed_intent,
+                &self.raw_intent,
+                &self.desired.conflicts,
+            ),
             compatibility_references,
         }
     }
 }
 
+fn project_managed_integrations(
+    kind: ProgramKind,
+    effective: &Value,
+    managed: &ManagedIntegrationIntent,
+    raw: &RawManualIntent,
+    conflicts: &[ConfigurationConflict],
+) -> Vec<ManagedIntegrationProjection> {
+    let integration_ids: &[&str] = match kind {
+        ProgramKind::SingBox => &["dashboard.singBoxApi", "dashboard.singBoxClash"],
+        ProgramKind::Xray => &["dashboard.xray"],
+        ProgramKind::Mihomo => &["dashboard.mihomo"],
+        ProgramKind::Generic => &[],
+    };
+    let targets = managed_ownership_targets(kind);
+    integration_ids
+        .iter()
+        .map(|integration_id| {
+            let integration_targets = targets
+                .iter()
+                .filter(|(_, integration, _)| integration == integration_id)
+                .collect::<Vec<_>>();
+            let raw_paths = raw
+                .operations
+                .iter()
+                .map(intent_operation_path)
+                .filter(|raw_path| {
+                    integration_targets
+                        .iter()
+                        .any(|(_, _, target)| managed_path_overlaps(target, raw_path))
+                })
+                .map(|path| display_semantic_path(&path))
+                .collect::<Vec<_>>();
+            let issue_ids = conflicts
+                .iter()
+                .filter(|conflict| conflict.scope.owner_id.as_deref() == Some(integration_id))
+                .map(|conflict| {
+                    format!(
+                        "{}:{}",
+                        conflict.message_key.as_deref().unwrap_or(&conflict.reason),
+                        conflict.semantic_path
+                    )
+                })
+                .collect::<Vec<_>>();
+            let intent_value = managed
+                .values
+                .iter()
+                .find(|(key, _)| key.starts_with(&format!("{integration_id}.")))
+                .map(|(_, value)| value.clone());
+            let effective_enabled = integration_targets.iter().any(|(_, _, target)| {
+                raw_conflict_path_value(effective, target)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            });
+            let status = if !issue_ids.is_empty() {
+                ManagedIntegrationStatus::Overridden
+            } else if intent_value.is_some() {
+                ManagedIntegrationStatus::Explicit
+            } else if !raw_paths.is_empty() && effective_enabled {
+                ManagedIntegrationStatus::RawOnly
+            } else if !effective_enabled && (!managed.values.is_empty() || !raw_paths.is_empty()) {
+                ManagedIntegrationStatus::NeedsAttention
+            } else {
+                ManagedIntegrationStatus::Inactive
+            };
+            ManagedIntegrationProjection {
+                integration_id: (*integration_id).into(),
+                status,
+                effective_enabled,
+                intent_value,
+                raw_paths,
+                issue_ids,
+            }
+        })
+        .collect()
+}
+
 fn dashboard_raw_conflicts(
     kind: ProgramKind,
-    guided: &GuidedIntent,
+    guided: &ManagedIntegrationIntent,
     raw: &RawManualIntent,
 ) -> Vec<ConfigurationConflict> {
-    let targets: Vec<(&str, SemanticPath)> = match kind {
-        ProgramKind::SingBox => [
-            ("dashboard.singBoxApi.listenPort", key_path(&["services"])),
-            (
-                "dashboard.singBoxClash.listenPort",
-                key_path(&["experimental", "clash_api"]),
-            ),
-        ]
-        .into(),
-        ProgramKind::Xray => [
-            ("dashboard.xray.apiPort", key_path(&["api"])),
-            ("dashboard.xray.metricsPort", key_path(&["metrics"])),
-            ("dashboard.xray.apiPort", key_path(&["stats"])),
-            ("dashboard.xray.apiPort", key_path(&["policy", "system"])),
-        ]
-        .into(),
-        ProgramKind::Mihomo => [
-            (
-                "dashboard.mihomo.listenPort",
-                key_path(&["external-controller"]),
-            ),
-            ("dashboard.mihomo.listenPort", key_path(&["external-ui"])),
-            (
-                "dashboard.mihomo.listenPort",
-                key_path(&["external-ui-url"]),
-            ),
-        ]
-        .into(),
-        ProgramKind::Generic => Vec::new(),
-    };
+    let targets = managed_ownership_targets(kind);
     targets
         .into_iter()
-        .filter(|(setting, target)| {
-            guided.values.contains_key(*setting)
+        .filter(|(_, integration, target)| {
+            managed_integration_active(guided, integration)
                 && raw
                     .operations
                     .iter()
                     .map(intent_operation_path)
-                    .any(|raw_path| path_overlaps(target, &raw_path))
+                    .any(|raw_path| managed_path_overlaps(target, &raw_path))
         })
-        .map(|(setting, target)| ConfigurationConflict {
+        .map(|(setting, integration, target)| ConfigurationConflict {
             semantic_path: display_semantic_path(&target),
             reason: "Dashboard Guided intent is overridden by Raw configuration".into(),
             severity: ConflictSeverity::Error,
             message_key: Some("CONFIGURATION_RAW_OVERRIDE".into()),
+            scope: ConfigurationIssueScope::details(integration),
             source_value: None,
-            guided_value: guided.values.get(setting).cloned(),
+            guided_value: guided.values.get(setting).cloned().or_else(|| {
+                guided
+                    .values
+                    .iter()
+                    .find(|(key, _)| key.starts_with(&format!("{integration}.")))
+                    .map(|(_, value)| value.clone())
+            }),
             raw_value: None,
             effective_value: None,
         })
         .collect()
+}
+
+fn managed_ownership_targets(kind: ProgramKind) -> Vec<(&'static str, &'static str, SemanticPath)> {
+    let identity = |field: &'static str, value: &'static str| SemanticPathSegment::Identity {
+        field: field.into(),
+        value: value.into(),
+    };
+    match kind {
+        ProgramKind::SingBox => vec![
+            (
+                "dashboard.singBoxApi.listenPort",
+                "dashboard.singBoxApi",
+                vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    identity("tag", MANAGED_SING_BOX_API_TAG),
+                    SemanticPathSegment::Key { key: "type".into() },
+                ],
+            ),
+            (
+                "dashboard.singBoxApi.listenPort",
+                "dashboard.singBoxApi",
+                vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    identity("tag", MANAGED_SING_BOX_API_TAG),
+                    SemanticPathSegment::Key { key: "tag".into() },
+                ],
+            ),
+            (
+                "dashboard.singBoxApi.listenPort",
+                "dashboard.singBoxApi",
+                vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    identity("tag", MANAGED_SING_BOX_API_TAG),
+                    SemanticPathSegment::Key {
+                        key: "listen_port".into(),
+                    },
+                ],
+            ),
+            (
+                "dashboard.singBoxApi.listenPort",
+                "dashboard.singBoxApi",
+                vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    identity("tag", MANAGED_SING_BOX_API_TAG),
+                    SemanticPathSegment::Key {
+                        key: "listen".into(),
+                    },
+                ],
+            ),
+            (
+                "dashboard.singBoxApi.updateInterval",
+                "dashboard.singBoxApi",
+                vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    identity("tag", MANAGED_SING_BOX_API_TAG),
+                    SemanticPathSegment::Key {
+                        key: "dashboard".into(),
+                    },
+                    SemanticPathSegment::Key {
+                        key: "enabled".into(),
+                    },
+                ],
+            ),
+            (
+                "dashboard.singBoxApi.updateInterval",
+                "dashboard.singBoxApi",
+                vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    identity("tag", MANAGED_SING_BOX_API_TAG),
+                    SemanticPathSegment::Key {
+                        key: "dashboard".into(),
+                    },
+                    SemanticPathSegment::Key {
+                        key: "update_interval".into(),
+                    },
+                ],
+            ),
+            (
+                "dashboard.singBoxClash.listenPort",
+                "dashboard.singBoxClash",
+                key_path(&["experimental", "clash_api", "external_controller"]),
+            ),
+            (
+                "dashboard.singBoxClash.listenPort",
+                "dashboard.singBoxClash",
+                key_path(&["experimental", "clash_api", "external_ui"]),
+            ),
+            (
+                "dashboard.singBoxClash.downloadUrl",
+                "dashboard.singBoxClash",
+                key_path(&["experimental", "clash_api", "external_ui_download_url"]),
+            ),
+        ],
+        ProgramKind::Xray => vec![
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["api", "tag"]),
+            ),
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["api", "listen"]),
+            ),
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["api", "services"]),
+            ),
+            (
+                "dashboard.xray.metricsPort",
+                "dashboard.xray",
+                key_path(&["metrics", "tag"]),
+            ),
+            (
+                "dashboard.xray.metricsPort",
+                "dashboard.xray",
+                key_path(&["metrics", "listen"]),
+            ),
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["stats"]),
+            ),
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["policy", "system", "statsInboundUplink"]),
+            ),
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["policy", "system", "statsInboundDownlink"]),
+            ),
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["policy", "system", "statsOutboundUplink"]),
+            ),
+            (
+                "dashboard.xray.apiPort",
+                "dashboard.xray",
+                key_path(&["policy", "system", "statsOutboundDownlink"]),
+            ),
+        ],
+        ProgramKind::Mihomo => vec![
+            (
+                "dashboard.mihomo.listenPort",
+                "dashboard.mihomo",
+                key_path(&["external-controller"]),
+            ),
+            (
+                "dashboard.mihomo.listenPort",
+                "dashboard.mihomo",
+                key_path(&["external-ui"]),
+            ),
+            (
+                "dashboard.mihomo.downloadUrl",
+                "dashboard.mihomo",
+                key_path(&["external-ui-url"]),
+            ),
+        ],
+        ProgramKind::Generic => Vec::new(),
+    }
+}
+
+fn managed_integration_active(managed: &ManagedIntegrationIntent, integration_id: &str) -> bool {
+    let prefix = format!("{integration_id}.");
+    managed.values.keys().any(|key| key.starts_with(&prefix))
+}
+
+/// A managed leaf is overridden by a Raw ancestor, or by the exact leaf.
+/// Descendants of a managed leaf are intentionally not considered overlap so
+/// extensions such as Clash `secret` remain user-owned Raw fields.
+fn managed_path_overlaps(target: &[SemanticPathSegment], raw: &[SemanticPathSegment]) -> bool {
+    raw.len() <= target.len() && raw.iter().zip(target).all(|(left, right)| left == right)
+}
+
+pub fn managed_raw_override_paths(
+    kind: ProgramKind,
+    managed: &ManagedIntegrationIntent,
+    raw: &RawManualIntent,
+) -> Vec<String> {
+    let targets = managed_ownership_targets(kind)
+        .into_iter()
+        .filter(|(_, integration, _)| managed_integration_active(managed, integration))
+        .collect::<Vec<_>>();
+    let mut paths = raw
+        .operations
+        .iter()
+        .map(intent_operation_path)
+        .filter(|raw_path| {
+            targets
+                .iter()
+                .any(|(_, _, target)| managed_path_overlaps(target, raw_path))
+        })
+        .map(|path| display_semantic_path(&path))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Remove only Raw semantics owned by an enabled Details integration.  A Set
+/// on an ancestor object is trimmed so unrelated extension fields (for
+/// example Clash `secret`) survive the takeover.  Destructive sequence
+/// operations cannot be split safely and are removed as the single confirmed
+/// overlapping operation.
+pub fn remove_managed_raw_overrides(
+    kind: ProgramKind,
+    managed: &ManagedIntegrationIntent,
+    raw: &mut RawManualIntent,
+) -> usize {
+    let targets = managed_ownership_targets(kind)
+        .into_iter()
+        .filter(|(_, integration, _)| managed_integration_active(managed, integration))
+        .map(|(_, _, target)| target)
+        .collect::<Vec<_>>();
+    let mut removed = 0usize;
+    let mut retained = Vec::new();
+    for operation in std::mem::take(&mut raw.operations) {
+        let operation_path = intent_operation_path(&operation);
+        let overlapping = targets
+            .iter()
+            .filter(|target| managed_path_overlaps(target, &operation_path))
+            .collect::<Vec<_>>();
+        if overlapping.is_empty() {
+            retained.push(operation);
+            continue;
+        }
+        removed = removed.saturating_add(1);
+        let IntentOperation::Set { path, value } = operation else {
+            continue;
+        };
+        let mut leaves = Vec::new();
+        flatten_raw_set(&path, &value, &mut leaves);
+        retained.extend(leaves.into_iter().filter(|leaf| {
+            let leaf_path = intent_operation_path(leaf);
+            !targets
+                .iter()
+                .any(|target| managed_path_overlaps(target, &leaf_path))
+        }));
+    }
+    raw.operations = retained;
+    removed
+}
+
+fn canonicalize_managed_raw_operations(
+    kind: ProgramKind,
+    generated: &Value,
+    managed: &ManagedIntegrationIntent,
+    raw: &mut RawManualIntent,
+) {
+    let targets = managed_ownership_targets(kind)
+        .into_iter()
+        .filter(|(_, integration, _)| managed_integration_active(managed, integration))
+        .map(|(_, _, target)| target)
+        .collect::<Vec<_>>();
+    let mut canonical = Vec::new();
+    for operation in std::mem::take(&mut raw.operations) {
+        let path = intent_operation_path(&operation);
+        if !targets
+            .iter()
+            .any(|target| managed_path_overlaps(target, &path))
+        {
+            canonical.push(operation);
+            continue;
+        }
+        let mut operation_effective = generated.clone();
+        if apply_intent_operation(&mut operation_effective, &operation).is_err() {
+            canonical.push(operation);
+            continue;
+        }
+        canonical.extend(diff_raw_intent(generated, &operation_effective).operations);
+    }
+    raw.operations = canonical;
+}
+
+fn flatten_raw_set(
+    path: &[SemanticPathSegment],
+    value: &Value,
+    operations: &mut Vec<IntentOperation>,
+) {
+    match value {
+        Value::Object(object) if !object.is_empty() => {
+            for (key, child) in object {
+                let mut child_path = path.to_vec();
+                child_path.push(SemanticPathSegment::Key { key: key.clone() });
+                flatten_raw_set(&child_path, child, operations);
+            }
+        }
+        Value::Array(array) if sequence_identities(array).is_some() => {
+            let identities = sequence_identities(array).expect("identity shape was checked");
+            for ((field, identity), child) in identities.into_iter().zip(array) {
+                let mut child_path = path.to_vec();
+                child_path.push(SemanticPathSegment::Identity {
+                    field,
+                    value: identity,
+                });
+                flatten_raw_set(&child_path, child, operations);
+            }
+        }
+        _ => operations.push(IntentOperation::Set {
+            path: path.to_vec(),
+            value: value.clone(),
+        }),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3041,6 +3636,8 @@ pub struct ConfigurationStateView {
     pub last_known_good_revision: Option<ConfigurationRevision>,
     pub guided_descriptors: Vec<GuidedSettingDescriptor>,
     pub guided_projection: Vec<GuidedProjection>,
+    #[serde(default)]
+    pub managed_integrations: Vec<ManagedIntegrationProjection>,
     #[serde(default)]
     pub compatibility_references: Vec<crate::CoreCompatibilityReference>,
 }
@@ -3617,6 +4214,7 @@ mod tests {
                     code: "CORE_INVALID".into(),
                     message: "invalid".into(),
                     message_key: None,
+                    scope: ConfigurationIssueScope::configuration(),
                     details: None,
                 }],
                 None,
@@ -3784,6 +4382,253 @@ mod tests {
         assert_eq!(
             state.desired.conflicts[0].reason,
             "Dashboard Guided intent is overridden by Raw configuration"
+        );
+        assert_eq!(
+            state.desired.conflicts[0].scope,
+            ConfigurationIssueScope::details("dashboard.mihomo")
+        );
+        assert!(state.guided_intent.values.is_empty());
+        assert!(
+            state
+                .managed_intent
+                .values
+                .contains_key("dashboard.mihomo.listenPort")
+        );
+    }
+
+    #[test]
+    fn clash_secret_and_custom_service_do_not_override_managed_dashboard() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(ProgramKind::SingBox, "base", r#"{"experimental":{"clash_api":{"secret":"keep"}},"services":[{"type":"api","tag":"custom","listen_port":9000}]}"#)],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        sync_managed_dashboard_intent(
+            &mut state.managed_intent,
+            &ManagedConfigSpec {
+                sing_box_clash_dashboard: Some(SingBoxClashDashboardSpec {
+                    listen_port: 9091,
+                    download_url: None,
+                }),
+                ..ManagedConfigSpec::default()
+            },
+        );
+        state.raw_intent.operations.extend([
+            IntentOperation::Set {
+                path: key_path(&["experimental", "clash_api", "secret"]),
+                value: Value::String("new-secret".into()),
+            },
+            IntentOperation::Set {
+                path: vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    SemanticPathSegment::Identity {
+                        field: "tag".into(),
+                        value: "custom".into(),
+                    },
+                    SemanticPathSegment::Key {
+                        key: "listen_port".into(),
+                    },
+                ],
+                value: Value::from(9001),
+            },
+        ]);
+        state.rebuild_desired(2).expect("rebuild");
+        assert!(state.desired.conflicts.is_empty());
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["experimental"]
+                ["clash_api"]["secret"],
+            "new-secret"
+        );
+    }
+
+    #[test]
+    fn managed_takeover_preserves_unowned_fields_from_an_ancestor_set() {
+        let mut managed = ManagedIntegrationIntent::default();
+        managed.set("dashboard.singBoxClash.listenPort", Value::from(9091));
+        let mut raw = RawManualIntent {
+            based_on_revision: None,
+            operations: vec![IntentOperation::Set {
+                path: key_path(&["experimental", "clash_api"]),
+                value: serde_json::json!({
+                    "external_controller": "127.0.0.1:9999",
+                    "external_ui": "custom",
+                    "secret": "keep"
+                }),
+            }],
+        };
+        assert_eq!(
+            remove_managed_raw_overrides(ProgramKind::SingBox, &managed, &mut raw),
+            1
+        );
+        assert_eq!(raw.operations.len(), 1);
+        assert_eq!(
+            display_semantic_path(&intent_operation_path(&raw.operations[0])),
+            "/experimental/clash_api/secret"
+        );
+        let mut generated = serde_json::json!({});
+        apply_dashboard_intent(ProgramKind::SingBox, &mut generated, &managed).unwrap();
+        let (effective, conflicts) = apply_raw_intent(&generated, &raw);
+        assert!(conflicts.is_empty());
+        assert_eq!(effective["experimental"]["clash_api"]["secret"], "keep");
+        assert_eq!(
+            effective["experimental"]["clash_api"]["external_controller"],
+            "127.0.0.1:9091"
+        );
+    }
+
+    #[test]
+    fn xray_ownership_ignores_extensions_but_blocks_managed_containers() {
+        let mut managed = ManagedIntegrationIntent::default();
+        managed.set("dashboard.xray.apiPort", Value::from(10085));
+        managed.set("dashboard.xray.metricsPort", Value::from(11111));
+        let extensions = RawManualIntent {
+            based_on_revision: None,
+            operations: vec![
+                IntentOperation::Set {
+                    path: key_path(&["api", "custom"]),
+                    value: Value::Bool(true),
+                },
+                IntentOperation::Set {
+                    path: key_path(&["policy", "system", "custom"]),
+                    value: Value::Bool(true),
+                },
+            ],
+        };
+        assert!(managed_raw_override_paths(ProgramKind::Xray, &managed, &extensions).is_empty());
+
+        let container = RawManualIntent {
+            based_on_revision: None,
+            operations: vec![IntentOperation::Delete {
+                path: key_path(&["api"]),
+            }],
+        };
+        assert_eq!(
+            managed_raw_override_paths(ProgramKind::Xray, &managed, &container),
+            vec!["/api".to_owned()]
+        );
+    }
+
+    #[test]
+    fn raw_only_projection_is_owned_by_details_without_leaking_to_intent() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Mihomo,
+            &[snapshot(ProgramKind::Mihomo, "base", "mode: rule\n")],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Mihomo,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Mihomo),
+        )
+        .expect("state");
+        state.raw_intent.operations.push(IntentOperation::Set {
+            path: key_path(&["external-controller"]),
+            value: Value::String("127.0.0.1:9092".into()),
+        });
+        state.rebuild_desired(2).expect("rebuild");
+        let view = state.view();
+        assert!(view.desired.conflicts.is_empty());
+        assert!(
+            view.guided_projection
+                .iter()
+                .all(|projection| projection.setting_id != "dashboard.mihomo")
+        );
+        let projection = view
+            .managed_integrations
+            .iter()
+            .find(|projection| projection.integration_id == "dashboard.mihomo")
+            .expect("managed projection");
+        assert_eq!(projection.status, ManagedIntegrationStatus::RawOnly);
+        assert!(projection.effective_enabled);
+    }
+
+    #[test]
+    fn v3_dashboard_values_migrate_without_touching_applied_or_lkg() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Mihomo,
+            &[snapshot(ProgramKind::Mihomo, "base", "mode: rule\n")],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Mihomo,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Mihomo),
+        )
+        .expect("state");
+        state.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
+        state
+            .guided_intent
+            .set("dashboard.mihomo.listenPort", Value::from(9092));
+        let applied = state.applied.clone();
+        let lkg = state.last_known_good.clone();
+        assert!(state.migrate_legacy_schema());
+        assert_eq!(state.schema_version, CONFIGURATION_STATE_SCHEMA_VERSION);
+        assert!(state.guided_intent.values.is_empty());
+        assert_eq!(
+            state.managed_intent.values["dashboard.mihomo.listenPort"],
+            9092
+        );
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.last_known_good, lkg);
+    }
+
+    #[test]
+    fn v3_generated_dashboard_raw_container_is_canonicalized_without_false_override() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "base",
+                r#"{"experimental":{}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        state.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
+        state
+            .guided_intent
+            .set("dashboard.singBoxClash.listenPort", Value::from(9091));
+        state.raw_intent.operations.push(IntentOperation::Set {
+            path: key_path(&["experimental", "clash_api"]),
+            value: serde_json::json!({
+                "external_controller": "127.0.0.1:9091",
+                "external_ui": MANAGED_SING_BOX_CLASH_UI,
+                "secret": "keep"
+            }),
+        });
+
+        assert!(state.migrate_legacy_schema());
+        state
+            .canonicalize_legacy_managed_raw()
+            .expect("canonicalize");
+        state.rebuild_desired(2).expect("rebuild");
+
+        assert!(state.desired.conflicts.is_empty());
+        assert_eq!(state.raw_intent.operations.len(), 1);
+        assert_eq!(
+            display_semantic_path(&intent_operation_path(&state.raw_intent.operations[0])),
+            "/experimental/clash_api/secret"
         );
     }
 }

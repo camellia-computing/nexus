@@ -7,6 +7,8 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ConfigSourceEditor from './ConfigSourceEditor.svelte';
   import GuidedConfigurationEditor from './GuidedConfigurationEditor.svelte';
+  import ManagedIntegrationStatus from './ManagedIntegrationStatus.svelte';
+  import ConfigurationSurfaceIssues from './ConfigurationSurfaceIssues.svelte';
   import ShareImportPreviewDialog from './ShareImportPreview.svelte';
   import RawConfigurationConflictPanel from './RawConfigurationConflictPanel.svelte';
   import EnvironmentEditor from './EnvironmentEditor.svelte';
@@ -398,6 +400,9 @@
     configurationState,
     rawDraftSession,
     $uiLanguage,
+  );
+  $: managedIntegrationById = new Map(
+    (configurationState?.managedIntegrations ?? []).map((projection) => [projection.integrationId, projection]),
   );
   $: rawDraftConflicts = unresolvedDraftConflicts(rawDraftSession);
   $: if (
@@ -2672,6 +2677,7 @@
     confirmRestart = true,
     applyManagedConfiguration = true,
     scope: 'all' | 'details' | 'sources' | 'compatibility' = 'all',
+    replaceOverlappingRaw = false,
   ) {
     if (!detail) return false;
     const workspaceScope: ConfigurationWorkspaceScope = scope === 'compatibility'
@@ -2776,6 +2782,7 @@
     // the explicit retarget -> native validation -> apply path below and must
     // not start a previously stopped program as a side effect.
     const restartAfterSave = runtimeSettingsChangedForCommit && !!detail && isRuntimeActive(detail.state);
+    const expectedConfigurationGeneration = configurationState?.generation;
     const updateManagedConfiguration =
       applyManagedConfiguration && managedConfigChangedForCommit && !!spec.managedConfig;
     const stopBeforeManagedUpdate =
@@ -2789,12 +2796,16 @@
         translate('Save and restart'),
       ))
     ) return false;
-    return mutateConfiguration(
+    let managedOverrideError: unknown;
+    const saved = await mutateConfiguration(
       id,
       'save',
       async () => {
         if (restartAfterSave && !updateManagedConfiguration) {
-          await api.updateProgramAndRestart(spec);
+          await api.updateProgramAndRestart(spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyManagedConfiguration);
+          if (runtimeIntegrationChanged && spec.type.kind !== 'generic') {
+            await reloadConfigurationProjection(id);
+          }
         } else {
           let stoppedForSave = false;
           try {
@@ -2822,7 +2833,7 @@
               // persist their non-source fields first, then the source
               // transaction rebases the candidate against that authoritative
               // generation.
-              if (scope !== 'sources') await api.updateProgram(nonSourceSpec);
+              if (scope !== 'sources') await api.updateProgram(nonSourceSpec, expectedConfigurationGeneration, replaceOverlappingRaw, applyManagedConfiguration);
               const currentState = await api.getConfigurationState(id);
               const state = await api.updateConfigurationSources(
                 id,
@@ -2848,7 +2859,10 @@
                   : 'Compatibility target saved; validation is required before activation.';
               }
             } else {
-              await api.updateProgram(spec);
+              await api.updateProgram(spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyManagedConfiguration);
+              if ((scope === 'all' || scope === 'details') && runtimeIntegrationChanged && spec.type.kind !== 'generic') {
+                await reloadConfigurationProjection(id);
+              }
               if (compatibilityChangedForCommit && spec.type.kind !== 'generic') {
                 const retargeted = await api.getConfigurationState(id);
                 await adoptConfigurationState(id, retargeted);
@@ -2917,6 +2931,14 @@
         await refreshPrograms();
       },
       async (value) => {
+        if (
+          (scope === 'all' || scope === 'details')
+          && !replaceOverlappingRaw
+          && errorInfoOf(value).messageKey === 'CONFIGURATION_RAW_OVERRIDE'
+        ) {
+          managedOverrideError = value;
+          return;
+        }
         reportWorkspaceError(
           workspaceScope,
           value,
@@ -2925,6 +2947,20 @@
         );
       },
     );
+    if (managedOverrideError) {
+      const confirmed = await askConfirmation(
+        translate('Replace the overlapping Raw override?'),
+        translate('Only Raw semantics owned by the changed Details integration will be removed. Unrelated Raw fields and Applied/Last Known Good remain unchanged.'),
+        translate('Confirm takeover'),
+      );
+      if (confirmed) {
+        return saveSettings(confirmRestart, applyManagedConfiguration, scope, true);
+      }
+      await revertSettings('details');
+      await loadConfigurationStateSummary(id);
+      return false;
+    }
+    return saved;
   }
 
   async function revertSettings(
@@ -5703,6 +5739,7 @@
       {#if activeTab === 'overview'}
         <div id="program-panel-overview" role="tabpanel" tabindex="0" aria-labelledby="program-tab-overview" class="panel settings-panel">
           {#if workspaceErrors.details}<ErrorNotice error={workspaceErrors.details} dismissible onDismiss={() => clearWorkspaceError('details')} actionLabel="Retry" onAction={() => retryWorkspaceError('details')} actionBusy={workspaceErrorBusyScope === 'details'} />{/if}
+          <ConfigurationSurfaceIssues state={configurationState} surface="details" />
           {#if detailsChanged}<div class="change-notice"><span><i></i><span><strong>{$t('Unsaved program changes')}</strong></span></span><div><button type="button" on:click={() => void revertSettings('details')} disabled={!!busy}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(true, true, 'details')} disabled={!!busy}>{busy === 'save' ? `${$t('Saving')}…` : $t(saveRequiresRestart ? 'Save and restart' : 'Save')}</button></div></div>{/if}
           <section class="detail-section general-detail-section">
             <div class="section-heading"><div><h2>{$t('General')}</h2></div></div>
@@ -5732,11 +5769,11 @@
             </details>
 
             {#if detail.spec.type.kind === 'singBox'}
-              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><SingBoxDashboardEditor value={detailDashboardOptionsValue} disabled={!!busy} on:change={(event) => updateDetailDashboard(event.detail)} /></section>
+              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><SingBoxDashboardEditor value={detailDashboardOptionsValue} disabled={!!busy} on:change={(event) => updateDetailDashboard(event.detail)} /><div class="managed-integration-projections"><ManagedIntegrationStatus label="sing-box API" projection={managedIntegrationById.get('dashboard.singBoxApi')} /><ManagedIntegrationStatus label="Clash API" projection={managedIntegrationById.get('dashboard.singBoxClash')} /></div></section>
             {:else if detail.spec.type.kind === 'xray'}
-              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><XrayDashboardEditor value={detailXrayDashboardValue} disabled={!!busy} on:change={(event) => updateDetailXrayDashboard(event.detail)} /></section>
+              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><XrayDashboardEditor value={detailXrayDashboardValue} disabled={!!busy} on:change={(event) => updateDetailXrayDashboard(event.detail)} /><ManagedIntegrationStatus label="Xray Dashboard" projection={managedIntegrationById.get('dashboard.xray')} /></section>
             {:else if detail.spec.type.kind === 'mihomo'}
-              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><MihomoDashboardEditor value={detailMihomoDashboardValue} disabled={!!busy} on:change={(event) => updateDetailMihomoDashboard(event.detail)} /></section>
+              <section class="detail-section runtime-integration-section"><div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div><MihomoDashboardEditor value={detailMihomoDashboardValue} disabled={!!busy} on:change={(event) => updateDetailMihomoDashboard(event.detail)} /><ManagedIntegrationStatus label="Mihomo Dashboard" projection={managedIntegrationById.get('dashboard.mihomo')} /></section>
             {/if}
 
             <div class="metadata">
@@ -5780,6 +5817,7 @@
           </header>
           {#if sourceSaveStatus}<p class="workspace-success" role="status" aria-live="polite">{$t(sourceSaveStatus)}</p>{/if}
           {#if workspaceErrors.sources}<ErrorNotice error={workspaceErrors.sources} dismissible onDismiss={() => clearWorkspaceError('sources')} actionLabel="Retry" onAction={() => retryWorkspaceError('sources')} actionBusy={workspaceErrorBusyScope === 'sources'} />{/if}
+          <ConfigurationSurfaceIssues state={configurationState} surface="sources" />
           {#if !detail.spec.managedConfig}
             <section class="workspace-empty"><strong>{$t('Managed configuration is disabled')}</strong><span>{$t('Enable it to combine ordered local, inline or HTTPS sources.')}</span><button type="button" on:click={enableManagedConfiguration} disabled={!!busy}>{$t('Enable')}</button></section>
           {:else}
@@ -5809,6 +5847,7 @@
       {:else if activeTab === 'compatibility'}
         <div id="program-panel-compatibility" role="tabpanel" tabindex="0" aria-labelledby="program-tab-compatibility" class="panel configuration-workspace">
           {#if workspaceErrors.compatibility}<ErrorNotice error={workspaceErrors.compatibility} dismissible onDismiss={() => clearWorkspaceError('compatibility')} actionLabel="Retry" onAction={() => retryWorkspaceError('compatibility')} actionBusy={workspaceErrorBusyScope === 'compatibility'} />{/if}
+          <ConfigurationSurfaceIssues state={configurationState} surface="compatibility" />
           <header class="workspace-header">
             <div><p class="eyebrow">{$t('Compatibility')}</p><h2 id="core-compatibility-heading">{$t('Core compatibility')}</h2><p>{$t('Compatibility is resolved separately from binary origin and verified again against the exact executable before activation.')}</p></div>
             <div class="workspace-actions"><button type="button" on:click={() => void revertSettings('compatibility')} disabled={!!busy || !compatibilityChanged}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(false, false, 'compatibility')} disabled={!!busy || !compatibilityChanged}>{busy === 'save' ? `${$t('Saving')}…` : $t('Save target')}</button></div>
@@ -5870,6 +5909,7 @@
       {:else if activeTab === 'configuration'}
         <div id="program-panel-configuration" role="tabpanel" tabindex="0" aria-labelledby="program-tab-configuration" class="panel configuration">
           {#if configError}<ErrorNotice error={configError} dismissible onDismiss={() => { configError = null; clearWorkspaceError('configuration'); }} actionLabel="Retry" onAction={() => retryWorkspaceError('configuration')} actionBusy={workspaceErrorBusyScope === 'configuration'} />{/if}
+          <ConfigurationSurfaceIssues state={configurationState} surface="configuration" includeAll />
           {#if configDocument}
             {#if detail.spec.managedConfig}<div class="generated-config-note"><strong>{$t('Managed configuration')}</strong><span>{$t(detail.spec.managedConfig.sources.some((source) => source.enabled) ? 'Source updates preserve Guided and Raw intent' : 'Enable a source to rebuild the Base configuration')}</span></div>{/if}
             {#if rawDraftSession}

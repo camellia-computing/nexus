@@ -333,6 +333,16 @@ export function configurationErrorInfo(
       suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
     };
   }
+  if (base.messageKey === 'CONFIGURATION_RAW_OVERRIDE') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'Raw configuration currently owns one or more fields managed by this Details integration.',
+      fallbackMessage: 'Raw 配置当前接管了“详情”集成所负责的一个或多个字段。',
+      details: base.details || base.message,
+      suggestion: 'Review the listed semantic paths, then confirm takeover to remove only overlapping Raw semantics or cancel to keep the current state.',
+    };
+  }
   if (base.code === 'PROGRAM_BUSY' || /program is busy|another operation/.test(technical)) {
     return {
       ...base,

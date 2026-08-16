@@ -210,7 +210,10 @@ impl FileStore {
                     )
                     .with_details(error.to_string())
                 })?;
-            if state.schema_version != camellia_nexus_core::CONFIGURATION_STATE_SCHEMA_VERSION {
+            if state.schema_version != camellia_nexus_core::CONFIGURATION_STATE_SCHEMA_VERSION
+                && state.schema_version
+                    != camellia_nexus_core::LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION
+            {
                 return Err(CamelliaNexusError::new(
                     ErrorCode::ConfigInvalid,
                     "Configuration state schema is unsupported",
@@ -3585,6 +3588,7 @@ mod tests {
                 code: "RAW_PARSE_FAILED".into(),
                 message: "Configuration is not valid JSON".into(),
                 message_key: None,
+                scope: camellia_nexus_core::ConfigurationIssueScope::configuration(),
                 details: None,
             }],
             conflicts: Vec::new(),

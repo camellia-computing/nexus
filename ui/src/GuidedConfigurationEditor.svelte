@@ -22,6 +22,8 @@
     state.guidedProjection.map((projection) => [projection.settingId, projection]),
   );
   $: categories = [...new Set(state.guidedDescriptors.map((descriptor) => descriptor.category))];
+  $: intentDiagnostics = state.desired.diagnostics.filter(belongsToIntent);
+  $: intentConflicts = state.desired.conflicts.filter(belongsToIntent);
 
   function projectionFor(descriptor: GuidedSettingDescriptor): GuidedProjection {
     return projectionById.get(descriptor.id) ?? {
@@ -133,6 +135,13 @@
       'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.',
     );
   }
+
+  function belongsToIntent(issue: { scope?: { surface: string } }): boolean {
+    // Older persisted candidates have no scope and are intentionally treated
+    // as technical Configuration issues rather than leaking into Common
+    // Guided.  New candidates carry an explicit owner surface.
+    return issue.scope?.surface === 'intent';
+  }
 </script>
 
 <section class="guided-workspace" aria-label={$t('Common settings')}>
@@ -152,21 +161,6 @@
       <span class="candidate-state retained">{$t('Applied/LKG retained')}</span>
     {/if}
   </header>
-
-  {#if state.sourceStatuses.length > 0}
-    <div class="source-statuses" aria-label={$t('Configuration source status')}>
-      {#each state.sourceStatuses as source (source.sourceId)}
-        {@const summary = state.sourceParseSummaries?.[source.sourceId]}
-        <span
-          class:warning={source.freshness === 'stale'}
-          class:problem={source.freshness === 'invalid' || source.freshness === 'unavailable'}
-          title={source.message ? localizedMessage(source.message) : source.sourceName}
-        >
-          <i></i>{$t(source.sourceName)}: {$t(source.freshness)}{#if summary} · {summary.acceptedItems}/{summary.totalItems} {$t('accepted')}{/if}
-        </span>
-      {/each}
-    </div>
-  {/if}
 
   <div class="guided-grid">
     {#each categories as category (category)}
@@ -225,12 +219,12 @@
     {/each}
   </div>
 
-  {#if state.desired.diagnostics.length > 0 || state.desired.conflicts.length > 0}
+  {#if intentDiagnostics.length > 0 || intentConflicts.length > 0}
     <div class="guided-diagnostics" role="status">
-      {#each state.desired.diagnostics as diagnostic (`diagnostic-${diagnostic.code}`)}
+      {#each intentDiagnostics as diagnostic (`diagnostic-${diagnostic.code}`)}
         <span><strong>{diagnostic.code}</strong>{diagnosticMessage(diagnostic.code, diagnostic.message, diagnostic.messageKey)}</span>
       {/each}
-      {#each state.desired.conflicts as conflict (`conflict-${conflict.semanticPath}`)}
+      {#each intentConflicts as conflict (`conflict-${conflict.semanticPath}`)}
         <span><strong>{conflict.semanticPath}</strong>{conflictMessage(conflict.reason, conflict.messageKey)}</span>
       {/each}
     </div>
@@ -242,14 +236,11 @@
   header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
   header > div, .setting-copy { display: grid; gap: 3px; }
   header small, .setting-copy small { opacity: .72; line-height: 1.35; }
-  .candidate-state, .source-statuses span, .projection-status { width: fit-content; border-radius: 999px; padding: 3px 8px; font-size: .78rem; background: rgba(60, 150, 95, .12); }
-  .candidate-state.pending, .source-statuses span.warning { background: rgba(220, 160, 40, .14); }
-  .candidate-state.invalid, .source-statuses span.problem { background: rgba(210, 70, 70, .14); }
+  .candidate-state, .projection-status { width: fit-content; border-radius: 999px; padding: 3px 8px; font-size: .78rem; background: rgba(60, 150, 95, .12); }
+  .candidate-state.pending { background: rgba(220, 160, 40, .14); }
+  .candidate-state.invalid { background: rgba(210, 70, 70,.14); }
   .candidate-state.retained { background: rgba(75, 120, 190, .14); }
-  .source-statuses { display: flex; flex-wrap: wrap; gap: 7px; }
-  .source-statuses span { display: inline-flex; align-items: center; gap: 6px; }
-  .source-statuses i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .65; }
-  .guided-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; align-items: stretch; }
+  .guided-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 300px)); justify-content: start; gap: 10px; align-items: stretch; }
   .setting-category { margin: 0; font-size: .78rem; font-weight: 700; letter-spacing: .02em; text-transform: capitalize; opacity: .7; }
   article { display: grid; gap: 8px; align-content: start; min-width: 0; min-height: 0; padding: 11px; border: 1px solid var(--border-color, rgba(127,127,127,.22)); border-radius: 11px; background: var(--surface-background, rgba(255,255,255,.025)); }
   article.custom, article.overridden { border-style: dashed; }
@@ -263,6 +254,6 @@
   .dependency-note { color: var(--ui-text-warning, inherit); }
   .guided-diagnostics { display: grid; gap: 5px; padding: 10px; border-radius: 9px; background: rgba(210,70,70,.09); }
   .guided-diagnostics span { display: flex; gap: 8px; font-size: .82rem; }
-  @media (max-width: 720px) { .guided-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); } header { align-items: stretch; flex-direction: column; } }
+  @media (max-width: 720px) { .guided-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); } header { align-items: stretch; flex-direction: column; } }
   @media (max-width: 520px) { .guided-grid { grid-template-columns: 1fr; } .setting-control { align-items: stretch; } .setting-control button { margin-inline-start: 0; } }
 </style>

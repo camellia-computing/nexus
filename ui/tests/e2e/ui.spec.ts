@@ -2897,15 +2897,13 @@ test('future Core versions and stale validation evidence stay explicit at compac
     'Native validation evidence is missing or stale. Validate this candidate again before activation',
     { exact: true },
   )).toBeVisible();
+  await expect(panel.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const guided = page.locator('#program-panel-intent .guided-workspace');
   await expect(guided.getByText('Pending validation', { exact: true })).toBeVisible();
-  const source = guided.locator('.source-statuses span').filter({ hasText: 'Production routing' });
-  await expect(source).toContainText('stale');
-  await expect(source).toHaveClass(/warning/);
-  await expect(source).toHaveAttribute('title', 'Latest read failed; using the last parsed snapshot.');
-  await expect(guided.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toBeVisible();
+  await expect(guided.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toHaveCount(0);
+  await expect(guided.locator('.source-statuses')).toHaveCount(0);
   await expectNoViewportOverflow(page);
   await expectAccessible(page, '#program-panel-intent');
   await page.screenshot({ path: testInfo.outputPath('core-future-stale-evidence-compact.png'), fullPage: true });
@@ -2931,16 +2929,16 @@ test('invalid and unavailable sources retain visible recovery diagnostics', asyn
     await page.setViewportSize({ width: 760, height: 760 });
     await openPreview(page, 'aurora', 'light', 1.15, `&__ui_config_source=${scenario.mode}`);
     await openProgramDetails(page, 'xray-primary');
+    await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+    const sources = page.locator('#program-panel-sources');
+    const source = sources.locator('.source-status-item').filter({ hasText: 'Production routing' });
+    await expect(source).toContainText(scenario.status);
+    await expect(sources.getByText(scenario.code, { exact: true })).toBeVisible();
+    await expect(sources.locator('.surface-issues')).toContainText(scenario.message.replace(/\.$/, ''));
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
     const guided = page.locator('#program-panel-intent .guided-workspace');
     await expect(guided.getByText('Needs attention', { exact: true })).toBeVisible();
-    const source = guided.locator('.source-statuses span').filter({ hasText: 'Production routing' });
-    await expect(source).toContainText(scenario.status);
-    await expect(source).toHaveClass(/problem/);
-    await expect(guided.getByText(scenario.code, { exact: true })).toBeVisible();
-    await expect(
-      guided.locator('.guided-diagnostics span').filter({ hasText: scenario.code }),
-    ).toContainText(scenario.message);
+    await expect(guided.getByText(scenario.code, { exact: true })).toHaveCount(0);
     await expectNoViewportOverflow(page);
     await expectAccessible(page, '#program-panel-intent');
     await page.screenshot({ path: testInfo.outputPath(`configuration-source-${scenario.mode}.png`), fullPage: true });
@@ -3084,6 +3082,50 @@ test('Guided intent updates the Desired document and remains re-enterable', asyn
   await expectAccessible(page, '#program-panel-intent');
 });
 
+test('managed Dashboard ownership stays in Details and never leaks container conflicts into Intent', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  const details = page.locator('#program-panel-overview');
+  await expect(details.getByText('Managed by Details', { exact: true })).toHaveCount(2);
+  await expect(details.getByText('sing-box API', { exact: true }).first()).toBeVisible();
+  await expect(details.getByText('Clash API', { exact: true }).first()).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await expect(intent.getByText('/services', { exact: true })).toHaveCount(0);
+  await expect(intent.getByText('/experimental/clash_api', { exact: true })).toHaveCount(0);
+  await expect(intent.getByText('Dashboard Guided intent is overridden by Raw configuration')).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-intent');
+});
+
+test('Details takeover confirmation is cancel-safe and removes only managed Raw ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_raw_all_override');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  const details = page.locator('#program-panel-overview');
+  const nativePort = details.locator('.dashboard-option.native input[type="number"]');
+  await expect(nativePort).toHaveValue('9090');
+
+  await nativePort.fill('9095');
+  await details.locator('.change-notice').getByRole('button', { name: 'Save', exact: true }).click();
+  let confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText('Only Raw semantics owned by the changed Details integration will be removed');
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(nativePort).toHaveValue('9090');
+
+  await nativePort.fill('9095');
+  await details.locator('.change-notice').getByRole('button', { name: 'Save', exact: true }).click();
+  confirmation = page.getByRole('alertdialog');
+  await confirmation.getByRole('button', { name: 'Confirm takeover', exact: true }).click();
+  await expect(nativePort).toHaveValue('9095');
+  await expect(details.getByText('Managed by Details', { exact: true })).toHaveCount(2);
+  await expect(details.getByText('Overridden by Raw', { exact: true })).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+});
+
 test('a saved Raw draft can be discarded outside conflict mode', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 820 });
   await openPreview(page, 'cupertino', 'light');
@@ -3138,9 +3180,10 @@ test('automatic source updates refresh Desired content, Guided projection and So
   await page.setViewportSize({ width: 1180, height: 860 });
   await openPreview(page);
   const editor = await openProgramConfiguration(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await expect(page.locator('.source-status-item').getByText('Production routing: fresh', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await expect(page.getByLabel('Log level')).toHaveValue('warning');
-  await expect(page.getByText('Production routing: fresh', { exact: true })).toBeVisible();
 
   await page.evaluate(() => {
     window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', {
@@ -3149,6 +3192,7 @@ test('automatic source updates refresh Desired content, Guided projection and So
   });
 
   await expect(page.getByLabel('Log level')).toHaveValue('debug');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
   await expect(
     page.getByText('Automatically refreshed source: fresh', { exact: true }),
   ).toBeVisible();

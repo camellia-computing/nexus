@@ -3765,22 +3765,66 @@ pub async fn create_program(
 }
 
 #[tauri::command]
-pub async fn update_program(state: State<'_, AppState>, mut spec: ProgramSpec) -> Result<()> {
-    update_program_transaction(&state, &mut spec, false).await
+pub async fn update_program(
+    state: State<'_, AppState>,
+    mut spec: ProgramSpec,
+    expected_configuration_generation: Option<u64>,
+    replace_overlapping_raw: Option<bool>,
+    apply_after_commit: Option<bool>,
+) -> Result<()> {
+    update_program_transaction_with_configuration(
+        &state,
+        &mut spec,
+        false,
+        expected_configuration_generation,
+        replace_overlapping_raw.unwrap_or(false),
+        apply_after_commit.unwrap_or(true),
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn update_program_and_restart(
     state: State<'_, AppState>,
     mut spec: ProgramSpec,
+    expected_configuration_generation: Option<u64>,
+    replace_overlapping_raw: Option<bool>,
+    apply_after_commit: Option<bool>,
 ) -> Result<()> {
-    update_program_transaction(&state, &mut spec, true).await
+    update_program_transaction_with_configuration(
+        &state,
+        &mut spec,
+        true,
+        expected_configuration_generation,
+        replace_overlapping_raw.unwrap_or(false),
+        apply_after_commit.unwrap_or(true),
+    )
+    .await
 }
 
 async fn update_program_transaction(
     state: &State<'_, AppState>,
     spec: &mut ProgramSpec,
     restart_after_update: bool,
+) -> Result<()> {
+    update_program_transaction_with_configuration(
+        state,
+        spec,
+        restart_after_update,
+        None,
+        false,
+        true,
+    )
+    .await
+}
+
+async fn update_program_transaction_with_configuration(
+    state: &State<'_, AppState>,
+    spec: &mut ProgramSpec,
+    restart_after_update: bool,
+    expected_configuration_generation: Option<u64>,
+    replace_overlapping_raw: bool,
+    apply_after_commit: bool,
 ) -> Result<()> {
     spec.validate()?;
     let authorization_requirements = RuntimeAuthorizationRequirements::for_program(
@@ -3804,6 +3848,22 @@ async fn update_program_transaction(
             managed.mihomo_dashboard.clone(),
         )
     });
+    let prepared_managed_update = if dashboard_changed {
+        Some(
+            state
+                .configuration_state
+                .prepare_managed_integration_update(
+                    &state.manager,
+                    &spec.id,
+                    spec,
+                    expected_configuration_generation,
+                    replace_overlapping_raw,
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
     let mut credential_transaction = if crate::config_credentials::has_credentials(&current)
         || crate::config_credentials::has_credentials(spec)
     {
@@ -3866,18 +3926,35 @@ async fn update_program_transaction(
             return Err(error);
         }
     };
-    if let Some(transaction) = credential_transaction
-        && let Err(error) = transaction.commit()
-    {
-        tracing::warn!(program = %program_id, %error, "credential commit cleanup requires recovery");
-        state.config_credentials.recover(&state.manager).await?;
-    }
-    if dashboard_changed {
-        let view = state
+    if let Some(prepared) = prepared_managed_update {
+        let view = match state
             .configuration_state
-            .sync_managed_dashboard(&state.manager, &program_id)
-            .await?;
-        if view.desired.validation == camellia_nexus_core::CandidateValidationStatus::Valid {
+            .commit_managed_integration_update(&state.manager, &program_id, spec, prepared)
+            .await
+        {
+            Ok(view) => view,
+            Err(error) => {
+                match state.manager.prepare_update(current.clone()).await {
+                    Ok(rollback) => {
+                        if let Err(rollback_error) =
+                            state.manager.commit_update(rollback, false).await
+                        {
+                            tracing::error!(program = %program_id, %rollback_error, "program rollback failed after managed integration state failure");
+                        }
+                    }
+                    Err(rollback_error) => {
+                        tracing::error!(program = %program_id, %rollback_error, "program rollback could not be prepared after managed integration state failure");
+                    }
+                }
+                if let Some(transaction) = credential_transaction.take() {
+                    transaction.rollback()?;
+                }
+                return Err(error);
+            }
+        };
+        if apply_after_commit
+            && view.desired.validation == camellia_nexus_core::CandidateValidationStatus::Valid
+        {
             let _operation =
                 authorize_runtime_protected(state, ProtectedOperation::UseManagedConfigSources)
                     .await?;
@@ -3886,6 +3963,12 @@ async fn update_program_transaction(
                 .apply_candidate(&state.manager, &program_id, view.generation, false)
                 .await?;
         }
+    }
+    if let Some(transaction) = credential_transaction
+        && let Err(error) = transaction.commit()
+    {
+        tracing::warn!(program = %program_id, %error, "credential commit cleanup requires recovery");
+        state.config_credentials.recover(&state.manager).await?;
     }
     Ok(())
 }

@@ -476,6 +476,7 @@
   .source-status-item.warning { border-color: color-mix(in srgb, var(--ui-warning) 45%, var(--ui-divider)); background: var(--ui-warning-soft); }
   .source-status-item.problem { border-color: color-mix(in srgb, var(--ui-danger) 45%, var(--ui-divider)); background: var(--ui-danger-soft); }
   .detail-section, .create-section { display: grid; gap: 18px; padding: 18px; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-md); background: var(--ui-surface-2); }
+  .managed-integration-projections { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 8px; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
   .privilege-setting { min-width: 0; }
   .privilege-setting select { max-width: 100%; }

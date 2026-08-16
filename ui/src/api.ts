@@ -280,9 +280,10 @@ export const api = {
     initialConfig?: string;
   }) => invoke<void>('create_program', { request }),
   listInvalidPrograms: () => invoke<InvalidProgram[]>('list_invalid_programs'),
-  updateProgram: (spec: ProgramSpec) => invoke<void>('update_program', { spec }),
-  updateProgramAndRestart: (spec: ProgramSpec) =>
-    invoke<void>('update_program_and_restart', { spec }),
+  updateProgram: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = true) =>
+    invoke<void>('update_program', { spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyAfterCommit }),
+  updateProgramAndRestart: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = true) =>
+    invoke<void>('update_program_and_restart', { spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyAfterCommit }),
   removeProgram: (programId: string) => invoke<void>('remove_program', { programId }),
   startProgram: (programId: string) => invoke<void>('start_program', { programId }),
   stopProgram: (programId: string) => invoke<void>('stop_program', { programId }),

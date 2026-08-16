@@ -2,11 +2,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use camellia_nexus_core::{
     CamelliaNexusError, CandidateValidationStatus, ConfigurationCandidate, ConfigurationConflict,
-    ConfigurationDiagnostic, ConfigurationFormat, ConfigurationRevision, ConfigurationState,
-    ConfigurationStateView, ConflictSeverity, CoreCompatibilityProfile, CoreTargetIdentity,
-    CoreValidationEvidence, ErrorCode, ProgramId, ProgramKind, ProgramManager, ProgramSpec,
-    RawConflictResolution, RawDraftSession, RawManualIntent, Result, ShareImportPreview,
-    SourceFreshness, SourceSnapshot, SourceStatus, rebase_raw_document,
+    ConfigurationDiagnostic, ConfigurationFormat, ConfigurationIssueScope, ConfigurationRevision,
+    ConfigurationState, ConfigurationStateView, ConflictSeverity, CoreCompatibilityProfile,
+    CoreTargetIdentity, CoreValidationEvidence, ErrorCode, ProgramId, ProgramKind, ProgramManager,
+    ProgramSpec, RawConflictResolution, RawDraftSession, RawManualIntent, Result,
+    ShareImportPreview, SourceFreshness, SourceSnapshot, SourceStatus, rebase_raw_document,
     refresh_raw_draft_conflicts, resolve_raw_draft_conflict,
 };
 use serde_json::Value;
@@ -26,6 +26,12 @@ pub(crate) struct ConfigurationCoordinator {
 
 pub(crate) struct ConfigurationLease {
     _guard: OwnedMutexGuard<()>,
+}
+
+pub(crate) struct PreparedManagedIntegrationUpdate {
+    _lease: ConfigurationLease,
+    state: ConfigurationState,
+    previous_generation: u64,
 }
 
 impl ConfigurationCoordinator {
@@ -103,6 +109,13 @@ impl ConfigurationCoordinator {
     ) -> Result<ConfigurationStateView> {
         let spec = manager.refresh_binary_identity_if_changed(id).await?;
         let mut state = self.load_or_initialize(manager, id).await?;
+        if state.migrate_legacy_schema() {
+            state.canonicalize_legacy_managed_raw()?;
+            state.rebuild_desired(now_unix_ms())?;
+            self.store
+                .save_configuration_state(id, &state, None)
+                .await?;
+        }
         let previous_generation = state.generation;
         if self.retarget_state(id, &spec, &mut state).await? {
             return self
@@ -120,7 +133,14 @@ impl ConfigurationCoordinator {
     ) -> Result<ConfigurationStateView> {
         let _lease = self.lock(id).await;
         let (spec, _) = manager.get(id).await?;
-        if let Some(state) = self.store.load_configuration_state(id).await? {
+        if let Some(mut state) = self.store.load_configuration_state(id).await? {
+            if state.migrate_legacy_schema() {
+                state.canonicalize_legacy_managed_raw()?;
+                state.rebuild_desired(now_unix_ms())?;
+                self.store
+                    .save_configuration_state(id, &state, None)
+                    .await?;
+            }
             return Ok(view_for_spec(&spec, &state));
         }
         let document = manager.load_config(id).await?;
@@ -572,10 +592,78 @@ impl ConfigurationCoordinator {
         let (spec, mut state) = self.load_current(manager, id).await?;
         let previous_generation = state.generation;
         if let Some(managed) = spec.managed_config.as_ref() {
-            camellia_nexus_core::sync_managed_dashboard_intent(&mut state.guided_intent, managed);
+            camellia_nexus_core::sync_managed_dashboard_intent(&mut state.managed_intent, managed);
         }
         state.rebuild_desired(now_unix_ms())?;
         self.validate_and_save(manager, id, &spec, state, previous_generation)
+            .await
+    }
+
+    pub(crate) async fn prepare_managed_integration_update(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        next_spec: &ProgramSpec,
+        expected_generation: Option<u64>,
+        replace_overlapping_raw: bool,
+    ) -> Result<PreparedManagedIntegrationUpdate> {
+        let lease = self.lock(id).await;
+        let (_current, mut state) = self.load_current(manager, id).await?;
+        if let Some(expected_generation) = expected_generation {
+            ensure_generation(&state, expected_generation)?;
+        }
+        let previous_generation = state.generation;
+        let empty = camellia_nexus_core::ManagedConfigSpec::default();
+        let managed = next_spec.managed_config.as_ref().unwrap_or(&empty);
+        camellia_nexus_core::sync_managed_dashboard_intent(&mut state.managed_intent, managed);
+        let overlapping_paths = camellia_nexus_core::managed_raw_override_paths(
+            next_spec.program_type.kind(),
+            &state.managed_intent,
+            &state.raw_intent,
+        );
+        if !overlapping_paths.is_empty() && !replace_overlapping_raw {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Managed integration is overridden by Raw configuration",
+            )
+            .with_message_key("CONFIGURATION_RAW_OVERRIDE")
+            .with_details(
+                serde_json::to_string(&serde_json::json!({
+                    "messageKey": "CONFIGURATION_RAW_OVERRIDE",
+                    "semanticPaths": overlapping_paths,
+                    "appliedAndLastKnownGoodRetained": true,
+                }))
+                .unwrap_or_else(|_| "CONFIGURATION_RAW_OVERRIDE".into()),
+            ));
+        }
+        if replace_overlapping_raw {
+            camellia_nexus_core::remove_managed_raw_overrides(
+                next_spec.program_type.kind(),
+                &state.managed_intent,
+                &mut state.raw_intent,
+            );
+        }
+        state.rebuild_desired(now_unix_ms())?;
+        Ok(PreparedManagedIntegrationUpdate {
+            _lease: lease,
+            state,
+            previous_generation,
+        })
+    }
+
+    pub(crate) async fn commit_managed_integration_update(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        next_spec: &ProgramSpec,
+        prepared: PreparedManagedIntegrationUpdate,
+    ) -> Result<ConfigurationStateView> {
+        let PreparedManagedIntegrationUpdate {
+            _lease,
+            state,
+            previous_generation,
+        } = prepared;
+        self.validate_and_save(manager, id, next_spec, state, previous_generation)
             .await
     }
 
@@ -624,6 +712,7 @@ impl ConfigurationCoordinator {
                 code: "CORE_INVALID".into(),
                 message: "Core validation failed".into(),
                 message_key: Some("CORE_INVALID".into()),
+                scope: ConfigurationIssueScope::configuration(),
                 details: Some(format!("{}\n{}", validation.stdout, validation.stderr)),
             }]
         };
@@ -709,6 +798,7 @@ impl ConfigurationCoordinator {
                 reason: "Share source has no item expressible for the selected Core target".into(),
                 severity: ConflictSeverity::Error,
                 message_key: Some("CORE_TARGET_SOURCE_REJECTED".into()),
+                scope: ConfigurationIssueScope::sources(source_id.clone()),
                 source_value: None,
                 guided_value: None,
                 raw_value: None,
@@ -718,6 +808,7 @@ impl ConfigurationCoordinator {
                 code: "CORE_TARGET_SOURCE_REJECTED".into(),
                 message: "Share source was retained but has no accepted item for the selected Core target".into(),
                 message_key: Some("CORE_TARGET_SOURCE_REJECTED".into()),
+                scope: ConfigurationIssueScope::sources("share-import"),
                 details: Some(message),
             });
             state.desired.validation = CandidateValidationStatus::Invalid;
@@ -728,6 +819,7 @@ impl ConfigurationCoordinator {
             message: "Core target changed; Sources, Guided intent, and Raw intent were retargeted"
                 .into(),
             message_key: Some("CORE_TARGET_CHANGED".into()),
+            scope: ConfigurationIssueScope::compatibility(),
             details: None,
         });
         Ok(true)
@@ -743,7 +835,14 @@ impl ConfigurationCoordinator {
         id: &ProgramId,
     ) -> Result<(ProgramSpec, ConfigurationState)> {
         let (spec, _) = manager.get(id).await?;
-        let state = self.load_or_initialize(manager, id).await?;
+        let mut state = self.load_or_initialize(manager, id).await?;
+        if state.migrate_legacy_schema() {
+            state.canonicalize_legacy_managed_raw()?;
+            state.rebuild_desired(now_unix_ms())?;
+            self.store
+                .save_configuration_state(id, &state, None)
+                .await?;
+        }
         Ok((spec, state))
     }
 
@@ -973,6 +1072,7 @@ fn blocked_source_candidate(state: &ConfigurationState, invalid: bool) -> Config
         } else {
             "SOURCE_UNAVAILABLE".into()
         }),
+        scope: ConfigurationIssueScope::sources("source-refresh"),
         details: None,
     }];
     candidate

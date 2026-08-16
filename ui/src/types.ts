@@ -371,6 +371,12 @@ export interface ConfigurationDiagnostic {
   details?: string;
   messageKey?: string;
   parameters?: Record<string, string | number>;
+  scope?: ConfigurationIssueScope;
+}
+export type ConfigurationSurface = 'intent' | 'details' | 'sources' | 'compatibility' | 'configuration';
+export interface ConfigurationIssueScope {
+  surface: ConfigurationSurface;
+  ownerId?: string;
 }
 export interface ConfigurationConflict {
   semanticPath: string;
@@ -378,6 +384,7 @@ export interface ConfigurationConflict {
   severity: 'warning' | 'error';
   messageKey?: string;
   parameters?: Record<string, string | number>;
+  scope?: ConfigurationIssueScope;
   sourceValue?: unknown;
   guidedValue?: unknown;
   rawValue?: unknown;
@@ -415,6 +422,15 @@ export interface GuidedProjection {
   value?: unknown;
   intentValue?: unknown;
 }
+export type ManagedIntegrationStatus = 'inactive' | 'explicit' | 'overridden' | 'rawOnly' | 'needsAttention';
+export interface ManagedIntegrationProjection {
+  integrationId: string;
+  status: ManagedIntegrationStatus;
+  effectiveEnabled: boolean;
+  intentValue?: unknown;
+  rawPaths: string[];
+  issueIds: string[];
+}
 export interface ConfigurationStateView {
   schemaVersion: number;
   kind: ProgramKind;
@@ -429,6 +445,7 @@ export interface ConfigurationStateView {
   lastKnownGoodRevision?: ConfigurationRevision;
   guidedDescriptors: GuidedSettingDescriptor[];
   guidedProjection: GuidedProjection[];
+  managedIntegrations?: ManagedIntegrationProjection[];
   compatibilityReferences?: CoreCompatibilityReference[];
 }
 

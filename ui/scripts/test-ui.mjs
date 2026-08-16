@@ -719,6 +719,15 @@ assert.equal(wrappedCompatibilityError.code, 'INVALID_SPEC');
 assert.equal(wrappedCompatibilityError.messageKey, 'CORE_COMPATIBILITY_INVALID');
 assert.match(wrappedCompatibilityError.message, /not available/);
 assert.match(wrappedCompatibilityError.details, /commit SHA/);
+const managedRawOverrideError = configurationErrorInfo({
+  code: 'CONFIG_CONFLICT',
+  messageKey: 'CONFIGURATION_RAW_OVERRIDE',
+  message: 'Managed integration is overridden by Raw configuration',
+  details: '{"semanticPaths":["/experimental/clash_api/external_controller"]}',
+}, 'details-save');
+assert.match(managedRawOverrideError.message, /Raw configuration currently owns/);
+assert.match(managedRawOverrideError.suggestion, /confirm takeover/);
+assert.match(managedRawOverrideError.details, /external_controller/);
 for (const [code, title, message] of [
   ['TIMEOUT', 'Operation timed out', 'The operation did not finish in time.'],
   ['NETWORK', 'Network error', 'The network request could not be completed.'],

@@ -111,6 +111,7 @@ const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
 const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
 const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
 const rawAllOverridePreview = previewParameters.has('__ui_raw_all_override');
+const managedRawOverrideRemoved = new Set<string>();
 const requestedTeamRole = previewParameters.get('__ui_team_role');
 const previewWorkspaceRole: WorkspaceRole = teamMemberPreview
   ? 'operator'
@@ -1015,6 +1016,7 @@ function configurationState(programId: string): ConfigurationStateView {
   const kind = spec?.type.kind ?? 'generic';
   const format = document.language === 'yaml' ? 'yaml' : 'jsonc';
   const guided = previewGuidedSettings(kind);
+  const managedRawOverrideActive = rawAllOverridePreview && !managedRawOverrideRemoved.has(programId);
   if (rawAllOverridePreview && kind !== 'generic') {
     guided.projection = guided.projection.map((projection) => ({
       ...projection,
@@ -1039,11 +1041,13 @@ function configurationState(programId: string): ConfigurationStateView {
     ? [{
         code: 'CORE_VALIDATION_EVIDENCE_STALE',
         message: 'The binary, compatibility profile, or configuration changed after native validation.',
+        scope: { surface: 'compatibility' as const },
       }]
     : evidenceMismatch
       ? [{
           code: 'CORE_PROFILE_MISMATCH',
           message: 'The candidate was validated for a different compatibility profile.',
+          scope: { surface: 'compatibility' as const },
         }]
       : sourceBlocked
         ? [{
@@ -1053,10 +1057,11 @@ function configurationState(programId: string): ConfigurationStateView {
             message: configurationSourcePreview === 'unavailable'
               ? 'No parsed snapshot is available for this source.'
               : 'The latest source content is invalid; Applied and Last Known Good were retained.',
+            scope: { surface: 'sources' as const, ownerId: 'preview-source' },
           }]
         : [];
   const state: ConfigurationStateView = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     kind,
     format,
     generation,
@@ -1110,6 +1115,28 @@ function configurationState(programId: string): ConfigurationStateView {
     lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
     guidedDescriptors: guided.descriptors,
     guidedProjection: guided.projection,
+    managedIntegrations: kind === 'singBox'
+      ? [
+          {
+            integrationId: 'dashboard.singBoxApi',
+            status: managedRawOverrideActive ? 'overridden' : spec?.managedConfig?.singBoxDashboard ? 'explicit' : 'inactive',
+            effectiveEnabled: !!spec?.managedConfig?.singBoxDashboard,
+            rawPaths: managedRawOverrideActive ? ['/services[tag=camellia-nexus-api]/listen_port'] : [],
+            issueIds: managedRawOverrideActive ? ['CONFIGURATION_RAW_OVERRIDE:/services[tag=camellia-nexus-api]/listen_port'] : [],
+          },
+          {
+            integrationId: 'dashboard.singBoxClash',
+            status: managedRawOverrideActive ? 'overridden' : spec?.managedConfig?.singBoxClashDashboard ? 'explicit' : 'inactive',
+            effectiveEnabled: !!spec?.managedConfig?.singBoxClashDashboard,
+            rawPaths: managedRawOverrideActive ? ['/experimental/clash_api/external_controller'] : [],
+            issueIds: managedRawOverrideActive ? ['CONFIGURATION_RAW_OVERRIDE:/experimental/clash_api/external_controller'] : [],
+          },
+        ]
+      : kind === 'xray'
+        ? [{ integrationId: 'dashboard.xray', status: spec?.managedConfig?.xrayDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.xrayDashboard, rawPaths: [], issueIds: [] }]
+        : kind === 'mihomo'
+          ? [{ integrationId: 'dashboard.mihomo', status: spec?.managedConfig?.mihomoDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.mihomoDashboard, rawPaths: [], issueIds: [] }]
+          : [],
     compatibilityReferences: [
       { kind: 'release', tag: kind === 'xray' ? 'v26.3.27' : kind === 'singBox' ? 'v1.13.18' : 'v1.19.29' },
       { kind: 'commit', commitSha: 'a'.repeat(40) },
@@ -2190,8 +2217,33 @@ export function installMockBackend() {
       case 'update_program': {
         const next = objectArgs(args).spec;
         if (next && typeof next === 'object') {
+          const nextSpec = next as ProgramSpec;
+          const previous = specs[nextSpec.id];
+          const managedChanged = JSON.stringify({
+            singBoxDashboard: previous?.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: previous?.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: previous?.managedConfig?.xrayDashboard,
+            mihomoDashboard: previous?.managedConfig?.mihomoDashboard,
+          }) !== JSON.stringify({
+            singBoxDashboard: nextSpec.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: nextSpec.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: nextSpec.managedConfig?.xrayDashboard,
+            mihomoDashboard: nextSpec.managedConfig?.mihomoDashboard,
+          });
+          if (managedChanged && rawAllOverridePreview && !managedRawOverrideRemoved.has(nextSpec.id)) {
+            if (objectArgs(args).replaceOverlappingRaw !== true) {
+              throw {
+                code: 'CONFIG_CONFLICT',
+                messageKey: 'CONFIGURATION_RAW_OVERRIDE',
+                message: 'Managed integration is overridden by Raw configuration',
+                details: '{"semanticPaths":["/experimental/clash_api/external_controller"]}',
+              };
+            }
+            managedRawOverrideRemoved.add(nextSpec.id);
+          }
           validatePreviewCompatibility(next as ProgramSpec);
-          specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
+          specs[nextSpec.id] = structuredClone(nextSpec);
+          previewConfigurationStates.delete(nextSpec.id);
         }
         return null;
       }
@@ -2199,8 +2251,19 @@ export function installMockBackend() {
         requireLifecycleAccess('restart');
         const next = objectArgs(args).spec;
         if (next && typeof next === 'object') {
+          const nextSpec = next as ProgramSpec;
+          if (rawAllOverridePreview && objectArgs(args).replaceOverlappingRaw !== true) {
+            throw {
+              code: 'CONFIG_CONFLICT',
+              messageKey: 'CONFIGURATION_RAW_OVERRIDE',
+              message: 'Managed integration is overridden by Raw configuration',
+              details: '{"semanticPaths":["/experimental/clash_api/external_controller"]}',
+            };
+          }
+          if (rawAllOverridePreview) managedRawOverrideRemoved.add(nextSpec.id);
           validatePreviewCompatibility(next as ProgramSpec);
-          specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
+          specs[nextSpec.id] = structuredClone(nextSpec);
+          previewConfigurationStates.delete(nextSpec.id);
         }
         setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() });
         return null;
