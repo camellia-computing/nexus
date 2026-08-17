@@ -824,20 +824,101 @@ impl ProgramSpec {
 }
 
 fn valid_dashboard_interval(value: &str) -> bool {
-    if value.is_empty() || value.len() > 16 {
-        return false;
+    parse_dashboard_interval_nanos(value).is_some()
+}
+
+/// Parse the integer duration grammar accepted by sing-box's dashboard
+/// duration type.  Keeping this in the Core model lets validation, generated
+/// configuration and semantic Raw comparisons agree that representations such
+/// as `1d` and `24h0m0s` carry the same value.
+pub(crate) fn parse_dashboard_interval_nanos(value: &str) -> Option<u64> {
+    if value.is_empty() || value.len() > 32 {
+        return None;
     }
-    let mut digits = 0usize;
-    for byte in value.bytes() {
-        if byte.is_ascii_digit() {
-            digits += 1;
-        } else if matches!(byte, b's' | b'm' | b'h' | b'd') && digits > 0 {
-            digits = 0;
+    let bytes = value.as_bytes();
+    let mut offset = 0usize;
+    let mut total = 0u64;
+    while offset < bytes.len() {
+        let number_start = offset;
+        while offset < bytes.len() && bytes[offset].is_ascii_digit() {
+            offset += 1;
+        }
+        if number_start == offset {
+            return None;
+        }
+        let number = value[number_start..offset].parse::<u64>().ok()?;
+        let (unit_len, multiplier) = if value[offset..].starts_with("ns") {
+            (2, 1u64)
+        } else if value[offset..].starts_with("us")
+            || value[offset..].starts_with("µs")
+            || value[offset..].starts_with("μs")
+        {
+            let unit_len = if value[offset..].starts_with("us") {
+                2
+            } else {
+                3
+            };
+            (unit_len, 1_000)
+        } else if value[offset..].starts_with("ms") {
+            (2, 1_000_000)
+        } else if value[offset..].starts_with('s') {
+            (1, 1_000_000_000)
+        } else if value[offset..].starts_with('m') {
+            (1, 60 * 1_000_000_000)
+        } else if value[offset..].starts_with('h') {
+            (1, 60 * 60 * 1_000_000_000)
+        } else if value[offset..].starts_with('d') {
+            (1, 24 * 60 * 60 * 1_000_000_000)
         } else {
-            return false;
+            return None;
+        };
+        offset += unit_len;
+        total = total.checked_add(number.checked_mul(multiplier)?)?;
+        // Go's time.Duration is signed and sing-box rejects values outside
+        // its positive range. Keep the same upper bound for deterministic
+        // validation before the native validator runs.
+        if total > i64::MAX as u64 {
+            return None;
         }
     }
-    digits == 0
+    Some(total)
+}
+
+/// Return sing-box's stable Go-duration spelling for a valid integer duration.
+/// This intentionally uses hours rather than days, so `1d` is emitted as the
+/// native-equivalent `24h0m0s` and does not create a Raw formatting diff.
+pub(crate) fn normalize_dashboard_interval(value: &str) -> Option<String> {
+    let mut nanos = parse_dashboard_interval_nanos(value)?;
+    if nanos == 0 {
+        return Some("0s".into());
+    }
+    let hours = nanos / (60 * 60 * 1_000_000_000);
+    nanos %= 60 * 60 * 1_000_000_000;
+    let minutes = nanos / (60 * 1_000_000_000);
+    nanos %= 60 * 1_000_000_000;
+    let seconds = nanos / 1_000_000_000;
+    nanos %= 1_000_000_000;
+    if hours > 0 {
+        return Some(format!("{hours}h{minutes}m{seconds}s"));
+    }
+    if minutes > 0 {
+        return Some(format!("{minutes}m{seconds}s"));
+    }
+    if seconds > 0 {
+        return Some(if nanos == 0 {
+            format!("{seconds}s")
+        } else {
+            let fraction = format!("{nanos:09}");
+            format!("{seconds}.{}s", fraction.trim_end_matches('0'))
+        });
+    }
+    if nanos >= 1_000_000 {
+        return Some(format!("{}ms", nanos / 1_000_000));
+    }
+    if nanos >= 1_000 {
+        return Some(format!("{}us", nanos / 1_000));
+    }
+    Some(format!("{nanos}ns"))
 }
 
 fn valid_https_url_without_credentials(value: &str) -> bool {
@@ -1673,11 +1754,24 @@ mod tests {
 
     #[test]
     fn dashboard_intervals_require_complete_duration_parts() {
-        for valid in ["30s", "12h", "1d", "1h30m"] {
+        for valid in ["30s", "12h", "1d", "24h0m0s", "1h30m", "250ms"] {
             assert!(valid_dashboard_interval(valid), "{valid}");
         }
-        for invalid in ["", "1", "h", "1h30", "1 hour", "1w"] {
+        for invalid in ["", "1", "h", "1h30", "1 hour", "1w", "1.5h"] {
             assert!(!valid_dashboard_interval(invalid), "{invalid}");
         }
+    }
+
+    #[test]
+    fn dashboard_intervals_normalize_equivalent_day_and_hour_forms() {
+        assert_eq!(
+            parse_dashboard_interval_nanos("1d"),
+            parse_dashboard_interval_nanos("24h0m0s")
+        );
+        assert_eq!(normalize_dashboard_interval("1d"), Some("24h0m0s".into()));
+        assert_eq!(
+            normalize_dashboard_interval("1h30m"),
+            Some("1h30m0s".into())
+        );
     }
 }

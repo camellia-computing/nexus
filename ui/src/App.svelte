@@ -2145,6 +2145,8 @@
     );
   }
 
+  const DASHBOARD_DURATION_RE = /^\d+(?:ns|us|µs|μs|ms|s|m|h|d)(?:\d+(?:ns|us|µs|μs|ms|s|m|h|d))*$/;
+
   function validateManagedConfigSettings(spec: ProgramSpec) {
     const managed = spec.managedConfig;
     if (!managed) return;
@@ -2190,7 +2192,7 @@
       if (!Number.isInteger(dashboard.listenPort) || dashboard.listenPort < 1024 || dashboard.listenPort > 65535) {
         throw new Error('Enter a Dashboard port between 1024 and 65535.');
       }
-      if (!/^\d+[smhd](?:\d+[smhd])*$/.test(dashboard.updateInterval)) {
+      if (!DASHBOARD_DURATION_RE.test(dashboard.updateInterval)) {
         throw new Error('Use a duration such as 12h or 1d.');
       }
     }
@@ -3588,7 +3590,7 @@
       if (draft.kind === 'singBox' && draft.dashboardEnabled) {
         if (!Number.isInteger(draft.dashboardPort) || draft.dashboardPort < 1024 || draft.dashboardPort > 65535) {
           errors.dashboard = 'Enter a Dashboard port between 1024 and 65535.';
-        } else if (!/^\d+[smhd](?:\d+[smhd])*$/.test(draft.dashboardUpdateInterval)) {
+        } else if (!DASHBOARD_DURATION_RE.test(draft.dashboardUpdateInterval)) {
           errors.dashboard = 'Use a duration such as 12h or 1d.';
         }
       }

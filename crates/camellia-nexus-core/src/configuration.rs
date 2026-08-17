@@ -10,7 +10,8 @@ use crate::{
     CamelliaNexusError, CoreCompatibilityProfile, CoreTargetIdentity, CoreValidationEvidence,
     ErrorCode, ManagedConfigSpec, ProgramKind, Result, XrayDashboardSpec,
     config_service::hash_bytes, embedded_core_compatibility_catalog,
-    embedded_core_upstream_manifest, normalize_jsonc,
+    embedded_core_upstream_manifest, normalize_dashboard_interval, normalize_jsonc,
+    parse_dashboard_interval_nanos,
 };
 
 pub const CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 4;
@@ -1750,6 +1751,7 @@ fn apply_sing_box_dashboard_intent<T: IntentValueStore>(
     };
     let update_interval =
         intent_text(intent, "dashboard.singBoxApi.updateInterval")?.unwrap_or_else(|| "1d".into());
+    let update_interval = normalize_dashboard_interval(&update_interval).unwrap_or(update_interval);
     let root = root.as_object_mut().ok_or_else(|| {
         CamelliaNexusError::invalid_spec("sing-box configuration root must be an object")
     })?;
@@ -2054,7 +2056,7 @@ fn diff_value(
     path: &mut SemanticPath,
     operations: &mut Vec<IntentOperation>,
 ) {
-    if base == edited {
+    if values_semantically_equal(base, edited, path) {
         return;
     }
     match (base, edited) {
@@ -2139,6 +2141,36 @@ fn diff_value(
             value: edited.clone(),
         }),
     }
+}
+
+fn values_semantically_equal(base: &Value, edited: &Value, path: &SemanticPath) -> bool {
+    if base == edited {
+        return true;
+    }
+    if !is_sing_box_dashboard_interval_path(path) {
+        return false;
+    }
+    let (Some(base), Some(edited)) = (base.as_str(), edited.as_str()) else {
+        return false;
+    };
+    parse_dashboard_interval_nanos(base).is_some()
+        && parse_dashboard_interval_nanos(base) == parse_dashboard_interval_nanos(edited)
+}
+
+fn is_sing_box_dashboard_interval_path(path: &[SemanticPathSegment]) -> bool {
+    path.iter()
+        .any(|segment| matches!(segment, SemanticPathSegment::Key { key } if key == "dashboard"))
+        && path.iter().any(|segment| {
+            matches!(
+                segment,
+                SemanticPathSegment::Identity { field, value }
+                    if field == "tag" && value == MANAGED_SING_BOX_API_TAG
+            )
+        })
+        && matches!(
+            path.last(),
+            Some(SemanticPathSegment::Key { key }) if key == "update_interval"
+        )
 }
 
 fn sequence_identities(values: &[Value]) -> Option<Vec<(String, String)>> {
@@ -3270,13 +3302,15 @@ fn dashboard_raw_conflicts(
     let targets = managed_ownership_targets(kind);
     targets
         .into_iter()
-        .filter(|(_, integration, target)| {
+        .filter(|(setting, integration, target)| {
             managed_integration_active(guided, integration)
-                && raw
-                    .operations
-                    .iter()
-                    .map(intent_operation_path)
-                    .any(|raw_path| managed_path_overlaps(target, &raw_path))
+                && raw.operations.iter().any(|operation| {
+                    let raw_path = intent_operation_path(operation);
+                    managed_path_overlaps(target, &raw_path)
+                        && !raw_operation_matches_managed_duration(
+                            setting, target, operation, guided,
+                        )
+                })
         })
         .map(|(setting, integration, target)| ConfigurationConflict {
             semantic_path: display_semantic_path(&target),
@@ -3486,6 +3520,34 @@ fn managed_path_overlaps(target: &[SemanticPathSegment], raw: &[SemanticPathSegm
     raw.len() <= target.len() && raw.iter().zip(target).all(|(left, right)| left == right)
 }
 
+fn raw_operation_matches_managed_duration(
+    setting: &str,
+    target: &[SemanticPathSegment],
+    operation: &IntentOperation,
+    managed: &ManagedIntegrationIntent,
+) -> bool {
+    if setting != "dashboard.singBoxApi.updateInterval"
+        || !is_sing_box_dashboard_interval_path(target)
+        || intent_operation_path(operation) != target
+    {
+        return false;
+    }
+    let IntentOperation::Set { value, .. } = operation else {
+        return false;
+    };
+    let Some(raw_value) = value.as_str() else {
+        return false;
+    };
+    let managed_value = managed
+        .values
+        .get(setting)
+        .and_then(Value::as_str)
+        .unwrap_or("1d");
+    parse_dashboard_interval_nanos(managed_value).is_some()
+        && parse_dashboard_interval_nanos(managed_value)
+            == parse_dashboard_interval_nanos(raw_value)
+}
+
 pub fn managed_raw_override_paths(
     kind: ProgramKind,
     managed: &ManagedIntegrationIntent,
@@ -3498,12 +3560,15 @@ pub fn managed_raw_override_paths(
     let mut paths = raw
         .operations
         .iter()
-        .map(intent_operation_path)
-        .filter(|raw_path| {
-            targets
-                .iter()
-                .any(|(_, _, target)| managed_path_overlaps(target, raw_path))
+        .map(|operation| {
+            let raw_path = intent_operation_path(operation);
+            let is_override = targets.iter().any(|(setting, _, target)| {
+                managed_path_overlaps(target, &raw_path)
+                    && !raw_operation_matches_managed_duration(setting, target, operation, managed)
+            });
+            (is_override, raw_path)
         })
+        .filter_map(|(is_override, path)| is_override.then_some(path))
         .map(|path| display_semantic_path(&path))
         .collect::<Vec<_>>();
     paths.sort();
@@ -3524,7 +3589,6 @@ pub fn remove_managed_raw_overrides(
     let targets = managed_ownership_targets(kind)
         .into_iter()
         .filter(|(_, integration, _)| managed_integration_active(managed, integration))
-        .map(|(_, _, target)| target)
         .collect::<Vec<_>>();
     let mut removed = 0usize;
     let mut retained = Vec::new();
@@ -3532,7 +3596,10 @@ pub fn remove_managed_raw_overrides(
         let operation_path = intent_operation_path(&operation);
         let overlapping = targets
             .iter()
-            .filter(|target| managed_path_overlaps(target, &operation_path))
+            .filter(|(setting, _, target)| {
+                managed_path_overlaps(target, &operation_path)
+                    && !raw_operation_matches_managed_duration(setting, target, &operation, managed)
+            })
             .collect::<Vec<_>>();
         if overlapping.is_empty() {
             retained.push(operation);
@@ -3548,7 +3615,7 @@ pub fn remove_managed_raw_overrides(
             let leaf_path = intent_operation_path(leaf);
             !targets
                 .iter()
-                .any(|target| managed_path_overlaps(target, &leaf_path))
+                .any(|(_, _, target)| managed_path_overlaps(target, &leaf_path))
         }));
     }
     raw.operations = retained;
@@ -4393,6 +4460,72 @@ mod tests {
                 .managed_intent
                 .values
                 .contains_key("dashboard.mihomo.listenPort")
+        );
+    }
+
+    #[test]
+    fn sing_box_dashboard_duration_formats_are_semantically_equivalent() {
+        let base = serde_json::json!({
+            "services": [{
+                "type": "api",
+                "tag": MANAGED_SING_BOX_API_TAG,
+                "dashboard": {"enabled": true, "update_interval": "1d"}
+            }]
+        });
+        let edited = serde_json::json!({
+            "services": [{
+                "type": "api",
+                "tag": MANAGED_SING_BOX_API_TAG,
+                "dashboard": {"enabled": true, "update_interval": "24h0m0s"}
+            }]
+        });
+        assert!(diff_raw_intent(&base, &edited).operations.is_empty());
+
+        let mut managed = ManagedIntegrationIntent::default();
+        managed.set("dashboard.singBoxApi.listenPort", Value::from(9090));
+        managed.set(
+            "dashboard.singBoxApi.updateInterval",
+            Value::String("1d".into()),
+        );
+        let mut generated = serde_json::json!({});
+        apply_dashboard_intent(ProgramKind::SingBox, &mut generated, &managed).unwrap();
+        assert_eq!(
+            generated["services"][0]["dashboard"]["update_interval"],
+            "24h0m0s"
+        );
+        let equivalent = RawManualIntent {
+            based_on_revision: None,
+            operations: vec![IntentOperation::Set {
+                path: vec![
+                    SemanticPathSegment::Key {
+                        key: "services".into(),
+                    },
+                    SemanticPathSegment::Identity {
+                        field: "tag".into(),
+                        value: MANAGED_SING_BOX_API_TAG.into(),
+                    },
+                    SemanticPathSegment::Key {
+                        key: "dashboard".into(),
+                    },
+                    SemanticPathSegment::Key {
+                        key: "update_interval".into(),
+                    },
+                ],
+                value: Value::String("24h0m0s".into()),
+            }],
+        };
+        assert!(managed_raw_override_paths(ProgramKind::SingBox, &managed, &equivalent).is_empty());
+
+        let non_equivalent = RawManualIntent {
+            operations: vec![IntentOperation::Set {
+                path: intent_operation_path(&equivalent.operations[0]),
+                value: Value::String("25h".into()),
+            }],
+            ..equivalent.clone()
+        };
+        assert_eq!(
+            managed_raw_override_paths(ProgramKind::SingBox, &managed, &non_equivalent),
+            vec!["/services[tag=camellia-nexus-api]/dashboard/update_interval"]
         );
     }
 
