@@ -9,6 +9,7 @@ overrides:
   '@wdio/native-utils': 2.5.0
   brace-expansion: 5.0.9
   '@puppeteer/browsers': 3.2.0
+  deepmerge-ts: 8.0.1
   nanoid: 3.3.18
   serialize-javascript: 7.0.7
 
@@ -1285,8 +1286,8 @@ packages:
     resolution: {integrity: sha512-h5k/5U50IJJFpzfL6nO9jaaumfjO/f2NjK/oYB2Djzm4p9L+3T9qWpZqZ2hAbLPuuYq9wrU08WQyBTL5GbPk5Q==}
     engines: {node: '>=6'}
 
-  deepmerge-ts@7.1.5:
-    resolution: {integrity: sha512-HOJkrhaYsweh+W+e74Yn7YStZOilkoPb6fycpwNLKzSPtruFs48nYis0zy5yJz1+ktUhHxoRDJ27RQAWLIJVJw==}
+  deepmerge-ts@8.0.1:
+    resolution: {integrity: sha512-szCXE7YLCvLKR9bFPJcvsezOShdalctSvrgN/LM/QGUEPZQajwjmsMObZ6/DuANT5lxzM/wtO8Feubwdkz8myA==}
     engines: {node: '>=16.0.0'}
 
   deepmerge@4.3.1:
@@ -3223,7 +3224,7 @@ snapshots:
       '@wdio/logger': 9.29.1
       '@wdio/types': 9.29.1
       '@wdio/utils': 9.30.0(supports-color@8.1.1)(yauzl@2.10.0)
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       glob: 10.5.0
       import-meta-resolve: 4.2.0
       jiti: 2.7.0
@@ -3361,7 +3362,7 @@ snapshots:
       '@wdio/logger': 9.29.1
       '@wdio/types': 9.29.1
       '@wdio/utils': 9.30.0(supports-color@8.1.1)(yauzl@2.10.0)
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       expect-webdriverio: 5.7.0(@wdio/globals@9.29.1)(@wdio/logger@9.29.1)(webdriverio@9.30.0(supports-color@8.1.1)(yauzl@2.10.0))
       webdriver: 9.30.0(supports-color@8.1.1)(yauzl@2.10.0)
       webdriverio: 9.30.0(supports-color@8.1.1)(yauzl@2.10.0)
@@ -3431,7 +3432,7 @@ snapshots:
       '@wdio/logger': 9.29.1
       '@wdio/types': 9.29.1
       decamelize: 6.0.1
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       edgedriver: 6.3.0(supports-color@8.1.1)
       geckodriver: 6.1.1(supports-color@8.1.1)
       get-port: 7.2.0
@@ -3753,7 +3754,7 @@ snapshots:
 
   deep-eql@5.0.2: {}
 
-  deepmerge-ts@7.1.5: {}
+  deepmerge-ts@8.0.1: {}
 
   deepmerge@4.3.1: {}
 
@@ -4889,7 +4890,7 @@ snapshots:
       '@wdio/protocols': 9.30.0
       '@wdio/types': 9.29.1
       '@wdio/utils': 9.30.0(supports-color@8.1.1)(yauzl@2.10.0)
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.1
       https-proxy-agent: 7.0.6(supports-color@8.1.1)
       undici: 6.28.0
       ws: 8.21.1
