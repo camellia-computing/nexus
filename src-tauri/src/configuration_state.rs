@@ -1245,6 +1245,18 @@ mod tests {
         .expect("snapshot")
     }
 
+    fn snapshot_field(id: &str, field: &str) -> SourceSnapshot {
+        SourceSnapshot::parse(
+            id,
+            id,
+            ConfigurationFormat::Jsonc,
+            format!(r#"{{"{field}":true}}"#).as_bytes(),
+            1,
+            false,
+        )
+        .expect("snapshot")
+    }
+
     #[test]
     fn source_order_is_the_program_order_not_the_snapshot_map_order() {
         let spec = spec(vec![inline("z-source", true), inline("a-source", true)]);
@@ -1292,8 +1304,8 @@ mod tests {
             inline("override", true),
             inline("disabled", false),
         ]);
-        let base = snapshot("base");
-        let override_snapshot = snapshot("override");
+        let base = snapshot_field("base", "base");
+        let override_snapshot = snapshot_field("override", "override");
         let merge = camellia_nexus_core::merge_configuration_sources(
             ProgramKind::Xray,
             &[base.clone(), override_snapshot.clone()],
