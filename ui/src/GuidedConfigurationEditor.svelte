@@ -41,14 +41,14 @@
     const dependency = projectionById.get(descriptor.enabledWhen);
     // A Raw tombstone may remove the effective value while the user still
     // needs to re-enter the dependency chain and replace that override.
-    if (dependency?.status === 'overridden' || dependency?.status === 'custom') return true;
+    if (dependency?.status === 'overridden' || dependency?.status === 'rawDecision' || dependency?.status === 'custom') return true;
     return dependency?.value === true;
   }
 
   function dependencyHint(descriptor: GuidedSettingDescriptor): string | undefined {
     if (!descriptor.enabledWhen) return undefined;
     const dependency = projectionById.get(descriptor.enabledWhen);
-    if (dependency?.status === 'overridden') return 'The parent setting is controlled by Raw configuration.';
+    if (dependency?.status === 'overridden' || dependency?.status === 'rawDecision') return 'The parent setting has a Raw final decision.';
     return dependency?.value === true ? undefined : 'Dependency unavailable';
   }
 
@@ -57,7 +57,7 @@
     dispatch('change', {
       settingId: descriptor.id,
       value,
-      replaceRawOverride: projection.status === 'overridden',
+      replaceRawOverride: false,
     });
   }
 
@@ -66,7 +66,7 @@
     dispatch('change', {
       settingId: descriptor.id,
       value: undefined,
-      replaceRawOverride: projection.status === 'overridden',
+      replaceRawOverride: false,
     });
   }
 
@@ -74,7 +74,8 @@
     switch (projection.status) {
       case 'explicit': return 'Explicit';
       case 'custom': return 'Custom / Advanced';
-      case 'overridden': return 'Overridden by Raw';
+      case 'overridden':
+      case 'rawDecision': return 'Final decision in Raw';
       default: return 'Following source';
     }
   }
@@ -100,6 +101,7 @@
     CORE_INVALID: 'The Core rejected this candidate; Applied and Last Known Good were retained.',
     CORE_TARGET_CHANGED: 'The Core compatibility target changed; review and validate the candidate again.',
     CORE_TARGET_SOURCE_REJECTED: 'A source item is not expressible for the selected Core compatibility target.',
+    RAW_DECISION_SUPERSEDED: 'The upstream value changed after this Raw decision was created. Resolve it in Final configuration.',
   };
 
   function diagnosticMessage(code: string, message: string, messageKey?: string): string {
@@ -123,7 +125,7 @@
   function conflictMessage(reason: string, messageKey?: string): string {
     if (messageKey === 'CONFIGURATION_RAW_OVERRIDE'
       || reason === 'Dashboard Guided intent is overridden by Raw configuration') {
-      return translate('This setting is currently overridden by Raw configuration.');
+      return translate('This setting currently has a Raw final decision.');
     }
     if (messageKey === 'CONFIGURATION_RAW_CONFLICT') {
       return translate('The Raw operation conflicts with the current source or Guided value.');
@@ -168,7 +170,7 @@
           {@const projection = projectionFor(descriptor)}
           {@const controlDisabled = disabled || !dependencyEnabled(descriptor)}
           {@const dependencyMessage = dependencyHint(descriptor)}
-          <article class:custom={projection.status === 'custom'} class:overridden={projection.status === 'overridden'}>
+          <article class:custom={projection.status === 'custom'} class:overridden={projection.status === 'overridden' || projection.status === 'rawDecision'}>
             {#if index === 0}<h3 class="setting-category">{$t(categoryLabel(category))}</h3>{/if}
             <div class="setting-copy">
               <strong>{$t(descriptor.label)}</strong>
@@ -205,11 +207,11 @@
                 <input type="text" value={typeof effectiveValue(descriptor) === 'string' ? String(effectiveValue(descriptor)) : ''} disabled={controlDisabled} aria-label={$t(descriptor.label)} on:change={(event) => change(descriptor, event.currentTarget.value)} />
               {/if}
               <button type="button" on:click={() => reset(descriptor)} disabled={controlDisabled || projection.status === 'inherited'}>
-                {$t(projection.status === 'overridden' ? 'Remove Raw override and follow source' : 'Follow source')}
+                {$t('Follow source')}
               </button>
             </div>
-            {#if projection.status === 'overridden'}
-              <p>{$t('This setting is currently overridden by Raw configuration.')} {$t('Changing it will remove only the overlapping Raw operation.')}</p>
+            {#if projection.status === 'overridden' || projection.status === 'rawDecision'}
+              <p>{$t('This setting currently has a Raw final decision.')} {$t('Changing it updates the upstream value and re-evaluates this Raw path.')}</p>
             {:else if projection.status === 'custom'}
               <p>{$t('The effective configuration cannot be represented safely by this simple control.')}</p>
             {/if}
@@ -232,7 +234,7 @@
 </section>
 
 <style>
-  .guided-workspace { display: grid; gap: 14px; margin-bottom: var(--ui-gap-md, 16px); padding: 16px; border: 1px solid var(--border-color, rgba(127,127,127,.28)); border-radius: 14px; background: var(--panel-background, rgba(127,127,127,.045)); }
+  .guided-workspace { display: grid; gap: 14px; margin-bottom: var(--ui-gap-md, 16px); padding: 16px; border: 1px solid var(--border-color, rgba(127,127,127,.28)); border-radius: 14px; background: var(--panel-background, rgba(127,127,127,.045)); container-type: inline-size; }
   header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
   header > div, .setting-copy { display: grid; gap: 3px; }
   header small, .setting-copy small { opacity: .72; line-height: 1.35; }
@@ -240,7 +242,11 @@
   .candidate-state.pending { background: rgba(220, 160, 40, .14); }
   .candidate-state.invalid { background: rgba(210, 70, 70,.14); }
   .candidate-state.retained { background: rgba(75, 120, 190, .14); }
-  .guided-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 300px)); justify-content: start; gap: 10px; align-items: stretch; }
+  /* The workspace is narrower than the viewport once the program sidebar and
+     panel padding are accounted for.  Flexible tracks let two short settings
+     share that real width instead of making auto-fill reserve a 300px track
+     and leaving a large empty column on the right. */
+  .guided-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; align-items: stretch; }
   .setting-category { margin: 0; font-size: .78rem; font-weight: 700; letter-spacing: .02em; text-transform: capitalize; opacity: .7; }
   article { display: grid; gap: 8px; align-content: start; min-width: 0; min-height: 0; padding: 11px; border: 1px solid var(--border-color, rgba(127,127,127,.22)); border-radius: 11px; background: var(--surface-background, rgba(255,255,255,.025)); }
   article.custom, article.overridden { border-style: dashed; }
@@ -254,6 +260,7 @@
   .dependency-note { color: var(--ui-text-warning, inherit); }
   .guided-diagnostics { display: grid; gap: 5px; padding: 10px; border-radius: 9px; background: rgba(210,70,70,.09); }
   .guided-diagnostics span { display: flex; gap: 8px; font-size: .82rem; }
-  @media (max-width: 720px) { .guided-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); } header { align-items: stretch; flex-direction: column; } }
+  @container (max-width: 480px) { .guided-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) { header { align-items: stretch; flex-direction: column; } }
   @media (max-width: 520px) { .guided-grid { grid-template-columns: 1fr; } .setting-control { align-items: stretch; } .setting-control button { margin-inline-start: 0; } }
 </style>

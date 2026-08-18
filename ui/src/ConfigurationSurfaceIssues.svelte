@@ -14,6 +14,9 @@
     CORE_INVALID: 'The Core rejected this candidate; Applied and Last Known Good were retained.',
     CORE_TARGET_CHANGED: 'The Core compatibility target changed; review and validate the candidate again.',
     CORE_TARGET_SOURCE_REJECTED: 'A source item is not expressible for the selected Core compatibility target.',
+    RAW_DECISION_SUPERSEDED: 'The upstream value changed after this Raw decision was created. Resolve it before saving or applying.',
+    SOURCE_VALUE_CONFLICT: 'A source value conflict must be resolved before this candidate can be saved.',
+    LAYER_OWNERSHIP_CONFLICT: 'The same semantic path is owned by more than one configuration layer. Choose one owner before saving.',
   };
 
   function owns(issue: { scope?: { surface: ConfigurationSurface } }): boolean {
@@ -27,6 +30,15 @@
   }
 
   function conflictMessage(messageKey?: string): string {
+    if (messageKey === 'RAW_DECISION_SUPERSEDED') {
+      return 'The upstream value changed after this Raw decision was created. Resolve it before saving or applying.';
+    }
+    if (messageKey === 'SOURCE_VALUE_CONFLICT') {
+      return 'A source value conflict must be resolved before this candidate can be saved.';
+    }
+    if (messageKey === 'LAYER_OWNERSHIP_CONFLICT') {
+      return 'The same semantic path is owned by more than one configuration layer. Choose one owner before saving.';
+    }
     if (messageKey === 'CONFIGURATION_RAW_OVERRIDE') {
       return 'Raw configuration overlaps fields owned by this integration. Confirm takeover before Details can replace them.';
     }
@@ -51,7 +63,7 @@
     {/each}
     {#each conflicts as conflict, index (`conflict-${conflict.semanticPath}-${index}`)}
       <article>
-        <div><strong>{$t('Configuration conflict')}</strong><code>{conflict.semanticPath}</code></div>
+        <div><strong>{$t('Configuration conflict')}</strong><code>{conflict.semanticPath}</code>{#if conflict.scope?.ownerId}<code>{conflict.scope.ownerId}</code>{/if}</div>
         <p>{$t(conflictMessage(conflict.messageKey))}</p>
       </article>
     {/each}

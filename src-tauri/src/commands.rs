@@ -3723,43 +3723,13 @@ pub async fn create_program(
     {
         tracing::warn!(program = %program_id, %error, "configuration state initialization requires lazy recovery");
     }
-    if dashboard_configured {
-        match state
+    if dashboard_configured
+        && let Err(error) = state
             .configuration_state
             .sync_managed_dashboard(&state.manager, &program_id)
             .await
-        {
-            Ok(view)
-                if view.desired.validation
-                    == camellia_nexus_core::CandidateValidationStatus::Valid =>
-            {
-                match authorize_runtime_protected(
-                    &state,
-                    ProtectedOperation::UseManagedConfigSources,
-                )
-                .await
-                {
-                    Ok(_operation) => {
-                        if let Err(error) = state
-                            .configuration_state
-                            .apply_candidate(&state.manager, &program_id, view.generation, false)
-                            .await
-                        {
-                            tracing::warn!(program = %program_id, %error, "managed Dashboard intent was not applied after creation");
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(program = %program_id, %error, "managed Dashboard intent awaits authorization")
-                    }
-                }
-            }
-            Ok(view) => {
-                tracing::warn!(program = %program_id, validation = ?view.desired.validation, "managed Dashboard intent is not valid after creation")
-            }
-            Err(error) => {
-                tracing::warn!(program = %program_id, %error, "managed Dashboard intent could not be prepared after creation")
-            }
-        }
+    {
+        tracing::warn!(program = %program_id, %error, "managed Dashboard candidate could not be prepared after creation");
     }
     Ok(())
 }
@@ -3778,7 +3748,7 @@ pub async fn update_program(
         false,
         expected_configuration_generation,
         replace_overlapping_raw.unwrap_or(false),
-        apply_after_commit.unwrap_or(true),
+        apply_after_commit.unwrap_or(false),
     )
     .await
 }
@@ -3797,7 +3767,7 @@ pub async fn update_program_and_restart(
         true,
         expected_configuration_generation,
         replace_overlapping_raw.unwrap_or(false),
-        apply_after_commit.unwrap_or(true),
+        apply_after_commit.unwrap_or(false),
     )
     .await
 }
@@ -3813,7 +3783,7 @@ async fn update_program_transaction(
         restart_after_update,
         None,
         false,
-        true,
+        false,
     )
     .await
 }
@@ -3824,7 +3794,7 @@ async fn update_program_transaction_with_configuration(
     restart_after_update: bool,
     expected_configuration_generation: Option<u64>,
     replace_overlapping_raw: bool,
-    apply_after_commit: bool,
+    _apply_after_commit: bool,
 ) -> Result<()> {
     spec.validate()?;
     let authorization_requirements = RuntimeAuthorizationRequirements::for_program(
@@ -3926,43 +3896,26 @@ async fn update_program_transaction_with_configuration(
             return Err(error);
         }
     };
-    if let Some(prepared) = prepared_managed_update {
-        let view = match state
+    if let Some(prepared) = prepared_managed_update
+        && let Err(error) = state
             .configuration_state
             .commit_managed_integration_update(&state.manager, &program_id, spec, prepared)
             .await
-        {
-            Ok(view) => view,
-            Err(error) => {
-                match state.manager.prepare_update(current.clone()).await {
-                    Ok(rollback) => {
-                        if let Err(rollback_error) =
-                            state.manager.commit_update(rollback, false).await
-                        {
-                            tracing::error!(program = %program_id, %rollback_error, "program rollback failed after managed integration state failure");
-                        }
-                    }
-                    Err(rollback_error) => {
-                        tracing::error!(program = %program_id, %rollback_error, "program rollback could not be prepared after managed integration state failure");
-                    }
+    {
+        match state.manager.prepare_update(current.clone()).await {
+            Ok(rollback) => {
+                if let Err(rollback_error) = state.manager.commit_update(rollback, false).await {
+                    tracing::error!(program = %program_id, %rollback_error, "program rollback failed after managed integration state failure");
                 }
-                if let Some(transaction) = credential_transaction.take() {
-                    transaction.rollback()?;
-                }
-                return Err(error);
             }
-        };
-        if apply_after_commit
-            && view.desired.validation == camellia_nexus_core::CandidateValidationStatus::Valid
-        {
-            let _operation =
-                authorize_runtime_protected(state, ProtectedOperation::UseManagedConfigSources)
-                    .await?;
-            state
-                .configuration_state
-                .apply_candidate(&state.manager, &program_id, view.generation, false)
-                .await?;
+            Err(rollback_error) => {
+                tracing::error!(program = %program_id, %rollback_error, "program rollback could not be prepared after managed integration state failure");
+            }
         }
+        if let Some(transaction) = credential_transaction.take() {
+            transaction.rollback()?;
+        }
+        return Err(error);
     }
     if let Some(transaction) = credential_transaction
         && let Err(error) = transaction.commit()
@@ -4110,6 +4063,18 @@ pub async fn get_configuration_state(
 }
 
 #[tauri::command]
+pub async fn get_configuration_workspace(
+    state: State<'_, AppState>,
+    program_id: String,
+) -> Result<camellia_nexus_core::ConfigurationStateView> {
+    authorize_safety(&state, SafetyOperation::View)?;
+    state
+        .configuration_state
+        .load_view(&state.manager, &id(program_id)?)
+        .await
+}
+
+#[tauri::command]
 pub async fn set_guided_intent(
     state: State<'_, AppState>,
     program_id: String,
@@ -4230,6 +4195,33 @@ pub async fn resolve_configuration_conflict(
         .await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveRawDecisionCommand {
+    pub decision_id: String,
+    pub resolution: camellia_nexus_core::RawDecisionResolution,
+    pub expected_generation: u64,
+}
+
+#[tauri::command]
+pub async fn resolve_raw_decision(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: ResolveRawDecisionCommand,
+) -> Result<camellia_nexus_core::ConfigurationStateView> {
+    authorize_protected(&state, ProtectedOperation::EditPremiumConfiguration)?;
+    state
+        .configuration_state
+        .resolve_raw_decision(
+            &state.manager,
+            &id(program_id)?,
+            request.decision_id,
+            request.resolution,
+            request.expected_generation,
+        )
+        .await
+}
+
 #[tauri::command]
 pub async fn discard_configuration_draft(
     state: State<'_, AppState>,
@@ -4258,6 +4250,26 @@ pub async fn commit_configuration_draft(
     state
         .configuration_state
         .commit_configuration_draft(&state.manager, &program_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn validate_configuration_candidate(
+    state: State<'_, AppState>,
+    program_id: String,
+    expected_generation: u64,
+) -> Result<camellia_nexus_core::ConfigurationStateView> {
+    let program_id = id(program_id)?;
+    let (spec, _) = state.manager.get(&program_id).await?;
+    let requirements = RuntimeAuthorizationRequirements::for_configuration(
+        ProtectedOperation::RunAdvancedDiagnostics,
+        &spec,
+    );
+    requirements.authorize(&state)?;
+    let _operation = authorize_runtime_requirements(&state, &requirements).await?;
+    state
+        .configuration_state
+        .validate_candidate(&state.manager, &program_id, expected_generation)
         .await
 }
 
@@ -4299,15 +4311,6 @@ pub async fn refresh_configuration_sources(
         .configuration_state
         .refresh(&state.manager, &program_id, Some(&local_base), &credentials)
         .await?;
-    if view.desired.validation == camellia_nexus_core::CandidateValidationStatus::Valid {
-        let _operation =
-            authorize_runtime_protected(&state, ProtectedOperation::UseManagedConfigSources)
-                .await?;
-        return state
-            .configuration_state
-            .apply_candidate(&state.manager, &program_id, view.generation, false)
-            .await;
-    }
     Ok(view)
 }
 
@@ -4416,15 +4419,6 @@ pub async fn update_configuration_sources(
         .finish_source_update(&program_id)
         .await?;
     drop(configuration_lease);
-    if view.desired.validation == camellia_nexus_core::CandidateValidationStatus::Valid {
-        let _operation =
-            authorize_runtime_protected(&state, ProtectedOperation::UseManagedConfigSources)
-                .await?;
-        return state
-            .configuration_state
-            .apply_candidate(&state.manager, &program_id, view.generation, false)
-            .await;
-    }
     Ok(view)
 }
 

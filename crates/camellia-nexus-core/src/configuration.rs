@@ -14,8 +14,9 @@ use crate::{
     parse_dashboard_interval_nanos,
 };
 
-pub const CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 4;
-pub const LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 3;
+pub const CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 5;
+pub const LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 4;
+const LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 3;
 const DASHBOARD_INTENT_PREFIX: &str = "dashboard.";
 const MANAGED_SING_BOX_API_TAG: &str = "camellia-nexus-api";
 const MANAGED_SING_BOX_CLASH_UI: &str = "clash-dashboard";
@@ -367,6 +368,7 @@ pub fn merge_configuration_sources(
     for snapshot in snapshots {
         values.push(snapshot.value()?);
     }
+    let conflicts = collect_source_value_conflicts(kind, snapshots, &values);
     let mut merged = values.remove(0);
     let mut merged_provenance = ProvenanceNode::from_value(&merged, &snapshots[0].source_id);
     ensure_root_mapping(&merged)?;
@@ -400,7 +402,7 @@ pub fn merge_configuration_sources(
         content_hash: hash_bytes(content.as_bytes()),
         content,
         provenance: build_source_provenance(&merged_provenance),
-        conflicts: Vec::new(),
+        conflicts,
     })
 }
 
@@ -413,6 +415,231 @@ fn ensure_root_mapping(value: &Value) -> Result<()> {
             "Configuration source root must be an object or mapping",
         ))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceSequencePolicy {
+    Append,
+    Identity(&'static str),
+    Replace,
+}
+
+/// Detect same-level Source conflicts independently from the deterministic
+/// preview merge.  The preview remains useful while a conflict is being
+/// repaired, but the returned blocking issues prevent Save/Validate/Apply.
+/// Comparing the original source documents (instead of the progressively
+/// merged preview) also keeps both owning source ids available to the UI.
+fn collect_source_value_conflicts(
+    kind: ProgramKind,
+    snapshots: &[SourceSnapshot],
+    values: &[Value],
+) -> Vec<ConfigurationConflict> {
+    let mut conflicts = BTreeMap::new();
+    for right_index in 1..values.len() {
+        for left_index in 0..right_index {
+            compare_source_values(
+                kind,
+                &values[left_index],
+                &values[right_index],
+                &mut Vec::new(),
+                &snapshots[left_index].source_id,
+                &snapshots[right_index].source_id,
+                &mut conflicts,
+            );
+        }
+    }
+    conflicts.into_values().collect()
+}
+
+fn compare_source_values(
+    kind: ProgramKind,
+    left: &Value,
+    right: &Value,
+    path: &mut SemanticPath,
+    left_source: &str,
+    right_source: &str,
+    conflicts: &mut BTreeMap<String, ConfigurationConflict>,
+) {
+    if values_semantically_equal(left, right, path) {
+        return;
+    }
+    match (left, right) {
+        (Value::Object(left), Value::Object(right)) => {
+            for (key, left_value) in left {
+                let Some(right_value) = right.get(key) else {
+                    continue;
+                };
+                path.push(SemanticPathSegment::Key { key: key.clone() });
+                compare_source_values(
+                    kind,
+                    left_value,
+                    right_value,
+                    path,
+                    left_source,
+                    right_source,
+                    conflicts,
+                );
+                path.pop();
+            }
+        }
+        (Value::Array(left), Value::Array(right)) => match source_sequence_policy(kind, path) {
+            SourceSequencePolicy::Append => {
+                if let Some(identity_field) = shared_sequence_identity_field(left, right) {
+                    compare_identity_source_sequences(
+                        kind,
+                        left,
+                        right,
+                        identity_field,
+                        path,
+                        left_source,
+                        right_source,
+                        conflicts,
+                    );
+                }
+            }
+            SourceSequencePolicy::Identity(identity_field) => {
+                compare_identity_source_sequences(
+                    kind,
+                    left,
+                    right,
+                    identity_field,
+                    path,
+                    left_source,
+                    right_source,
+                    conflicts,
+                );
+            }
+            SourceSequencePolicy::Replace => insert_source_value_conflict(
+                kind,
+                path,
+                &Value::Array(left.clone()),
+                &Value::Array(right.clone()),
+                left_source,
+                right_source,
+                conflicts,
+            ),
+        },
+        // Xray uses null as an explicit "do not replace this section" marker.
+        // Treating that marker as a value conflict would block a merge whose
+        // established Core-specific semantics already preserve the old value.
+        (_, Value::Null) if kind == ProgramKind::Xray => {}
+        _ => insert_source_value_conflict(
+            kind,
+            path,
+            left,
+            right,
+            left_source,
+            right_source,
+            conflicts,
+        ),
+    }
+}
+
+fn source_sequence_policy(kind: ProgramKind, path: &[SemanticPathSegment]) -> SourceSequencePolicy {
+    let last_key = path.iter().rev().find_map(|segment| match segment {
+        SemanticPathSegment::Key { key } => Some(key.as_str()),
+        SemanticPathSegment::Identity { .. } => None,
+    });
+    match kind {
+        ProgramKind::SingBox => SourceSequencePolicy::Append,
+        ProgramKind::Xray if matches!(last_key, Some("inbounds" | "outbounds")) => {
+            SourceSequencePolicy::Identity("tag")
+        }
+        ProgramKind::Xray => SourceSequencePolicy::Replace,
+        ProgramKind::Mihomo if matches!(last_key, Some("proxies" | "proxy-groups" | "listeners")) => {
+            SourceSequencePolicy::Identity("name")
+        }
+        ProgramKind::Mihomo
+            if last_key == Some("rules")
+                || path.iter().any(|segment| {
+                    matches!(segment, SemanticPathSegment::Key { key } if key == "sub-rules")
+                }) =>
+        {
+            SourceSequencePolicy::Append
+        }
+        ProgramKind::Mihomo => SourceSequencePolicy::Replace,
+        ProgramKind::Generic => SourceSequencePolicy::Replace,
+    }
+}
+
+fn shared_sequence_identity_field(left: &[Value], right: &[Value]) -> Option<&'static str> {
+    ["tag", "name", "id"].into_iter().find(|field| {
+        left.iter()
+            .any(|item| item.get(*field).and_then(Value::as_str).is_some())
+            && right
+                .iter()
+                .any(|item| item.get(*field).and_then(Value::as_str).is_some())
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compare_identity_source_sequences(
+    kind: ProgramKind,
+    left: &[Value],
+    right: &[Value],
+    identity_field: &str,
+    path: &mut SemanticPath,
+    left_source: &str,
+    right_source: &str,
+    conflicts: &mut BTreeMap<String, ConfigurationConflict>,
+) {
+    for left_item in left {
+        let Some(identity) = left_item.get(identity_field).and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(right_item) = right
+            .iter()
+            .find(|item| item.get(identity_field).and_then(Value::as_str) == Some(identity))
+        else {
+            continue;
+        };
+        path.push(SemanticPathSegment::Identity {
+            field: identity_field.to_owned(),
+            value: identity.to_owned(),
+        });
+        compare_source_values(
+            kind,
+            left_item,
+            right_item,
+            path,
+            left_source,
+            right_source,
+            conflicts,
+        );
+        path.pop();
+    }
+}
+
+fn insert_source_value_conflict(
+    kind: ProgramKind,
+    path: &[SemanticPathSegment],
+    left: &Value,
+    right: &Value,
+    left_source: &str,
+    right_source: &str,
+    conflicts: &mut BTreeMap<String, ConfigurationConflict>,
+) {
+    let semantic_path = display_semantic_path(path);
+    conflicts.entry(semantic_path.clone()).or_insert_with(|| {
+        let effective = if kind == ProgramKind::SingBox {
+            left
+        } else {
+            right
+        };
+        ConfigurationConflict {
+            semantic_path,
+            reason: format!(
+                "Configuration sources {left_source} and {right_source} provide different values"
+            ),
+            severity: ConflictSeverity::Error,
+            message_key: Some("SOURCE_VALUE_CONFLICT".into()),
+            scope: ConfigurationIssueScope::sources(right_source.to_owned()),
+            source_value: Some(left.clone()),
+            guided_value: None,
+            raw_value: Some(right.clone()),
+            effective_value: Some(effective.clone()),
+        }
+    });
 }
 
 fn merge_sing_box_value(
@@ -537,7 +764,19 @@ fn merge_xray_root(
                 !append_outbounds,
             )?,
             _ => {
-                if !value.is_null() {
+                if value.is_null() {
+                    continue;
+                }
+                if let Some(existing) = current.get_mut(&key) {
+                    merge_xray_value(
+                        existing,
+                        current_provenance
+                            .get_mut(&key)
+                            .expect("provenance tree follows source document"),
+                        value,
+                        provenance,
+                    );
+                } else {
                     current.insert(key.clone(), value);
                     current_provenance.insert(key, provenance);
                 }
@@ -545,6 +784,56 @@ fn merge_xray_root(
         }
     }
     Ok(())
+}
+
+/// Xray's top-level named sequences retain their dedicated identity policy,
+/// while ordinary object sections can safely merge disjoint fields.  A later
+/// scalar/list remains the deterministic preview winner; the independent
+/// Source conflict pass blocks activation when those values differ.
+fn merge_xray_value(
+    current: &mut Value,
+    current_provenance: &mut ProvenanceNode,
+    next: Value,
+    next_provenance: ProvenanceNode,
+) {
+    match (current, current_provenance, next, next_provenance) {
+        (
+            Value::Object(current),
+            ProvenanceNode::Object {
+                fields: current_provenance,
+                source_ids: current_sources,
+            },
+            Value::Object(next),
+            ProvenanceNode::Object {
+                fields: mut next_provenance,
+                source_ids: next_sources,
+            },
+        ) => {
+            for (key, value) in next {
+                let provenance = next_provenance
+                    .remove(&key)
+                    .expect("provenance tree follows source document");
+                if let Some(existing) = current.get_mut(&key) {
+                    merge_xray_value(
+                        existing,
+                        current_provenance
+                            .get_mut(&key)
+                            .expect("provenance tree follows source document"),
+                        value,
+                        provenance,
+                    );
+                } else {
+                    current.insert(key.clone(), value);
+                    current_provenance.insert(key, provenance);
+                }
+            }
+            merge_source_ids(current_sources, next_sources);
+        }
+        (current, current_provenance, next, next_provenance) => {
+            *current = next;
+            *current_provenance = next_provenance;
+        }
+    }
 }
 
 fn merge_xray_env(
@@ -1192,13 +1481,67 @@ pub enum IntentOperation {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RawDecisionOrigin {
+    User,
+    Migrated,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RawDecisionStatus {
+    Active,
+    Superseded,
+    Dormant,
+    Resolved,
+}
+
+impl RawDecisionStatus {
+    fn participates_in_candidate(self) -> bool {
+        matches!(self, Self::Active | Self::Resolved)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RawDecisionBasis {
+    pub upstream_generation: u64,
+    pub upstream_content_hash: String,
+    pub upstream_path_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RawDecision {
+    pub decision_id: String,
+    pub operation: IntentOperation,
+    pub basis: RawDecisionBasis,
+    pub status: RawDecisionStatus,
+    pub origin: RawDecisionOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum RawDecisionResolution {
+    AcceptUpstream,
+    KeepRaw,
+    ManualEdit { value: Value },
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RawManualIntent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub based_on_revision: Option<ConfigurationRevision>,
-    #[serde(default)]
+    /// v4 compatibility input.  Schema v5 converts these operations into
+    /// basis-bound decisions before rebuilding a candidate and never writes
+    /// new entries here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<IntentOperation>,
+    #[serde(default)]
+    pub decisions: Vec<RawDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1425,6 +1768,7 @@ pub enum GuidedProjectionStatus {
     Explicit,
     Custom,
     Overridden,
+    RawDecision,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1926,9 +2270,11 @@ pub fn project_guided_settings(
     guided: &GuidedIntent,
     raw: &RawManualIntent,
 ) -> Vec<GuidedProjection> {
-    let raw_paths = raw
-        .operations
-        .iter()
+    // Superseded decisions remain visible to the owning surface so the user
+    // can reopen the Final configuration workspace.  Only dormant history is
+    // hidden from the projection; candidate application still filters through
+    // `candidate_raw_operations`.
+    let raw_paths = visible_raw_operations(raw)
         .map(intent_operation_path)
         .collect::<Vec<_>>();
     guided_setting_descriptors(kind)
@@ -1947,7 +2293,7 @@ pub fn project_guided_settings(
             GuidedProjection {
                 setting_id: descriptor.id.clone(),
                 status: if overridden {
-                    GuidedProjectionStatus::Overridden
+                    GuidedProjectionStatus::RawDecision
                 } else if guided.values.contains_key(&descriptor.id) {
                     GuidedProjectionStatus::Explicit
                 } else if value
@@ -1963,6 +2309,24 @@ pub fn project_guided_settings(
             }
         })
         .collect()
+}
+
+fn candidate_raw_operations(raw: &RawManualIntent) -> impl Iterator<Item = &IntentOperation> {
+    raw.operations.iter().chain(
+        raw.decisions
+            .iter()
+            .filter(|decision| decision.status.participates_in_candidate())
+            .map(|decision| &decision.operation),
+    )
+}
+
+fn visible_raw_operations(raw: &RawManualIntent) -> impl Iterator<Item = &IntentOperation> {
+    raw.operations.iter().chain(
+        raw.decisions
+            .iter()
+            .filter(|decision| decision.status != RawDecisionStatus::Dormant)
+            .map(|decision| &decision.operation),
+    )
 }
 
 fn guided_value_is_representable(descriptor: &GuidedSettingDescriptor, value: &Value) -> bool {
@@ -2047,6 +2411,121 @@ pub fn diff_raw_intent(base: &Value, edited: &Value) -> RawManualIntent {
     RawManualIntent {
         based_on_revision: None,
         operations,
+        decisions: Vec::new(),
+    }
+}
+
+pub fn diff_raw_decisions(
+    upstream: &Value,
+    edited: &Value,
+    upstream_generation: u64,
+) -> RawManualIntent {
+    let legacy = diff_raw_intent(upstream, edited);
+    RawManualIntent {
+        based_on_revision: None,
+        operations: Vec::new(),
+        decisions: bind_raw_operations(
+            legacy.operations,
+            upstream,
+            upstream_generation,
+            RawDecisionOrigin::User,
+        ),
+    }
+}
+
+fn semantic_path_values_equal(
+    left_root: &Value,
+    right_root: &Value,
+    path: &[SemanticPathSegment],
+) -> bool {
+    let left = raw_conflict_path_value(left_root, path).ok().flatten();
+    let right = raw_conflict_path_value(right_root, path).ok().flatten();
+    match (left, right) {
+        (Some(left), Some(right)) => values_semantically_equal(left, right, path),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn bind_raw_operations(
+    operations: Vec<IntentOperation>,
+    upstream: &Value,
+    upstream_generation: u64,
+    origin: RawDecisionOrigin,
+) -> Vec<RawDecision> {
+    let upstream_content_hash = semantic_document_hash(upstream);
+    operations
+        .into_iter()
+        .enumerate()
+        .map(|(index, operation)| {
+            let path = intent_operation_path(&operation);
+            let upstream_path_hash = semantic_path_value_hash(upstream, &path);
+            let decision_id = raw_decision_id(&operation, &upstream_content_hash, index);
+            RawDecision {
+                decision_id,
+                operation,
+                basis: RawDecisionBasis {
+                    upstream_generation,
+                    upstream_content_hash: upstream_content_hash.clone(),
+                    upstream_path_hash,
+                },
+                status: RawDecisionStatus::Active,
+                origin,
+            }
+        })
+        .collect()
+}
+
+fn semantic_document_hash(value: &Value) -> String {
+    hash_bytes(
+        serde_json::to_vec(value)
+            .expect("semantic JSON values are serializable")
+            .as_slice(),
+    )
+}
+
+fn semantic_path_value_hash(root: &Value, path: &[SemanticPathSegment]) -> String {
+    let value = raw_conflict_path_value(root, path).ok().flatten().cloned();
+    hash_bytes(
+        serde_json::to_vec(&value)
+            .expect("semantic path values are serializable")
+            .as_slice(),
+    )
+}
+
+fn raw_decision_id(
+    operation: &IntentOperation,
+    upstream_content_hash: &str,
+    index: usize,
+) -> String {
+    let encoded = serde_json::to_string(&(operation, upstream_content_hash, index))
+        .expect("Raw decisions are serializable");
+    format!("raw-{}", hash_bytes(encoded.as_bytes()))
+}
+
+fn reconcile_raw_decisions(
+    intent: &mut RawManualIntent,
+    upstream: &Value,
+    upstream_generation: u64,
+) {
+    if !intent.operations.is_empty() {
+        let legacy = std::mem::take(&mut intent.operations);
+        intent.decisions.extend(bind_raw_operations(
+            legacy,
+            upstream,
+            upstream_generation,
+            RawDecisionOrigin::Migrated,
+        ));
+    }
+    for decision in &mut intent.decisions {
+        if !decision.status.participates_in_candidate() {
+            continue;
+        }
+        let path = intent_operation_path(&decision.operation);
+        let current_path_hash = semantic_path_value_hash(upstream, &path);
+        if current_path_hash != decision.basis.upstream_path_hash {
+            decision.status = RawDecisionStatus::Superseded;
+        }
     }
 }
 
@@ -2143,7 +2622,7 @@ fn diff_value(
     }
 }
 
-fn values_semantically_equal(base: &Value, edited: &Value, path: &SemanticPath) -> bool {
+fn values_semantically_equal(base: &Value, edited: &Value, path: &[SemanticPathSegment]) -> bool {
     if base == edited {
         return true;
     }
@@ -2202,12 +2681,103 @@ pub fn apply_raw_intent(
 ) -> (Value, Vec<ConfigurationConflict>) {
     let mut effective = base.clone();
     let mut conflicts = Vec::new();
-    for operation in &intent.operations {
+    for operation in candidate_raw_operations(intent) {
         if let Err(conflict) = apply_intent_operation(&mut effective, operation) {
             conflicts.push(*conflict);
         }
     }
     (effective, conflicts)
+}
+
+fn raw_decision_conflicts(
+    upstream: &Value,
+    intent: &RawManualIntent,
+) -> Vec<ConfigurationConflict> {
+    intent
+        .decisions
+        .iter()
+        .filter(|decision| decision.status == RawDecisionStatus::Superseded)
+        .map(|decision| {
+            let path = intent_operation_path(&decision.operation);
+            let upstream_value = raw_conflict_path_value(upstream, &path)
+                .ok()
+                .flatten()
+                .cloned();
+            ConfigurationConflict {
+                semantic_path: display_semantic_path(&path),
+                reason: "The upstream configuration changed after this Raw decision was made"
+                    .into(),
+                severity: ConflictSeverity::Error,
+                message_key: Some("RAW_DECISION_SUPERSEDED".into()),
+                scope: ConfigurationIssueScope {
+                    surface: ConfigurationSurface::Configuration,
+                    owner_id: Some(decision.decision_id.clone()),
+                },
+                source_value: upstream_value.clone(),
+                guided_value: None,
+                raw_value: intent_operation_value(&decision.operation),
+                effective_value: upstream_value,
+            }
+        })
+        .collect()
+}
+
+fn intent_operation_value(operation: &IntentOperation) -> Option<Value> {
+    match operation {
+        IntentOperation::Set { value, .. } => Some(value.clone()),
+        IntentOperation::Delete { .. } => None,
+        IntentOperation::ReorderIdentities { order, .. } => Some(Value::Array(
+            order
+                .iter()
+                .map(|(field, value)| json!({ "field": field, "value": value }))
+                .collect(),
+        )),
+        IntentOperation::ReplaceSequence { value, .. } => Some(Value::Array(value.clone())),
+    }
+}
+
+pub fn resolve_raw_decision(
+    intent: &mut RawManualIntent,
+    upstream: &Value,
+    upstream_generation: u64,
+    decision_id: &str,
+    resolution: RawDecisionResolution,
+) -> Result<()> {
+    let upstream_content_hash = semantic_document_hash(upstream);
+    let decision = intent
+        .decisions
+        .iter_mut()
+        .find(|decision| decision.decision_id == decision_id)
+        .ok_or_else(|| {
+            CamelliaNexusError::new(ErrorCode::NotFound, "Raw decision was not found")
+        })?;
+    let path = intent_operation_path(&decision.operation);
+    match resolution {
+        RawDecisionResolution::AcceptUpstream => {
+            decision.status = RawDecisionStatus::Dormant;
+        }
+        RawDecisionResolution::KeepRaw => {
+            decision.basis = RawDecisionBasis {
+                upstream_generation,
+                upstream_content_hash,
+                upstream_path_hash: semantic_path_value_hash(upstream, &path),
+            };
+            decision.status = RawDecisionStatus::Resolved;
+        }
+        RawDecisionResolution::ManualEdit { value } => {
+            decision.operation = IntentOperation::Set {
+                path: path.clone(),
+                value,
+            };
+            decision.basis = RawDecisionBasis {
+                upstream_generation,
+                upstream_content_hash,
+                upstream_path_hash: semantic_path_value_hash(upstream, &path),
+            };
+            decision.status = RawDecisionStatus::Resolved;
+        }
+    }
+    Ok(())
 }
 
 /// Performs a semantic three-way rebase of a Raw document.  The original
@@ -2918,28 +3488,34 @@ pub struct ConfigurationState {
 }
 
 impl ConfigurationState {
-    /// Upgrade the v3 persisted shape where dashboard settings lived in the
-    /// Common Guided map.  This is intentionally deterministic and does not
-    /// touch Applied/LKG; callers can rebuild Desired after loading the owning
-    /// ProgramSpec.
+    /// Upgrade persisted configuration state without touching Applied/LKG.
+    /// v3 separated Details-owned dashboard values from Common Guided; v5
+    /// replaces unconditional Raw operations with basis-bound decisions.
+    /// Raw operation binding is completed by `rebuild_desired`, where the
+    /// authoritative upstream document is available.
     pub fn migrate_legacy_schema(&mut self) -> bool {
-        if self.schema_version != LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION {
-            return false;
-        }
-        let legacy_dashboard = self
-            .guided_intent
-            .values
-            .keys()
-            .filter(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in legacy_dashboard {
-            if let Some(value) = self.guided_intent.values.remove(&key) {
-                self.managed_intent.values.insert(key, value);
+        let mut migrated = false;
+        if self.schema_version == LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION {
+            let legacy_dashboard = self
+                .guided_intent
+                .values
+                .keys()
+                .filter(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
+                .cloned()
+                .collect::<Vec<_>>();
+            for key in legacy_dashboard {
+                if let Some(value) = self.guided_intent.values.remove(&key) {
+                    self.managed_intent.values.insert(key, value);
+                }
             }
+            self.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
+            migrated = true;
         }
-        self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
-        true
+        if self.schema_version == LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION {
+            self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
+            migrated = true;
+        }
+        migrated
     }
 
     /// Canonicalize only v3 Raw operations that overlap managed fields.  Old
@@ -3007,7 +3583,39 @@ impl ConfigurationState {
         })
     }
 
+    pub fn upstream_document(&self) -> Result<Value> {
+        let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
+        let mut upstream = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
+        apply_dashboard_intent(self.kind, &mut upstream, &self.managed_intent)?;
+        Ok(upstream)
+    }
+
+    pub fn upstream_content(&self) -> Result<String> {
+        serialize_semantic_document(self.format, &self.upstream_document()?)
+    }
+
+    pub fn resolve_raw_decision(
+        &mut self,
+        decision_id: &str,
+        resolution: RawDecisionResolution,
+        created_unix_ms: u64,
+    ) -> Result<()> {
+        let upstream = self.upstream_document()?;
+        resolve_raw_decision(
+            &mut self.raw_intent,
+            &upstream,
+            self.generation,
+            decision_id,
+            resolution,
+        )?;
+        self.rebuild_desired(created_unix_ms)
+    }
+
     pub fn rebuild_desired(&mut self, created_unix_ms: u64) -> Result<()> {
+        let previous_content = self.desired.content.clone();
+        let previous_conflicts = self.desired.conflicts.clone();
+        let previous_profile_hash = self.desired.compatibility_profile_hash.clone();
+        let previous_decisions = self.raw_intent.decisions.clone();
         let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
         // Deterministically migrate dashboard values that may have been loaded
         // from a v3 state (or supplied by an older caller) before building the
@@ -3036,6 +3644,7 @@ impl ConfigurationState {
         // provenance separate from the managed layer.
         let mut effective_guided = guided;
         apply_dashboard_intent(self.kind, &mut effective_guided, &self.managed_intent)?;
+        reconcile_raw_decisions(&mut self.raw_intent, &effective_guided, self.generation);
         let (effective, mut conflicts) = apply_raw_intent(&effective_guided, &self.raw_intent);
         self.provenance = apply_provenance_layer(
             &effective_guided,
@@ -3043,13 +3652,40 @@ impl ConfigurationState {
             &guided_provenance,
             ProvenanceLayer::Raw,
         );
-        conflicts.extend(dashboard_raw_conflicts(
-            self.kind,
-            &self.managed_intent,
-            &self.raw_intent,
-        ));
+        // Preserve blocking issues produced while merging Sources. Rebuilding
+        // downstream layers must not make a source conflict disappear.
+        conflicts.extend(self.base.conflicts.clone());
+        conflicts.extend(raw_decision_conflicts(&effective_guided, &self.raw_intent));
         let content = serialize_semantic_document(self.format, &effective)?;
+        let decisions_changed = previous_decisions != self.raw_intent.decisions;
+        let recovered_source_issue = !self.source_statuses.is_empty()
+            && self.desired.diagnostics.iter().any(|diagnostic| {
+                diagnostic.scope.surface == ConfigurationSurface::Sources
+                    && matches!(
+                        diagnostic.code.as_str(),
+                        "SOURCE_INVALID" | "SOURCE_UNAVAILABLE"
+                    )
+            })
+            && self.source_statuses.values().all(|status| {
+                !matches!(
+                    status.freshness,
+                    SourceFreshness::Invalid | SourceFreshness::Unavailable
+                )
+            });
+        let candidate_changed = previous_content != content
+            || previous_conflicts != conflicts
+            || previous_profile_hash != self.compatibility_profile.profile_hash
+            || recovered_source_issue;
+        if !decisions_changed && !candidate_changed {
+            // Re-entering a tab, refreshing an unchanged source, or repeating
+            // the same Guided/Details value is a read-equivalent operation.
+            // Keep generation and native evidence stable instead of creating a
+            // phantom revision that can invalidate an otherwise valid Apply.
+            self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
+            return Ok(());
+        }
         self.generation = self.generation.saturating_add(1);
+        self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
         self.desired = ConfigurationCandidate {
             revision: ConfigurationRevision::new(self.generation, &content, created_unix_ms),
             content,
@@ -3074,7 +3710,55 @@ impl ConfigurationState {
         let mut guided = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
         apply_dashboard_intent(self.kind, &mut guided, &self.managed_intent)?;
         let edited = parse_semantic_document(self.format, edited)?;
-        self.raw_intent = diff_raw_intent(&guided, &edited);
+        let mut next = diff_raw_decisions(&guided, &edited, self.generation);
+        // Preserve an unchanged participating decision verbatim. Recreating
+        // it would change its id/basis even though the final document did not
+        // change, producing a phantom generation and invalidating otherwise
+        // current native evidence. Superseded and dormant decisions are not
+        // reused: writing their Raw value again is an explicit new decision
+        // against the current upstream basis.
+        for next_decision in &mut next.decisions {
+            if let Some(existing) = self.raw_intent.decisions.iter().find(|existing| {
+                existing.status.participates_in_candidate()
+                    && existing.operation == next_decision.operation
+            }) {
+                *next_decision = existing.clone();
+            }
+        }
+        let next_paths = next
+            .decisions
+            .iter()
+            .map(|decision| intent_operation_path(&decision.operation))
+            .collect::<Vec<_>>();
+        let mut retained = self
+            .raw_intent
+            .decisions
+            .drain(..)
+            .filter_map(|mut decision| {
+                let decision_path = intent_operation_path(&decision.operation);
+                let overlaps = next_paths
+                    .iter()
+                    .any(|path| path_overlaps(path, &decision_path));
+                if overlaps {
+                    // The edited document now contains a new decision for this
+                    // semantic unit.  The new diff below replaces the old
+                    // basis-bound decision without touching unrelated paths.
+                    return None;
+                }
+                if semantic_path_values_equal(&edited, &guided, &decision_path) {
+                    // Editing an active Raw value back to the current upstream
+                    // value is an explicit Accept-upstream action.  Keep the
+                    // history as a dormant decision so the operation is
+                    // reversible, but never let it participate in the
+                    // candidate again.
+                    decision.status = RawDecisionStatus::Dormant;
+                }
+                Some(decision)
+            })
+            .collect::<Vec<_>>();
+        retained.extend(next.decisions);
+        self.raw_intent.operations.clear();
+        self.raw_intent.decisions = retained;
         self.rebuild_desired(created_unix_ms)
     }
 
@@ -3119,25 +3803,69 @@ impl ConfigurationState {
         Ok(())
     }
 
-    pub fn mark_applied(&mut self) -> Result<()> {
+    pub fn ensure_apply_ready(&self) -> Result<()> {
+        if self
+            .desired
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.severity == ConflictSeverity::Error)
+        {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Blocking configuration conflicts must be resolved before Apply",
+            ));
+        }
         if self.desired.validation != CandidateValidationStatus::Valid {
             return Err(CamelliaNexusError::new(
                 ErrorCode::ConfigInvalid,
                 "Only a valid Desired configuration can be applied",
             ));
         }
-        if self.desired.validation_evidence.is_none() {
+        let binary_sha256 = self
+            .compatibility_profile
+            .target
+            .fingerprint_sha256
+            .as_deref()
+            .ok_or_else(|| {
+                CamelliaNexusError::new(
+                    ErrorCode::ConfigConflict,
+                    "Apply requires an exact binary fingerprint",
+                )
+            })?;
+        if !self
+            .desired
+            .validation_evidence
+            .as_ref()
+            .is_some_and(|evidence| {
+                evidence.validates(
+                    binary_sha256,
+                    &self.compatibility_profile.profile_hash,
+                    &self.desired.revision.content_hash,
+                )
+            })
+        {
             return Err(CamelliaNexusError::new(
-                ErrorCode::ConfigInvalid,
-                "Applied configuration requires native validation evidence",
+                ErrorCode::ConfigConflict,
+                "Native validation evidence does not match the exact binary, profile, and candidate",
             ));
         }
+        Ok(())
+    }
+
+    pub fn mark_applied(&mut self) -> Result<()> {
+        self.ensure_apply_ready()?;
         self.applied = Some(self.desired.clone());
         self.last_known_good = Some(self.desired.clone());
         Ok(())
     }
 
     pub fn view(&self) -> ConfigurationStateView {
+        let base = parse_semantic_document(self.format, self.base.content.as_bytes())
+            .unwrap_or(Value::Null);
+        let guided = apply_guided_intent(self.kind, &base, &self.guided_intent)
+            .unwrap_or_else(|_| base.clone());
+        let mut upstream = guided.clone();
+        let _ = apply_dashboard_intent(self.kind, &mut upstream, &self.managed_intent);
         let effective = parse_semantic_document(self.format, self.desired.content.as_bytes())
             .unwrap_or(Value::Null);
         let mut compatibility_references: Vec<crate::CoreCompatibilityReference> =
@@ -3171,6 +3899,7 @@ impl ConfigurationState {
                 }
             }
         }
+        let workspace = build_configuration_workspace(self, &base, &guided, &upstream, &effective);
         ConfigurationStateView {
             schema_version: self.schema_version,
             kind: self.kind,
@@ -3213,7 +3942,245 @@ impl ConfigurationState {
                 &self.desired.conflicts,
             ),
             compatibility_references,
+            workspace,
         }
+    }
+}
+
+fn build_configuration_workspace(
+    state: &ConfigurationState,
+    base: &Value,
+    guided: &Value,
+    upstream: &Value,
+    effective: &Value,
+) -> ConfigurationWorkspaceView {
+    let upstream_document = serialize_semantic_document(state.format, upstream)
+        .unwrap_or_else(|_| state.base.content.clone());
+    let final_preview_document = serialize_semantic_document(state.format, effective)
+        .unwrap_or_else(|_| state.desired.content.clone());
+    let raw_decisions = state
+        .raw_intent
+        .decisions
+        .iter()
+        .map(|decision| {
+            let path = intent_operation_path(&decision.operation);
+            RawDecisionProjection {
+                decision_id: decision.decision_id.clone(),
+                semantic_path: display_semantic_path(&path),
+                operation: decision.operation.clone(),
+                status: decision.status,
+                origin: decision.origin,
+                basis: decision.basis.clone(),
+                upstream_value: raw_conflict_path_value(upstream, &path)
+                    .ok()
+                    .flatten()
+                    .cloned(),
+                raw_value: intent_operation_value(&decision.operation),
+            }
+        })
+        .collect::<Vec<_>>();
+    let source_conflicts = state
+        .desired
+        .conflicts
+        .iter()
+        .filter(|conflict| {
+            conflict.scope.surface == ConfigurationSurface::Sources
+                || conflict.message_key.as_deref() == Some("SOURCE_VALUE_CONFLICT")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let layer_conflicts = state
+        .desired
+        .conflicts
+        .iter()
+        .filter(|conflict| conflict.message_key.as_deref() == Some("LAYER_OWNERSHIP_CONFLICT"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let raw_conflicts = state
+        .desired
+        .conflicts
+        .iter()
+        .filter(|conflict| {
+            matches!(
+                conflict.message_key.as_deref(),
+                Some("RAW_DECISION_SUPERSEDED")
+                    | Some("CONFIGURATION_RAW_CONFLICT")
+                    | Some("CONFIGURATION_IDENTITY_DUPLICATED")
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_blocking_conflicts = state
+        .desired
+        .conflicts
+        .iter()
+        .any(|conflict| conflict.severity == ConflictSeverity::Error);
+    let can_apply = state.ensure_apply_ready().is_ok();
+    ConfigurationWorkspaceView {
+        upstream_document,
+        final_preview_document: final_preview_document.clone(),
+        editable_document: final_preview_document,
+        layer_trace: build_layer_trace(state, base, guided, upstream, effective),
+        raw_decisions,
+        source_conflicts,
+        layer_conflicts,
+        raw_conflicts,
+        diagnostics: state.desired.diagnostics.clone(),
+        save_status: if has_blocking_conflicts {
+            CandidateSaveStatus::Blocked
+        } else if state.desired.validation == CandidateValidationStatus::Pending {
+            CandidateSaveStatus::PendingValidation
+        } else {
+            CandidateSaveStatus::Saved
+        },
+        validation_status: state.desired.validation,
+        can_save: !has_blocking_conflicts,
+        can_validate: !has_blocking_conflicts,
+        can_apply,
+    }
+}
+
+fn build_layer_trace(
+    state: &ConfigurationState,
+    base: &Value,
+    guided: &Value,
+    upstream: &Value,
+    effective: &Value,
+) -> Vec<ConfigurationLayerTrace> {
+    let mut paths = Vec::new();
+    collect_trace_paths(base, &mut Vec::new(), &mut paths);
+    collect_trace_paths(guided, &mut Vec::new(), &mut paths);
+    collect_trace_paths(upstream, &mut Vec::new(), &mut paths);
+    collect_trace_paths(effective, &mut Vec::new(), &mut paths);
+    for decision in &state.raw_intent.decisions {
+        paths.push(intent_operation_path(&decision.operation));
+    }
+    paths.sort_by_key(|path| display_semantic_path(path));
+    paths.dedup();
+    paths
+        .into_iter()
+        .map(|path| {
+            let semantic_path = display_semantic_path(&path);
+            let source_value = trace_path_value(base, &path);
+            let guided_value = trace_path_value(guided, &path);
+            let managed_value = trace_path_value(upstream, &path);
+            let effective_value = trace_path_value(effective, &path);
+            let raw_decision = state.raw_intent.decisions.iter().find(|decision| {
+                path_overlaps(&path, &intent_operation_path(&decision.operation))
+                    && decision.status != RawDecisionStatus::Dormant
+            });
+            let winner_layer = if raw_decision
+                .is_some_and(|decision| decision.status.participates_in_candidate())
+            {
+                ConfigurationLayer::RawDecision
+            } else if managed_value != guided_value {
+                ConfigurationLayer::Details
+            } else if guided_value != source_value {
+                ConfigurationLayer::Intent
+            } else {
+                ConfigurationLayer::Source
+            };
+            let source_ids = semantic_path_to_pointer(base, &path)
+                .map(|pointer| aggregate_provenance(&state.base_provenance, &pointer).source_ids)
+                .unwrap_or_default();
+            let issue_ids = state
+                .desired
+                .conflicts
+                .iter()
+                .filter(|conflict| {
+                    conflict.semantic_path == semantic_path
+                        || conflict
+                            .semantic_path
+                            .starts_with(&format!("{semantic_path}/"))
+                        || semantic_path.starts_with(&format!("{}/", conflict.semantic_path))
+                })
+                .map(|conflict| {
+                    format!(
+                        "{}:{}",
+                        conflict
+                            .message_key
+                            .as_deref()
+                            .unwrap_or("CONFIGURATION_CONFLICT"),
+                        conflict.semantic_path
+                    )
+                })
+                .collect();
+            ConfigurationLayerTrace {
+                semantic_path,
+                source_ids,
+                source_value,
+                guided_value,
+                managed_value,
+                raw_value: raw_decision
+                    .and_then(|decision| intent_operation_value(&decision.operation)),
+                effective_value,
+                winner_layer,
+                raw_decision_id: raw_decision.map(|decision| decision.decision_id.clone()),
+                raw_decision_status: raw_decision.map(|decision| decision.status),
+                issue_ids,
+            }
+        })
+        .collect()
+}
+
+fn semantic_path_to_pointer(root: &Value, path: &[SemanticPathSegment]) -> Option<String> {
+    let mut current = root;
+    let mut pointer = String::new();
+    for segment in path {
+        match segment {
+            SemanticPathSegment::Key { key } => {
+                current = current.as_object()?.get(key)?;
+                pointer.push('/');
+                pointer.push_str(&escape_pointer(key));
+            }
+            SemanticPathSegment::Identity { field, value } => {
+                let values = current.as_array()?;
+                let index = values.iter().position(|item| {
+                    item.get(field).and_then(Value::as_str) == Some(value.as_str())
+                })?;
+                current = values.get(index)?;
+                pointer.push('/');
+                pointer.push_str(&index.to_string());
+            }
+        }
+    }
+    Some(pointer)
+}
+
+fn trace_path_value(root: &Value, path: &[SemanticPathSegment]) -> Option<Value> {
+    raw_conflict_path_value(root, path).ok().flatten().cloned()
+}
+
+fn collect_trace_paths(value: &Value, path: &mut SemanticPath, output: &mut Vec<SemanticPath>) {
+    match value {
+        Value::Object(object) if !object.is_empty() => {
+            for (key, child) in object {
+                path.push(SemanticPathSegment::Key { key: key.clone() });
+                collect_trace_paths(child, path, output);
+                path.pop();
+            }
+        }
+        Value::Array(values) if sequence_identities(values).is_some() => {
+            let identities = sequence_identities(values).expect("identity shape was checked");
+            for ((field, identity), child) in identities.into_iter().zip(values) {
+                path.push(SemanticPathSegment::Identity {
+                    field,
+                    value: identity,
+                });
+                collect_trace_paths(child, path, output);
+                path.pop();
+            }
+        }
+        Value::Array(values) => {
+            if values.is_empty() {
+                output.push(path.clone());
+            } else {
+                // Ordered identity-less lists are one semantic unit.  Their
+                // provenance and Raw decisions are intentionally path-level.
+                output.push(path.clone());
+            }
+        }
+        _ => output.push(path.clone()),
     }
 }
 
@@ -3238,9 +4205,7 @@ fn project_managed_integrations(
                 .iter()
                 .filter(|(_, integration, _)| integration == integration_id)
                 .collect::<Vec<_>>();
-            let raw_paths = raw
-                .operations
-                .iter()
+            let raw_paths = visible_raw_operations(raw)
                 .map(intent_operation_path)
                 .filter(|raw_path| {
                     integration_targets
@@ -3260,6 +4225,23 @@ fn project_managed_integrations(
                     )
                 })
                 .collect::<Vec<_>>();
+            let mut issue_ids = issue_ids;
+            for decision in raw
+                .decisions
+                .iter()
+                .filter(|decision| decision.status == RawDecisionStatus::Superseded)
+            {
+                let decision_path = intent_operation_path(&decision.operation);
+                if integration_targets
+                    .iter()
+                    .any(|(_, _, target)| managed_path_overlaps(target, &decision_path))
+                {
+                    issue_ids.push(format!(
+                        "RAW_DECISION_SUPERSEDED:{}",
+                        display_semantic_path(&decision_path)
+                    ));
+                }
+            }
             let intent_value = managed
                 .values
                 .iter()
@@ -3271,7 +4253,9 @@ fn project_managed_integrations(
                     .flatten()
                     .is_some()
             });
-            let status = if !issue_ids.is_empty() {
+            let status = if !issue_ids.is_empty()
+                || (intent_value.is_some() && !raw_paths.is_empty())
+            {
                 ManagedIntegrationStatus::Overridden
             } else if intent_value.is_some() {
                 ManagedIntegrationStatus::Explicit
@@ -3290,44 +4274,6 @@ fn project_managed_integrations(
                 raw_paths,
                 issue_ids,
             }
-        })
-        .collect()
-}
-
-fn dashboard_raw_conflicts(
-    kind: ProgramKind,
-    guided: &ManagedIntegrationIntent,
-    raw: &RawManualIntent,
-) -> Vec<ConfigurationConflict> {
-    let targets = managed_ownership_targets(kind);
-    targets
-        .into_iter()
-        .filter(|(setting, integration, target)| {
-            managed_integration_active(guided, integration)
-                && raw.operations.iter().any(|operation| {
-                    let raw_path = intent_operation_path(operation);
-                    managed_path_overlaps(target, &raw_path)
-                        && !raw_operation_matches_managed_duration(
-                            setting, target, operation, guided,
-                        )
-                })
-        })
-        .map(|(setting, integration, target)| ConfigurationConflict {
-            semantic_path: display_semantic_path(&target),
-            reason: "Dashboard Guided intent is overridden by Raw configuration".into(),
-            severity: ConflictSeverity::Error,
-            message_key: Some("CONFIGURATION_RAW_OVERRIDE".into()),
-            scope: ConfigurationIssueScope::details(integration),
-            source_value: None,
-            guided_value: guided.values.get(setting).cloned().or_else(|| {
-                guided
-                    .values
-                    .iter()
-                    .find(|(key, _)| key.starts_with(&format!("{integration}.")))
-                    .map(|(_, value)| value.clone())
-            }),
-            raw_value: None,
-            effective_value: None,
         })
         .collect()
 }
@@ -3557,9 +4503,7 @@ pub fn managed_raw_override_paths(
         .into_iter()
         .filter(|(_, integration, _)| managed_integration_active(managed, integration))
         .collect::<Vec<_>>();
-    let mut paths = raw
-        .operations
-        .iter()
+    let mut paths = visible_raw_operations(raw)
         .map(|operation| {
             let raw_path = intent_operation_path(operation);
             let is_override = targets.iter().any(|(setting, _, target)| {
@@ -3619,6 +4563,22 @@ pub fn remove_managed_raw_overrides(
         }));
     }
     raw.operations = retained;
+    raw.decisions.retain(|decision| {
+        let operation_path = intent_operation_path(&decision.operation);
+        let overlaps = targets.iter().any(|(setting, _, target)| {
+            managed_path_overlaps(target, &operation_path)
+                && !raw_operation_matches_managed_duration(
+                    setting,
+                    target,
+                    &decision.operation,
+                    managed,
+                )
+        });
+        if overlaps {
+            removed = removed.saturating_add(1);
+        }
+        !overlaps
+    });
     removed
 }
 
@@ -3684,6 +4644,88 @@ fn flatten_raw_set(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigurationLayer {
+    Source,
+    Intent,
+    Details,
+    RawDecision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CandidateSaveStatus {
+    Blocked,
+    Saved,
+    PendingValidation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationLayerTrace {
+    pub semantic_path: String,
+    #[serde(default)]
+    pub source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guided_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_value: Option<Value>,
+    pub winner_layer: ConfigurationLayer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_decision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_decision_status: Option<RawDecisionStatus>,
+    #[serde(default)]
+    pub issue_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RawDecisionProjection {
+    pub decision_id: String,
+    pub semantic_path: String,
+    pub operation: IntentOperation,
+    pub status: RawDecisionStatus,
+    pub origin: RawDecisionOrigin,
+    pub basis: RawDecisionBasis,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_value: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationWorkspaceView {
+    pub upstream_document: String,
+    pub final_preview_document: String,
+    pub editable_document: String,
+    #[serde(default)]
+    pub layer_trace: Vec<ConfigurationLayerTrace>,
+    #[serde(default)]
+    pub raw_decisions: Vec<RawDecisionProjection>,
+    #[serde(default)]
+    pub source_conflicts: Vec<ConfigurationConflict>,
+    #[serde(default)]
+    pub layer_conflicts: Vec<ConfigurationConflict>,
+    #[serde(default)]
+    pub raw_conflicts: Vec<ConfigurationConflict>,
+    #[serde(default)]
+    pub diagnostics: Vec<ConfigurationDiagnostic>,
+    pub save_status: CandidateSaveStatus,
+    pub validation_status: CandidateValidationStatus,
+    pub can_save: bool,
+    pub can_validate: bool,
+    pub can_apply: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationStateView {
@@ -3707,6 +4749,7 @@ pub struct ConfigurationStateView {
     pub managed_integrations: Vec<ManagedIntegrationProjection>,
     #[serde(default)]
     pub compatibility_references: Vec<crate::CoreCompatibilityReference>,
+    pub workspace: ConfigurationWorkspaceView,
 }
 
 pub fn parse_semantic_document(format: ConfigurationFormat, content: &[u8]) -> Result<Value> {
@@ -3848,6 +4891,54 @@ mod tests {
             provenance_at(&result, "/outbounds/1/type").source_ids,
             vec!["b".to_owned()]
         );
+        assert!(result.conflicts.iter().any(|conflict| {
+            conflict.semantic_path == "/log/level"
+                && conflict.message_key.as_deref() == Some("SOURCE_VALUE_CONFLICT")
+                && conflict.scope.surface == ConfigurationSurface::Sources
+        }));
+        assert!(result.conflicts.iter().any(|conflict| {
+            conflict.semantic_path == "/outbounds[tag=same]/type"
+                && conflict.message_key.as_deref() == Some("SOURCE_VALUE_CONFLICT")
+        }));
+    }
+
+    #[test]
+    fn identical_and_disjoint_source_values_do_not_create_conflicts() {
+        let result = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[
+                snapshot(
+                    ProgramKind::SingBox,
+                    "a",
+                    r#"{"log":{"level":"info"},"dns":{"strategy":"prefer_ipv4"}}"#,
+                ),
+                snapshot(
+                    ProgramKind::SingBox,
+                    "b",
+                    r#"{"log":{"level":"info"},"route":{"final":"direct"}}"#,
+                ),
+            ],
+        )
+        .expect("merge");
+        assert!(result.conflicts.is_empty());
+    }
+
+    #[test]
+    fn semantically_equal_dashboard_durations_do_not_create_source_conflicts() {
+        let service = |duration: &str| {
+            format!(
+                r#"{{"services":[{{"type":"derp","tag":"{MANAGED_SING_BOX_API_TAG}","dashboard":{{"update_interval":"{duration}"}}}}]}}"#
+            )
+        };
+        let result = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[
+                snapshot(ProgramKind::SingBox, "a", &service("1d")),
+                snapshot(ProgramKind::SingBox, "b", &service("24h0m0s")),
+            ],
+        )
+        .expect("merge");
+        assert!(result.conflicts.is_empty());
     }
 
     #[test]
@@ -3893,6 +4984,39 @@ mod tests {
             provenance_at(&result, "/outbounds/0/protocol").source_ids,
             vec!["tail".to_owned()]
         );
+        assert!(result.conflicts.iter().any(|conflict| {
+            conflict.semantic_path == "/routing/domainStrategy"
+                && conflict.message_key.as_deref() == Some("SOURCE_VALUE_CONFLICT")
+        }));
+        assert!(result.conflicts.iter().any(|conflict| {
+            conflict.semantic_path == "/outbounds[tag=same]/protocol"
+                && conflict.message_key.as_deref() == Some("SOURCE_VALUE_CONFLICT")
+        }));
+    }
+
+    #[test]
+    fn xray_disjoint_section_fields_merge_without_conflict() {
+        let result = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[
+                snapshot(
+                    ProgramKind::Xray,
+                    "a",
+                    r#"{"routing":{"domainStrategy":"AsIs"}}"#,
+                ),
+                snapshot(
+                    ProgramKind::Xray,
+                    "b",
+                    r#"{"routing":{"domainMatcher":"hybrid"}}"#,
+                ),
+            ],
+        )
+        .expect("merge");
+        let value = parse_semantic_document(ConfigurationFormat::Jsonc, result.content.as_bytes())
+            .expect("value");
+        assert_eq!(value["routing"]["domainStrategy"], "AsIs");
+        assert_eq!(value["routing"]["domainMatcher"], "hybrid");
+        assert!(result.conflicts.is_empty());
     }
 
     #[test]
@@ -4296,6 +5420,42 @@ mod tests {
     }
 
     #[test]
+    fn stale_native_evidence_is_rejected_before_apply() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "source",
+                r#"{"log":{"level":"info"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        state
+            .desired
+            .validation_evidence
+            .as_mut()
+            .expect("evidence")
+            .config_hash = "stale-config-hash".into();
+
+        assert!(!state.view().workspace.can_apply);
+        let error = state.mark_applied().expect_err("stale evidence must fail");
+        assert_eq!(error.code, ErrorCode::ConfigConflict);
+        assert!(state.applied.is_none());
+        assert!(state.last_known_good.is_none());
+    }
+
+    #[test]
     fn guided_values_reject_wrong_types_and_unknown_options() {
         let wrong_toggle = validate_guided_value(
             ProgramKind::Mihomo,
@@ -4409,7 +5569,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_dashboard_overlap_blocks_a_silent_managed_dashboard_save() {
+    fn upstream_managed_change_supersedes_a_prior_raw_decision() {
         let merge = merge_configuration_sources(
             ProgramKind::Mihomo,
             &[snapshot(
@@ -4427,8 +5587,14 @@ mod tests {
             compatibility_profile(ProgramKind::Mihomo),
         )
         .expect("state");
+        state
+            .replace_raw_from_edited(b"external-controller: 127.0.0.1:9999\n", 2)
+            .expect("Raw decision");
+        assert_eq!(state.raw_intent.decisions.len(), 1);
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
+
         sync_managed_dashboard_intent(
-            &mut state.guided_intent,
+            &mut state.managed_intent,
             &ManagedConfigSpec {
                 mihomo_dashboard: Some(MihomoDashboardSpec {
                     listen_port: 9092,
@@ -4437,22 +5603,28 @@ mod tests {
                 ..ManagedConfigSpec::default()
             },
         );
-        state.raw_intent.operations.push(IntentOperation::Set {
-            path: key_path(&["external-controller"]),
-            value: Value::String("127.0.0.1:9999".into()),
-        });
-
-        state.rebuild_desired(2).expect("rebuild");
+        state.rebuild_desired(3).expect("rebuild");
 
         assert_eq!(state.desired.validation, CandidateValidationStatus::Invalid);
         assert_eq!(state.desired.conflicts.len(), 1);
         assert_eq!(
-            state.desired.conflicts[0].reason,
-            "Dashboard Guided intent is overridden by Raw configuration"
+            state.desired.conflicts[0].message_key.as_deref(),
+            Some("RAW_DECISION_SUPERSEDED")
+        );
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["external-controller"],
+            "127.0.0.1:9092"
+        );
+        assert_eq!(
+            state.raw_intent.decisions[0].status,
+            RawDecisionStatus::Superseded
         );
         assert_eq!(
             state.desired.conflicts[0].scope,
-            ConfigurationIssueScope::details("dashboard.mihomo")
+            ConfigurationIssueScope {
+                surface: ConfigurationSurface::Configuration,
+                owner_id: Some(state.raw_intent.decisions[0].decision_id.clone()),
+            }
         );
         assert!(state.guided_intent.values.is_empty());
         assert!(
@@ -4513,6 +5685,7 @@ mod tests {
                 ],
                 value: Value::String("24h0m0s".into()),
             }],
+            decisions: Vec::new(),
         };
         assert!(managed_raw_override_paths(ProgramKind::SingBox, &managed, &equivalent).is_empty());
 
@@ -4598,6 +5771,7 @@ mod tests {
                     "secret": "keep"
                 }),
             }],
+            decisions: Vec::new(),
         };
         assert_eq!(
             remove_managed_raw_overrides(ProgramKind::SingBox, &managed, &mut raw),
@@ -4636,6 +5810,7 @@ mod tests {
                     value: Value::Bool(true),
                 },
             ],
+            decisions: Vec::new(),
         };
         assert!(managed_raw_override_paths(ProgramKind::Xray, &managed, &extensions).is_empty());
 
@@ -4644,6 +5819,7 @@ mod tests {
             operations: vec![IntentOperation::Delete {
                 path: key_path(&["api"]),
             }],
+            decisions: Vec::new(),
         };
         assert_eq!(
             managed_raw_override_paths(ProgramKind::Xray, &managed, &container),
@@ -4702,7 +5878,7 @@ mod tests {
             compatibility_profile(ProgramKind::Mihomo),
         )
         .expect("state");
-        state.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
+        state.schema_version = LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION;
         state
             .guided_intent
             .set("dashboard.mihomo.listenPort", Value::from(9092));
@@ -4738,7 +5914,7 @@ mod tests {
             compatibility_profile(ProgramKind::SingBox),
         )
         .expect("state");
-        state.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
+        state.schema_version = LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION;
         state
             .guided_intent
             .set("dashboard.singBoxClash.listenPort", Value::from(9091));
@@ -4758,10 +5934,427 @@ mod tests {
         state.rebuild_desired(2).expect("rebuild");
 
         assert!(state.desired.conflicts.is_empty());
-        assert_eq!(state.raw_intent.operations.len(), 1);
+        assert!(state.raw_intent.operations.is_empty());
+        assert_eq!(state.raw_intent.decisions.len(), 1);
         assert_eq!(
-            display_semantic_path(&intent_operation_path(&state.raw_intent.operations[0])),
+            display_semantic_path(&intent_operation_path(
+                &state.raw_intent.decisions[0].operation
+            )),
             "/experimental/clash_api/secret"
+        );
+    }
+
+    #[test]
+    fn raw_decision_resolution_is_path_scoped_and_reentrant() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "base",
+                r#"{"log":{"level":"info"},"dns":{"strategy":"prefer_ipv4"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        state
+            .replace_raw_from_edited(
+                br#"{"log":{"level":"debug"},"dns":{"strategy":"prefer_ipv4"}}"#,
+                2,
+            )
+            .expect("Raw decision");
+        let decision_id = state.raw_intent.decisions[0].decision_id.clone();
+
+        state
+            .guided_intent
+            .set("logging.level", Value::String("error".into()));
+        state.rebuild_desired(3).expect("upstream change");
+        assert_eq!(
+            state.raw_intent.decisions[0].status,
+            RawDecisionStatus::Superseded
+        );
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Invalid);
+        assert_eq!(
+            state
+                .view()
+                .guided_projection
+                .iter()
+                .find(|projection| projection.setting_id == "logging.level")
+                .map(|projection| projection.status),
+            Some(GuidedProjectionStatus::RawDecision)
+        );
+        assert!(!state.view().workspace.can_save);
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
+                ["level"],
+            "error"
+        );
+
+        state
+            .resolve_raw_decision(&decision_id, RawDecisionResolution::KeepRaw, 4)
+            .expect("keep Raw");
+        assert!(state.desired.conflicts.is_empty());
+        assert_eq!(
+            state.raw_intent.decisions[0].status,
+            RawDecisionStatus::Resolved
+        );
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
+                ["level"],
+            "debug"
+        );
+
+        state
+            .guided_intent
+            .set("dns.strategy", Value::String("prefer_ipv6".into()));
+        state.rebuild_desired(5).expect("unrelated change");
+        assert_eq!(
+            state.raw_intent.decisions[0].status,
+            RawDecisionStatus::Resolved
+        );
+        assert!(state.desired.conflicts.is_empty());
+
+        state
+            .guided_intent
+            .set("logging.level", Value::String("warn".into()));
+        state.rebuild_desired(6).expect("second upstream change");
+        assert_eq!(
+            state.raw_intent.decisions[0].status,
+            RawDecisionStatus::Superseded
+        );
+        state
+            .resolve_raw_decision(&decision_id, RawDecisionResolution::AcceptUpstream, 7)
+            .expect("accept upstream");
+        assert_eq!(
+            state.raw_intent.decisions[0].status,
+            RawDecisionStatus::Dormant
+        );
+        assert!(state.desired.conflicts.is_empty());
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
+                ["level"],
+            "warn"
+        );
+        state.rebuild_desired(8).expect("repeat rebuild");
+        assert!(state.desired.conflicts.is_empty());
+    }
+
+    #[test]
+    fn raw_editor_accepting_upstream_dormants_only_that_decision() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "base",
+                r#"{"log":{"loglevel":"warning"},"routing":{"domainStrategy":"AsIs"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        state
+            .replace_raw_from_edited(
+                br#"{"log":{"loglevel":"debug"},"routing":{"domainStrategy":"IPOnDemand"}}"#,
+                2,
+            )
+            .expect("initial Raw decisions");
+        assert_eq!(state.raw_intent.decisions.len(), 2);
+        let routing_id = state
+            .raw_intent
+            .decisions
+            .iter()
+            .find(|decision| {
+                display_semantic_path(&intent_operation_path(&decision.operation))
+                    == "/routing/domainStrategy"
+            })
+            .map(|decision| decision.decision_id.clone())
+            .expect("routing decision");
+
+        state
+            .replace_raw_from_edited(
+                br#"{"log":{"loglevel":"debug"},"routing":{"domainStrategy":"AsIs"}}"#,
+                3,
+            )
+            .expect("accept upstream through editor");
+
+        let log = state
+            .raw_intent
+            .decisions
+            .iter()
+            .find(|decision| {
+                display_semantic_path(&intent_operation_path(&decision.operation))
+                    == "/log/loglevel"
+            })
+            .expect("log decision");
+        let routing = state
+            .raw_intent
+            .decisions
+            .iter()
+            .find(|decision| decision.decision_id == routing_id)
+            .expect("retained routing history");
+        assert_eq!(log.status, RawDecisionStatus::Active);
+        assert_eq!(routing.status, RawDecisionStatus::Dormant);
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["routing"]
+                ["domainStrategy"],
+            "AsIs"
+        );
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
+                ["loglevel"],
+            "debug"
+        );
+    }
+
+    #[test]
+    fn repeated_identical_rebuild_preserves_generation_and_evidence() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "source",
+                r#"{"log":{"level":"info"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        state
+            .guided_intent
+            .set("logging.level", Value::String("debug".into()));
+        state.rebuild_desired(2).expect("initial rebuild");
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        let generation = state.generation;
+        let revision = state.desired.revision.clone();
+        let evidence = state.desired.validation_evidence.clone();
+
+        state.rebuild_desired(3).expect("identical rebuild");
+
+        assert_eq!(state.generation, generation);
+        assert_eq!(state.desired.revision, revision);
+        assert_eq!(state.desired.validation_evidence, evidence);
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Valid);
+    }
+
+    #[test]
+    fn repeated_identical_guided_value_does_not_drift_generation() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "source",
+                r#"{"log":{"loglevel":"warning"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        state
+            .guided_intent
+            .set("logging.level", Value::String("debug".into()));
+        state.rebuild_desired(2).expect("first Guided edit");
+        let generation = state.generation;
+
+        state
+            .guided_intent
+            .set("logging.level", Value::String("debug".into()));
+        state.rebuild_desired(3).expect("same Guided edit");
+
+        assert_eq!(state.generation, generation);
+    }
+
+    #[test]
+    fn repeated_identical_raw_save_preserves_decision_and_generation() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "source",
+                r#"{"log":{"loglevel":"warning"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        let edited = br#"{"log":{"loglevel":"debug"}}"#;
+        state
+            .replace_raw_from_edited(edited, 2)
+            .expect("first Raw save");
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        let generation = state.generation;
+        let decision = state.raw_intent.decisions[0].clone();
+        let evidence = state.desired.validation_evidence.clone();
+
+        state
+            .replace_raw_from_edited(edited, 3)
+            .expect("identical Raw save");
+
+        assert_eq!(state.generation, generation);
+        assert_eq!(state.raw_intent.decisions, vec![decision]);
+        assert_eq!(state.desired.validation_evidence, evidence);
+    }
+
+    #[test]
+    fn recovered_source_status_reopens_an_identical_candidate() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "source",
+                r#"{"log":{"loglevel":"warning"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("initial validation");
+        state.mark_applied().expect("initial apply");
+        let applied = state.applied.clone();
+        state.desired.validation = CandidateValidationStatus::Invalid;
+        state.desired.validation_evidence = None;
+        state.desired.diagnostics = vec![ConfigurationDiagnostic {
+            code: "SOURCE_UNAVAILABLE".into(),
+            message: "source unavailable".into(),
+            message_key: Some("SOURCE_UNAVAILABLE".into()),
+            scope: ConfigurationIssueScope::sources("source"),
+            details: None,
+        }];
+        state.source_statuses.insert(
+            "source".into(),
+            SourceStatus {
+                source_id: "source".into(),
+                source_name: "Source".into(),
+                freshness: SourceFreshness::Fresh,
+                observed_hash: None,
+                snapshot_hash: None,
+                message: None,
+                observed_unix_ms: Some(2),
+            },
+        );
+        let generation = state.generation;
+
+        state.rebuild_desired(3).expect("source recovery rebuild");
+
+        assert_eq!(state.generation, generation + 1);
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
+        assert!(state.desired.diagnostics.is_empty());
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.last_known_good, applied);
+    }
+
+    #[test]
+    fn identity_layer_trace_resolves_indexed_source_provenance() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "source-a",
+                r#"{"services":[{"tag":"first","type":"direct"},{"tag":"second","type":"direct","listen_port":8080}]}"#,
+            )],
+        )
+        .expect("merge");
+        let state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        let trace = state
+            .view()
+            .workspace
+            .layer_trace
+            .into_iter()
+            .find(|trace| trace.semantic_path == "/services[tag=second]/listen_port")
+            .expect("identity trace");
+
+        assert_eq!(trace.source_ids, vec!["source-a".to_owned()]);
+        assert_eq!(trace.source_value, Some(Value::from(8080)));
+    }
+
+    #[test]
+    fn v4_raw_operations_migrate_to_basis_bound_decisions() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "base",
+                r#"{"log":{"loglevel":"warning"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            4,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        state.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
+        state.raw_intent.operations.push(IntentOperation::Set {
+            path: key_path(&["log", "loglevel"]),
+            value: Value::String("debug".into()),
+        });
+        assert!(state.migrate_legacy_schema());
+        state.rebuild_desired(2).expect("rebuild");
+        assert_eq!(state.schema_version, CONFIGURATION_STATE_SCHEMA_VERSION);
+        assert!(state.raw_intent.operations.is_empty());
+        assert_eq!(state.raw_intent.decisions.len(), 1);
+        assert_eq!(
+            state.raw_intent.decisions[0].origin,
+            RawDecisionOrigin::Migrated
+        );
+        assert_eq!(
+            state.raw_intent.decisions[0].status,
+            RawDecisionStatus::Active
+        );
+        assert_eq!(
+            state.view().workspace.raw_decisions[0].semantic_path,
+            "/log/loglevel"
         );
     }
 }

@@ -23,7 +23,7 @@
     {#if projection.status === 'rawOnly'}
       <small>{$t('This feature is currently provided by Raw advanced configuration. Details is not claiming ownership.')}</small>
     {:else if projection.status === 'overridden'}
-      <small>{$t('Raw configuration overlaps fields owned by this integration. Confirm takeover before Details can replace them.')}</small>
+      <small>{$t('This integration has a Raw final decision on one or more paths. Upstream changes can reopen those paths in Final configuration.')}</small>
     {:else if projection.status === 'needsAttention'}
       <small>{$t('The current candidate could not generate this integration safely. Applied and Last Known Good were retained.')}</small>
     {/if}

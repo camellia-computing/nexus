@@ -334,6 +334,22 @@ export type RawConflictResolution =
 export type SemanticPathSegment =
   | { kind: 'key'; key: string }
   | { kind: 'identity'; field: string; value: string };
+export type IntentOperation =
+  | { operation: 'set'; path: SemanticPathSegment[]; value: unknown }
+  | { operation: 'delete'; path: SemanticPathSegment[] }
+  | { operation: 'reorderIdentities'; path: SemanticPathSegment[]; order: Array<[string, string]> }
+  | { operation: 'replaceSequence'; path: SemanticPathSegment[]; expected: unknown[]; value: unknown[] };
+export type RawDecisionOrigin = 'user' | 'migrated' | 'system';
+export type RawDecisionStatus = 'active' | 'superseded' | 'dormant' | 'resolved';
+export interface RawDecisionBasis {
+  upstreamGeneration: number;
+  upstreamContentHash: string;
+  upstreamPathHash: string;
+}
+export type RawDecisionResolution =
+  | 'acceptUpstream'
+  | 'keepRaw'
+  | { manualEdit: { value: unknown } };
 export interface RawConflict {
   conflictId: string;
   segments: SemanticPathSegment[];
@@ -415,7 +431,7 @@ export interface GuidedSettingDescriptor {
   allowedValues: string[];
   enabledWhen?: string;
 }
-export type GuidedProjectionStatus = 'inherited' | 'explicit' | 'custom' | 'overridden';
+export type GuidedProjectionStatus = 'inherited' | 'explicit' | 'custom' | 'overridden' | 'rawDecision';
 export interface GuidedProjection {
   settingId: string;
   status: GuidedProjectionStatus;
@@ -430,6 +446,47 @@ export interface ManagedIntegrationProjection {
   intentValue?: unknown;
   rawPaths: string[];
   issueIds: string[];
+}
+export type ConfigurationLayer = 'source' | 'intent' | 'details' | 'rawDecision';
+export type CandidateSaveStatus = 'blocked' | 'saved' | 'pendingValidation';
+export interface ConfigurationLayerTrace {
+  semanticPath: string;
+  sourceIds: string[];
+  sourceValue?: unknown;
+  guidedValue?: unknown;
+  managedValue?: unknown;
+  rawValue?: unknown;
+  effectiveValue?: unknown;
+  winnerLayer: ConfigurationLayer;
+  rawDecisionId?: string;
+  rawDecisionStatus?: RawDecisionStatus;
+  issueIds: string[];
+}
+export interface RawDecisionProjection {
+  decisionId: string;
+  semanticPath: string;
+  operation: IntentOperation;
+  status: RawDecisionStatus;
+  origin: RawDecisionOrigin;
+  basis: RawDecisionBasis;
+  upstreamValue?: unknown;
+  rawValue?: unknown;
+}
+export interface ConfigurationWorkspaceView {
+  upstreamDocument: string;
+  finalPreviewDocument: string;
+  editableDocument: string;
+  layerTrace: ConfigurationLayerTrace[];
+  rawDecisions: RawDecisionProjection[];
+  sourceConflicts: ConfigurationConflict[];
+  layerConflicts: ConfigurationConflict[];
+  rawConflicts: ConfigurationConflict[];
+  diagnostics: ConfigurationDiagnostic[];
+  saveStatus: CandidateSaveStatus;
+  validationStatus: CandidateValidationStatus;
+  canSave: boolean;
+  canValidate: boolean;
+  canApply: boolean;
 }
 export interface ConfigurationStateView {
   schemaVersion: number;
@@ -447,6 +504,7 @@ export interface ConfigurationStateView {
   guidedProjection: GuidedProjection[];
   managedIntegrations?: ManagedIntegrationProjection[];
   compatibilityReferences?: CoreCompatibilityReference[];
+  workspace: ConfigurationWorkspaceView;
 }
 
 export interface ActionDescriptor {

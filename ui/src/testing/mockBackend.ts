@@ -39,6 +39,8 @@ import type {
   GuidedProjection,
   GuidedSettingDescriptor,
   RawDraftSession,
+  IntentOperation,
+  ConfigurationConflict,
   ShareImportPreview,
   ProgramKind,
 } from '../types';
@@ -111,7 +113,6 @@ const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
 const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
 const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
 const rawAllOverridePreview = previewParameters.has('__ui_raw_all_override');
-const managedRawOverrideRemoved = new Set<string>();
 const requestedTeamRole = previewParameters.get('__ui_team_role');
 const previewWorkspaceRole: WorkspaceRole = teamMemberPreview
   ? 'operator'
@@ -1016,14 +1017,6 @@ function configurationState(programId: string): ConfigurationStateView {
   const kind = spec?.type.kind ?? 'generic';
   const format = document.language === 'yaml' ? 'yaml' : 'jsonc';
   const guided = previewGuidedSettings(kind);
-  const managedRawOverrideActive = rawAllOverridePreview && !managedRawOverrideRemoved.has(programId);
-  if (rawAllOverridePreview && kind !== 'generic') {
-    guided.projection = guided.projection.map((projection) => ({
-      ...projection,
-      status: 'overridden',
-      value: undefined,
-    }));
-  }
   const metadataTarget = kind === 'generic'
     ? undefined
     : spec?.executable.metadata?.coreTarget;
@@ -1060,8 +1053,42 @@ function configurationState(programId: string): ConfigurationStateView {
             scope: { surface: 'sources' as const, ownerId: 'preview-source' },
           }]
         : [];
+  const rawPreviewPath = kind === 'xray'
+    ? [{ kind: 'key' as const, key: 'log' }, { kind: 'key' as const, key: 'loglevel' }]
+    : kind === 'singBox'
+      ? [{ kind: 'key' as const, key: 'log' }, { kind: 'key' as const, key: 'level' }]
+      : [{ kind: 'key' as const, key: 'log-level' }];
+  const rawPreviewOperation: IntentOperation = {
+    operation: 'set',
+    path: rawPreviewPath,
+    value: 'debug',
+  };
+  const rawPreviewDecision = {
+    decisionId: `preview-raw-${programId}`,
+    semanticPath: kind === 'xray' ? '/log/loglevel' : kind === 'singBox' ? '/log/level' : '/log-level',
+    operation: rawPreviewOperation,
+    status: 'superseded' as const,
+    origin: 'migrated' as const,
+    basis: {
+      upstreamGeneration: 1,
+      upstreamContentHash: 'preview-upstream-hash',
+      upstreamPathHash: 'preview-upstream-path-hash',
+    },
+    upstreamValue: 'info',
+    rawValue: 'debug',
+  };
+  const rawPreviewConflict: ConfigurationConflict = {
+    semanticPath: rawPreviewDecision.semanticPath,
+    reason: 'The upstream configuration changed after this Raw decision was made',
+    severity: 'error',
+    messageKey: 'RAW_DECISION_SUPERSEDED',
+    scope: { surface: 'configuration', ownerId: rawPreviewDecision.decisionId },
+    sourceValue: rawPreviewDecision.upstreamValue,
+    rawValue: rawPreviewDecision.rawValue,
+    effectiveValue: rawPreviewDecision.upstreamValue,
+  };
   const state: ConfigurationStateView = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     kind,
     format,
     generation,
@@ -1097,7 +1124,7 @@ function configurationState(programId: string): ConfigurationStateView {
       compatibilityProfileHash: evidenceMismatch
         ? 'preview-previous-profile-hash'
         : compatibilityProfile.profileHash,
-      validation: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked ? 'invalid' : 'valid',
+      validation: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || rawAllOverridePreview ? 'invalid' : 'valid',
       ...(!candidateNeedsAttention ? {
         validationEvidence: {
           binarySha256: 'a'.repeat(64),
@@ -1109,7 +1136,7 @@ function configurationState(programId: string): ConfigurationStateView {
         },
       } : {}),
       diagnostics,
-      conflicts: [],
+      conflicts: rawAllOverridePreview ? [rawPreviewConflict] : [],
     },
     appliedRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
     lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
@@ -1119,17 +1146,17 @@ function configurationState(programId: string): ConfigurationStateView {
       ? [
           {
             integrationId: 'dashboard.singBoxApi',
-            status: managedRawOverrideActive ? 'overridden' : spec?.managedConfig?.singBoxDashboard ? 'explicit' : 'inactive',
+            status: spec?.managedConfig?.singBoxDashboard ? 'explicit' : 'inactive',
             effectiveEnabled: !!spec?.managedConfig?.singBoxDashboard,
-            rawPaths: managedRawOverrideActive ? ['/services[tag=camellia-nexus-api]/listen_port'] : [],
-            issueIds: managedRawOverrideActive ? ['CONFIGURATION_RAW_OVERRIDE:/services[tag=camellia-nexus-api]/listen_port'] : [],
+            rawPaths: [],
+            issueIds: [],
           },
           {
             integrationId: 'dashboard.singBoxClash',
-            status: managedRawOverrideActive ? 'overridden' : spec?.managedConfig?.singBoxClashDashboard ? 'explicit' : 'inactive',
+            status: spec?.managedConfig?.singBoxClashDashboard ? 'explicit' : 'inactive',
             effectiveEnabled: !!spec?.managedConfig?.singBoxClashDashboard,
-            rawPaths: managedRawOverrideActive ? ['/experimental/clash_api/external_controller'] : [],
-            issueIds: managedRawOverrideActive ? ['CONFIGURATION_RAW_OVERRIDE:/experimental/clash_api/external_controller'] : [],
+            rawPaths: [],
+            issueIds: [],
           },
         ]
       : kind === 'xray'
@@ -1141,7 +1168,32 @@ function configurationState(programId: string): ConfigurationStateView {
       { kind: 'release', tag: kind === 'xray' ? 'v26.3.27' : kind === 'singBox' ? 'v1.13.18' : 'v1.19.29' },
       { kind: 'commit', commitSha: 'a'.repeat(40) },
     ],
+    workspace: {
+      upstreamDocument: document.content,
+      finalPreviewDocument: document.content,
+      editableDocument: document.content,
+      layerTrace: [],
+      rawDecisions: rawAllOverridePreview ? [rawPreviewDecision] : [],
+      sourceConflicts: [],
+      layerConflicts: [],
+      rawConflicts: rawAllOverridePreview ? [rawPreviewConflict] : [],
+      diagnostics,
+      saveStatus: rawAllOverridePreview ? 'blocked' : candidateNeedsAttention ? 'pendingValidation' : 'saved',
+      validationStatus: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || rawAllOverridePreview ? 'invalid' : 'valid',
+      canSave: !rawAllOverridePreview,
+      canValidate: !rawAllOverridePreview,
+      canApply: !candidateNeedsAttention && !rawAllOverridePreview,
+    },
   };
+  if (rawAllOverridePreview && kind !== 'generic') {
+    const rawPath = rawPreviewPath;
+    state.guidedProjection = state.guidedProjection.map((projection) => {
+      const path = previewGuidedPath(kind, projection.settingId);
+      const overlaps = path && (path.every((segment, index) => rawPath[index]?.key === segment)
+        || rawPath.every((segment, index) => segment.key === path[index]));
+      return overlaps ? { ...projection, status: 'rawDecision', value: undefined } : projection;
+    });
+  }
   previewConfigurationStates.set(programId, state);
   return structuredClone(state);
 }
@@ -1157,7 +1209,7 @@ function rawDraftSession(programId: string): RawDraftSession {
       sessionId: `preview-draft-${programId}`,
       draftRevision: 1,
       basedOnGeneration: state.generation,
-      baseContent: state.desired.content,
+      baseContent: state.workspace.upstreamDocument,
       userContent,
       workingContent: userContent,
       conflicts: [{
@@ -1187,9 +1239,9 @@ function rawDraftSession(programId: string): RawDraftSession {
     sessionId: `preview-draft-${programId}`,
     draftRevision: 0,
     basedOnGeneration: state.generation,
-    baseContent: state.desired.content,
-    userContent: state.desired.content,
-    workingContent: state.desired.content,
+    baseContent: state.workspace.upstreamDocument,
+    userContent: state.workspace.finalPreviewDocument,
+    workingContent: state.workspace.finalPreviewDocument,
     conflicts: [],
     resolutions: {},
     unresolvedConflictIds: [],
@@ -1334,7 +1386,7 @@ function previewGuidedPath(kind: ProgramKind, settingId: string): string[] | und
     'routing.domainStrategy': ['routing', 'domainStrategy'],
     'network.ipv6': ['ipv6'],
     'tun.enabled': ['tun', 'enable'],
-    'tun.strictRoute': ['tun', 'auto-route'],
+    'tun.strictRoute': ['tun', 'strict-route'],
     'dns.enabled': ['dns', 'enable'],
     'dns.mode': ['dns', 'enhanced-mode'],
     'routing.mode': ['mode'],
@@ -1361,24 +1413,92 @@ function setPreviewGuidedPath(
   else current[leaf] = structuredClone(value);
 }
 
-function applyPreviewGuidedValue(
-  state: ConfigurationStateView,
-  settingId: string,
-  value: unknown,
-): void {
-  const path = previewGuidedPath(state.kind, settingId);
-  if (!path) return;
+function previewPathSegments(path: import('../types').SemanticPathSegment[]): string[] {
+  return path
+    .filter((segment): segment is { kind: 'key'; key: string } => segment.kind === 'key')
+    .map((segment) => segment.key);
+}
+
+function previewPathsOverlap(left: string[], right: string[]): boolean {
+  const shared = Math.min(left.length, right.length);
+  return left.slice(0, shared).every((segment, index) => segment === right[index]);
+}
+
+function previewReadPath(root: unknown, path: string[]): unknown {
+  let current: unknown = root;
+  for (const segment of path) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function previewWritePath(root: unknown, path: string[], value: unknown): void {
+  if (!root || typeof root !== 'object' || Array.isArray(root) || path.length === 0) return;
+  let current = root as Record<string, unknown>;
+  for (const segment of path.slice(0, -1)) {
+    if (!current[segment] || typeof current[segment] !== 'object' || Array.isArray(current[segment])) {
+      current[segment] = {};
+    }
+    current = current[segment] as Record<string, unknown>;
+  }
+  current[path[path.length - 1]] = structuredClone(value);
+}
+
+function previewDeletePath(root: unknown, path: string[]): void {
+  if (!root || typeof root !== 'object' || Array.isArray(root) || path.length === 0) return;
+  let current = root as Record<string, unknown>;
+  for (const segment of path.slice(0, -1)) {
+    if (!current[segment] || typeof current[segment] !== 'object' || Array.isArray(current[segment])) return;
+    current = current[segment] as Record<string, unknown>;
+  }
+  delete current[path[path.length - 1]];
+}
+
+function recomputePreviewCandidate(state: ConfigurationStateView): void {
   let document: unknown;
   try {
-    document = JSON.parse(state.desired.content);
+    document = JSON.parse(state.workspace.upstreamDocument);
   } catch {
-    // The native backend owns parsing/validation.  If a preview fixture is
-    // malformed, leave its text untouched and let the normal diagnostics
-    // surface the failure instead of throwing from this projection helper.
     return;
   }
-  setPreviewGuidedPath(document, path, value);
-  state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+  for (const decision of state.workspace.rawDecisions) {
+    if (decision.status !== 'active' && decision.status !== 'resolved') continue;
+    const path = previewPathSegments(decision.operation.path);
+    if (decision.operation.operation === 'set') previewWritePath(document, path, decision.rawValue);
+    else if (decision.operation.operation === 'delete') previewDeletePath(document, path);
+  }
+  const content = `${JSON.stringify(document, null, 2)}\n`;
+  state.desired.content = content;
+  state.desired.revision.contentHash = previewContentHash(content);
+  const preservedConflicts = state.desired.conflicts.filter(
+    (conflict) => conflict.messageKey !== 'RAW_DECISION_SUPERSEDED',
+  );
+  const rawConflicts = state.workspace.rawDecisions
+    .filter((decision) => decision.status === 'superseded')
+    .map((decision) => ({
+      semanticPath: decision.semanticPath,
+      reason: 'The upstream configuration changed after this Raw decision was made',
+      severity: 'error' as const,
+      messageKey: 'RAW_DECISION_SUPERSEDED',
+      scope: { surface: 'configuration' as const, ownerId: decision.decisionId },
+      sourceValue: decision.upstreamValue,
+      rawValue: decision.rawValue,
+      effectiveValue: decision.upstreamValue,
+    }));
+  state.desired.conflicts = [...preservedConflicts, ...rawConflicts];
+  state.desired.validation = state.desired.conflicts.some((conflict) => conflict.severity === 'error')
+    ? 'invalid'
+    : 'pending';
+  state.desired.validationEvidence = undefined;
+  state.workspace.finalPreviewDocument = content;
+  state.workspace.editableDocument = content;
+  state.workspace.rawConflicts = rawConflicts;
+  state.workspace.validationStatus = state.desired.validation;
+  state.workspace.saveStatus = rawConflicts.length > 0 ? 'blocked' : 'pendingValidation';
+  state.workspace.canSave = rawConflicts.length === 0;
+  state.workspace.canValidate = rawConflicts.length === 0;
+  state.workspace.canApply = false;
 }
 
 function updateConfigurationState(
@@ -1391,13 +1511,11 @@ function updateConfigurationState(
   update(state);
   if (state.desired.content !== previousContent) {
     state.desired.revision.contentHash = previewContentHash(state.desired.content);
-    if (state.desired.validationEvidence) {
-      state.desired.validationEvidence = {
-        ...state.desired.validationEvidence,
-        configHash: state.desired.revision.contentHash,
-        validatedUnixMs: Date.now(),
-      };
-    }
+    // A content mutation invalidates native evidence. The preview backend
+    // mirrors the real coordinator's fail-closed rule; only the explicit
+    // validation command creates fresh evidence.
+    state.desired.validationEvidence = undefined;
+    if (state.desired.validation === 'valid') state.desired.validation = 'pending';
     const savedDocument = previewConfigurationDocuments.get(programId);
     previewConfigurationDocuments.set(programId, {
       ...savedDocument,
@@ -1413,6 +1531,19 @@ function updateConfigurationState(
       createdUnixMs: Date.now(),
     };
   }
+  state.workspace.finalPreviewDocument = state.desired.content;
+  state.workspace.editableDocument = state.desired.content;
+  state.workspace.validationStatus = state.desired.validation;
+  state.workspace.diagnostics = structuredClone(state.desired.diagnostics);
+  const blocked = state.desired.conflicts.some((conflict) => conflict.severity === 'error');
+  state.workspace.saveStatus = blocked
+    ? 'blocked'
+    : state.desired.validation === 'pending'
+      ? 'pendingValidation'
+      : 'saved';
+  state.workspace.canSave = !blocked;
+  state.workspace.canValidate = !blocked;
+  state.workspace.canApply = state.desired.validation === 'valid' && !blocked;
   previewConfigurationStates.set(programId, structuredClone(state));
   return state;
 }
@@ -2230,17 +2361,6 @@ export function installMockBackend() {
             xrayDashboard: nextSpec.managedConfig?.xrayDashboard,
             mihomoDashboard: nextSpec.managedConfig?.mihomoDashboard,
           });
-          if (managedChanged && rawAllOverridePreview && !managedRawOverrideRemoved.has(nextSpec.id)) {
-            if (objectArgs(args).replaceOverlappingRaw !== true) {
-              throw {
-                code: 'CONFIG_CONFLICT',
-                messageKey: 'CONFIGURATION_RAW_OVERRIDE',
-                message: 'Managed integration is overridden by Raw configuration',
-                details: '{"semanticPaths":["/experimental/clash_api/external_controller"]}',
-              };
-            }
-            managedRawOverrideRemoved.add(nextSpec.id);
-          }
           validatePreviewCompatibility(next as ProgramSpec);
           specs[nextSpec.id] = structuredClone(nextSpec);
           previewConfigurationStates.delete(nextSpec.id);
@@ -2252,15 +2372,6 @@ export function installMockBackend() {
         const next = objectArgs(args).spec;
         if (next && typeof next === 'object') {
           const nextSpec = next as ProgramSpec;
-          if (rawAllOverridePreview && objectArgs(args).replaceOverlappingRaw !== true) {
-            throw {
-              code: 'CONFIG_CONFLICT',
-              messageKey: 'CONFIGURATION_RAW_OVERRIDE',
-              message: 'Managed integration is overridden by Raw configuration',
-              details: '{"semanticPaths":["/experimental/clash_api/external_controller"]}',
-            };
-          }
-          if (rawAllOverridePreview) managedRawOverrideRemoved.add(nextSpec.id);
           validatePreviewCompatibility(next as ProgramSpec);
           specs[nextSpec.id] = structuredClone(nextSpec);
           previewConfigurationStates.delete(nextSpec.id);
@@ -2375,6 +2486,7 @@ export function installMockBackend() {
       }
       case 'load_config': return configDocument(stringArg(args, 'programId'));
       case 'get_configuration_state':
+      case 'get_configuration_workspace':
         return configurationState(stringArg(args, 'programId'));
       case 'get_configuration_editor_session':
         return rawDraftSession(stringArg(args, 'programId'));
@@ -2490,6 +2602,47 @@ export function installMockBackend() {
         previewRawDrafts.set(programId, structuredClone(draft));
         return draft;
       }
+      case 'resolve_raw_decision': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as {
+          decisionId?: string;
+          resolution?: import('../types').RawDecisionResolution;
+        } | undefined;
+        return updateConfigurationState(programId, (state) => {
+          const decision = state.workspace.rawDecisions.find(
+            (item) => item.decisionId === request?.decisionId,
+          );
+          if (!decision || !request?.resolution) {
+            throw { code: 'NOT_FOUND', message: 'Preview Raw decision was not found' };
+          }
+          if (request.resolution === 'acceptUpstream') {
+            decision.status = 'dormant';
+          } else if (request.resolution === 'keepRaw') {
+            decision.status = 'resolved';
+          } else {
+            decision.status = 'resolved';
+            decision.operation = {
+              operation: 'set',
+              path: decision.operation.path,
+              value: request.resolution.manualEdit.value,
+            };
+            decision.rawValue = request.resolution.manualEdit.value;
+          }
+          recomputePreviewCandidate(state);
+          const decisionPath = previewPathSegments(decision.operation.path);
+          state.guidedProjection = state.guidedProjection.map((projection) => {
+            const guidedPath = previewGuidedPath(state.kind, projection.settingId);
+            if (!guidedPath || !previewPathsOverlap(guidedPath, decisionPath)) return projection;
+            if (decision.status === 'dormant') {
+              return {
+                ...projection,
+                status: projection.intentValue === undefined ? 'inherited' : 'explicit',
+              };
+            }
+            return { ...projection, status: 'rawDecision' };
+          });
+        });
+      }
       case 'discard_configuration_draft':
         previewRawDrafts.delete(stringArg(args, 'programId'));
         return null;
@@ -2500,14 +2653,52 @@ export function installMockBackend() {
         if (draft.unresolvedConflictIds.length > 0) {
           throw { code: 'CONFIG_CONFLICT', message: 'Resolve all preview conflicts before saving' };
         }
+        const currentState = configurationState(programId);
+        let committedContent = draft.workingContent;
+        if (currentState.format === 'jsonc') {
+          committedContent = `${JSON.stringify(JSON.parse(draft.workingContent), null, 2)}\n`;
+        }
         const state = updateConfigurationState(programId, (current) => {
-          current.desired.content = draft.workingContent;
-          current.desired.validation = 'valid';
+          current.desired.content = committedContent;
+          current.desired.validation = 'pending';
+          current.desired.validationEvidence = undefined;
           current.desired.diagnostics = [];
           current.desired.conflicts = [];
         });
+        state.workspace.validationStatus = 'pending';
+        state.workspace.saveStatus = 'pendingValidation';
+        state.workspace.canSave = true;
+        state.workspace.canValidate = true;
+        state.workspace.canApply = false;
+        previewConfigurationStates.set(programId, structuredClone(state));
         previewRawDrafts.delete(programId);
         return state;
+      }
+      case 'validate_configuration_candidate': {
+        const programId = stringArg(args, 'programId');
+        const current = configurationState(programId);
+        if (current.desired.conflicts.some((conflict) => conflict.severity === 'error')) {
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'CONFIGURATION_CONFLICT',
+            message: 'Resolve all blocking conflicts before validation.',
+          };
+        }
+        return updateConfigurationState(programId, (state) => {
+          state.desired.validation = 'valid';
+          state.desired.validationEvidence = {
+            binarySha256: 'a'.repeat(64),
+            profileHash: state.compatibilityProfile.profileHash,
+            configHash: state.desired.revision.contentHash,
+            validatorContractRevision: 'preview-validator-v1',
+            nativeAccepted: true,
+            validatedUnixMs: Date.now(),
+          };
+          state.desired.diagnostics = [];
+          state.workspace.validationStatus = 'valid';
+          state.workspace.saveStatus = 'saved';
+          state.workspace.canApply = true;
+        }, false);
       }
       case 'set_guided_intent': {
         const programId = stringArg(args, 'programId');
@@ -2517,9 +2708,6 @@ export function installMockBackend() {
           const settingId = guided.settingId;
           if (!settingId) return;
           const projection = state.guidedProjection.find((item) => item.settingId === settingId);
-          if (projection?.status === 'overridden' && !guided.replaceRawOverride) {
-            throw { code: 'CONFIG_CONFLICT', message: 'This Guided setting is overridden by Raw configuration' };
-          }
           const descriptor = state.guidedDescriptors.find((item) => item.id === settingId);
           if (!projection || !descriptor) {
             throw { code: 'NOT_FOUND', message: `Preview Guided setting was not found: ${settingId}` };
@@ -2536,12 +2724,41 @@ export function installMockBackend() {
             nextValue = previewGuidedSettings(state.kind).projection
               .find((item) => item.settingId === settingId)?.value;
           }
-          applyPreviewGuidedValue(state, settingId, nextValue);
+          let upstreamDocument: unknown;
+          try {
+            upstreamDocument = JSON.parse(state.workspace.upstreamDocument);
+          } catch {
+            upstreamDocument = {};
+          }
+          setPreviewGuidedPath(
+            upstreamDocument,
+            previewGuidedPath(state.kind, settingId) ?? [],
+            nextValue,
+          );
+          state.workspace.upstreamDocument = `${JSON.stringify(upstreamDocument, null, 2)}\n`;
           if (projection) {
             projection.status = guided.value === undefined ? 'inherited' : 'explicit';
             projection.value = nextValue;
             projection.intentValue = guided.value;
           }
+          for (const decision of state.workspace.rawDecisions) {
+            const decisionPath = previewPathSegments(decision.operation.path);
+            const guidedPath = previewGuidedPath(state.kind, settingId) ?? [];
+            if ((decision.status === 'active' || decision.status === 'resolved')
+              && previewPathsOverlap(decisionPath, guidedPath)) {
+              decision.status = 'superseded';
+              decision.upstreamValue = previewReadPath(upstreamDocument, decisionPath);
+            }
+          }
+          recomputePreviewCandidate(state);
+          const changedPath = previewGuidedPath(state.kind, settingId) ?? [];
+          const hasRawDecision = state.workspace.rawDecisions.some((decision) =>
+            decision.status !== 'dormant'
+            && previewPathsOverlap(previewPathSegments(decision.operation.path), changedPath),
+          );
+          state.guidedProjection = state.guidedProjection.map((item) => item.settingId === settingId
+            ? { ...item, status: hasRawDecision ? 'rawDecision' : guided.value === undefined ? 'inherited' : 'explicit', value: nextValue, intentValue: guided.value }
+            : item);
         });
         const existingDraft = previewRawDrafts.get(programId);
         if (existingDraft && existingDraft.draftRevision === 0) {
@@ -2556,8 +2773,16 @@ export function installMockBackend() {
       }
       case 'apply_configuration_candidate': {
         const programId = stringArg(args, 'programId');
+        const current = configurationState(programId);
+        if (current.desired.validation !== 'valid' || !current.desired.validationEvidence
+          || current.desired.conflicts.some((conflict) => conflict.severity === 'error')) {
+          throw {
+            code: 'CONFIG_INVALID',
+            messageKey: 'CORE_INVALID',
+            message: 'Save and validate the candidate before applying it.',
+          };
+        }
         return updateConfigurationState(programId, (state) => {
-          state.desired.validation = 'valid';
           state.appliedRevision = { ...state.desired.revision };
           state.lastKnownGoodRevision = { ...state.desired.revision };
         }, false);

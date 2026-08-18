@@ -119,24 +119,11 @@ pub async fn refresh(
         .configuration_state
         .refresh(&state.manager, program_id, Some(&local_base), &credentials)
         .await?;
-    if view.desired.validation != camellia_nexus_core::CandidateValidationStatus::Valid {
-        return Err(CamelliaNexusError::new(
-            ErrorCode::ConfigInvalid,
-            "Configuration source refresh produced an invalid Desired candidate",
-        ));
-    }
-    let runtime_operation = crate::commands::authorize_runtime_protected(
-        state,
-        ProtectedOperation::UseManagedConfigSources,
-    )
-    .await?;
-    let applied = state
-        .configuration_state
-        .apply_candidate(&state.manager, program_id, view.generation, false)
-        .await?;
-    drop(runtime_operation);
+    // Automatic refresh updates Sources/Base and creates a reviewable
+    // candidate only. Native validation and Apply are explicit workspace
+    // stages, so a background timer can never replace Applied/LKG.
     state.config_refreshes.mark_completed(program_id);
-    Ok(applied)
+    Ok(view)
 }
 
 pub fn spawn_scheduler(

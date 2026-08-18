@@ -4,9 +4,9 @@ use camellia_nexus_core::{
     CamelliaNexusError, CandidateValidationStatus, ConfigurationCandidate, ConfigurationConflict,
     ConfigurationDiagnostic, ConfigurationFormat, ConfigurationIssueScope, ConfigurationRevision,
     ConfigurationState, ConfigurationStateView, ConflictSeverity, CoreCompatibilityProfile,
-    CoreTargetIdentity, CoreValidationEvidence, ErrorCode, ProgramId, ProgramKind, ProgramManager,
-    ProgramSpec, RawConflictResolution, RawDraftSession, RawManualIntent, Result,
-    ShareImportPreview, SourceFreshness, SourceSnapshot, SourceStatus, rebase_raw_document,
+    CoreTargetIdentity, CoreValidationEvidence, ErrorCode, ProgramId, ProgramManager, ProgramSpec,
+    RawConflictResolution, RawDecisionResolution, RawDraftSession, Result, ShareImportPreview,
+    SourceFreshness, SourceSnapshot, SourceStatus, rebase_raw_document,
     refresh_raw_draft_conflicts, resolve_raw_draft_conflict,
 };
 use serde_json::Value;
@@ -118,9 +118,10 @@ impl ConfigurationCoordinator {
         }
         let previous_generation = state.generation;
         if self.retarget_state(id, &spec, &mut state).await? {
-            return self
-                .validate_existing(manager, id, &spec, state, previous_generation)
-                .await;
+            self.store
+                .save_configuration_state(id, &state, Some(previous_generation))
+                .await?;
+            return Ok(view_for_spec(&spec, &state));
         }
         Ok(view_for_spec(&spec, &state))
     }
@@ -170,17 +171,11 @@ impl ConfigurationCoordinator {
         setting_id: String,
         value: Option<serde_json::Value>,
         expected_generation: u64,
-        replace_raw_override: bool,
+        _replace_raw_override: bool,
     ) -> Result<ConfigurationStateView> {
         let _lease = self.lock(id).await;
         let (spec, mut state) = self.load_current(manager, id).await?;
         ensure_generation(&state, expected_generation)?;
-        if !replace_raw_override && raw_overrides_setting(&spec, &state.raw_intent, &setting_id) {
-            return Err(CamelliaNexusError::new(
-                ErrorCode::ConfigConflict,
-                "This Guided setting is overridden by Raw configuration",
-            ));
-        }
         if let Some(value) = value {
             camellia_nexus_core::validate_guided_value(
                 spec.program_type.kind(),
@@ -191,12 +186,9 @@ impl ConfigurationCoordinator {
         } else {
             state.guided_intent.reset(&setting_id);
         }
-        if replace_raw_override {
-            remove_raw_override(&spec, &mut state.raw_intent, &setting_id);
-        }
         let previous_generation = state.generation;
         state.rebuild_desired(now_unix_ms())?;
-        self.validate_and_save(manager, id, &spec, state, previous_generation)
+        self.persist_candidate(manager, id, state, previous_generation)
             .await
     }
 
@@ -232,9 +224,10 @@ impl ConfigurationCoordinator {
                     return Ok(rebased);
                 }
             };
-            let updated = parse_draft_value(state.format, &state.base.content)?;
+            let upstream_content = state.upstream_content()?;
+            let updated = parse_draft_value(state.format, &upstream_content)?;
             let result = rebase_raw_document(&original, &user, &updated);
-            rebased.base_content = state.base.content.clone();
+            rebased.base_content = upstream_content;
             rebased.based_on_generation = state.generation;
             rebased.working_content = serialize_draft_value(state.format, &result.document)?;
             rebased.conflicts = result.conflicts;
@@ -246,11 +239,12 @@ impl ConfigurationCoordinator {
             return Ok(rebased);
         }
         let (_spec, state) = self.load_current(manager, id).await?;
+        let upstream_content = state.upstream_content()?;
         Ok(RawDraftSession {
             session_id: Uuid::new_v4().to_string(),
             draft_revision: 0,
             based_on_generation: state.generation,
-            base_content: state.base.content.clone(),
+            base_content: upstream_content,
             user_content: state.desired.content.clone(),
             working_content: state.desired.content,
             conflicts: Vec::new(),
@@ -269,6 +263,7 @@ impl ConfigurationCoordinator {
     ) -> Result<RawDraftSession> {
         let _lease = self.lock(id).await;
         let (spec, state) = self.load_current(manager, id).await?;
+        let upstream_content = state.upstream_content()?;
         if draft.draft_revision != expected_revision {
             return Err(CamelliaNexusError::new(
                 ErrorCode::ConfigConflict,
@@ -294,7 +289,7 @@ impl ConfigurationCoordinator {
             None => {
                 if expected_revision != 0
                     || draft.based_on_generation != state.generation
-                    || draft.base_content != state.base.content
+                    || draft.base_content != upstream_content
                 {
                     return Err(CamelliaNexusError::new(
                         ErrorCode::ConfigConflict,
@@ -321,9 +316,9 @@ impl ConfigurationCoordinator {
         if draft.based_on_generation != state.generation {
             let original = parse_draft_value(state.format, &draft.base_content)?;
             if let Ok(user) = parse_draft_value(state.format, &draft.user_content) {
-                let updated = parse_draft_value(state.format, &state.base.content)?;
+                let updated = parse_draft_value(state.format, &upstream_content)?;
                 let rebased = rebase_raw_document(&original, &user, &updated);
-                draft.base_content = state.base.content.clone();
+                draft.base_content = upstream_content;
                 draft.based_on_generation = state.generation;
                 draft.working_content = serialize_draft_value(state.format, &rebased.document)?;
                 draft.conflicts = rebased.conflicts;
@@ -347,14 +342,15 @@ impl ConfigurationCoordinator {
     ) -> Result<RawDraftSession> {
         let _lease = self.lock(id).await;
         let (_spec, state) = self.load_current(manager, id).await?;
+        let upstream_content = state.upstream_content()?;
         let mut draft = self.store.load_raw_draft(id).await?.ok_or_else(|| {
             CamelliaNexusError::new(ErrorCode::NotFound, "Raw configuration draft was not found")
         })?;
         let original = parse_draft_value(state.format, &draft.base_content)?;
         let user = parse_draft_value(state.format, &draft.user_content)?;
-        let updated = parse_draft_value(state.format, &state.base.content)?;
+        let updated = parse_draft_value(state.format, &upstream_content)?;
         let rebased = rebase_raw_document(&original, &user, &updated);
-        draft.base_content = state.base.content.clone();
+        draft.base_content = upstream_content;
         draft.based_on_generation = state.generation;
         draft.working_content = serialize_draft_value(state.format, &rebased.document)?;
         draft.conflicts = rebased.conflicts;
@@ -391,6 +387,23 @@ impl ConfigurationCoordinator {
         Ok(draft)
     }
 
+    pub(crate) async fn resolve_raw_decision(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        decision_id: String,
+        resolution: RawDecisionResolution,
+        expected_generation: u64,
+    ) -> Result<ConfigurationStateView> {
+        let _lease = self.lock(id).await;
+        let (_spec, mut state) = self.load_current(manager, id).await?;
+        ensure_generation(&state, expected_generation)?;
+        let previous_generation = state.generation;
+        state.resolve_raw_decision(&decision_id, resolution, now_unix_ms())?;
+        self.persist_candidate(manager, id, state, previous_generation)
+            .await
+    }
+
     pub(crate) async fn discard_configuration_draft(&self, id: &ProgramId) -> Result<()> {
         let _lease = self.lock(id).await;
         self.store.discard_raw_draft(id).await
@@ -402,7 +415,7 @@ impl ConfigurationCoordinator {
         id: &ProgramId,
     ) -> Result<ConfigurationStateView> {
         let _lease = self.lock(id).await;
-        let (spec, mut state) = self.load_current(manager, id).await?;
+        let (_spec, mut state) = self.load_current(manager, id).await?;
         let mut draft = self.store.load_raw_draft(id).await?.ok_or_else(|| {
             CamelliaNexusError::new(ErrorCode::NotFound, "Raw configuration draft was not found")
         })?;
@@ -417,8 +430,20 @@ impl ConfigurationCoordinator {
         }
         let previous_generation = state.generation;
         state.replace_raw_from_edited(draft.working_content.as_bytes(), now_unix_ms())?;
+        if state
+            .desired
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.severity == camellia_nexus_core::ConflictSeverity::Error)
+        {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Resolve all blocking configuration conflicts before saving the candidate",
+            )
+            .with_message_key("CONFIGURATION_BLOCKING_CONFLICT"));
+        }
         let view = self
-            .validate_existing(manager, id, &spec, state, previous_generation)
+            .persist_candidate(manager, id, state, previous_generation)
             .await?;
         // A draft is only needed while it differs from the authoritative
         // Desired candidate.  Invalid Desired is intentionally durable, so a
@@ -431,6 +456,19 @@ impl ConfigurationCoordinator {
             self.store.discard_raw_draft(id).await?;
         }
         Ok(view)
+    }
+
+    pub(crate) async fn validate_candidate(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        expected_generation: u64,
+    ) -> Result<ConfigurationStateView> {
+        let _lease = self.lock(id).await;
+        let (spec, state) = self.load_current(manager, id).await?;
+        ensure_generation(&state, expected_generation)?;
+        self.validate_existing(manager, id, &spec, state, expected_generation)
+            .await
     }
 
     pub(crate) async fn apply_candidate(
@@ -459,6 +497,11 @@ impl ConfigurationCoordinator {
                 "Desired configuration has not passed Core validation",
             ));
         }
+        // Re-check the exact binary/profile/config evidence before beginning
+        // any active-file transaction. A stale or corrupted persisted
+        // evidence record must fail closed without touching Runtime,
+        // Applied, or Last Known Good.
+        state.ensure_apply_ready()?;
         let active = manager.load_config(id).await?;
         self.store.begin_configuration_apply(id, &state).await?;
         let hash = manager
@@ -538,7 +581,7 @@ impl ConfigurationCoordinator {
         if !has_enabled_sources {
             state.rebuild_desired(now_unix_ms())?;
             return self
-                .validate_and_save(manager, id, &spec, state, previous_generation)
+                .persist_candidate(manager, id, state, previous_generation)
                 .await;
         }
         let snapshots = ordered_snapshots(&spec, &state.source_snapshots);
@@ -579,7 +622,7 @@ impl ConfigurationCoordinator {
             conflicts: merge.conflicts,
         };
         state.rebuild_desired(now_unix_ms())?;
-        self.validate_and_save(manager, id, &spec, state, previous_generation)
+        self.persist_candidate(manager, id, state, previous_generation)
             .await
     }
 
@@ -595,7 +638,7 @@ impl ConfigurationCoordinator {
             camellia_nexus_core::sync_managed_dashboard_intent(&mut state.managed_intent, managed);
         }
         state.rebuild_desired(now_unix_ms())?;
-        self.validate_and_save(manager, id, &spec, state, previous_generation)
+        self.persist_candidate(manager, id, state, previous_generation)
             .await
     }
 
@@ -605,7 +648,7 @@ impl ConfigurationCoordinator {
         id: &ProgramId,
         next_spec: &ProgramSpec,
         expected_generation: Option<u64>,
-        replace_overlapping_raw: bool,
+        _replace_overlapping_raw: bool,
     ) -> Result<PreparedManagedIntegrationUpdate> {
         let lease = self.lock(id).await;
         let (_current, mut state) = self.load_current(manager, id).await?;
@@ -616,33 +659,6 @@ impl ConfigurationCoordinator {
         let empty = camellia_nexus_core::ManagedConfigSpec::default();
         let managed = next_spec.managed_config.as_ref().unwrap_or(&empty);
         camellia_nexus_core::sync_managed_dashboard_intent(&mut state.managed_intent, managed);
-        let overlapping_paths = camellia_nexus_core::managed_raw_override_paths(
-            next_spec.program_type.kind(),
-            &state.managed_intent,
-            &state.raw_intent,
-        );
-        if !overlapping_paths.is_empty() && !replace_overlapping_raw {
-            return Err(CamelliaNexusError::new(
-                ErrorCode::ConfigConflict,
-                "Managed integration is overridden by Raw configuration",
-            )
-            .with_message_key("CONFIGURATION_RAW_OVERRIDE")
-            .with_details(
-                serde_json::to_string(&serde_json::json!({
-                    "messageKey": "CONFIGURATION_RAW_OVERRIDE",
-                    "semanticPaths": overlapping_paths,
-                    "appliedAndLastKnownGoodRetained": true,
-                }))
-                .unwrap_or_else(|_| "CONFIGURATION_RAW_OVERRIDE".into()),
-            ));
-        }
-        if replace_overlapping_raw {
-            camellia_nexus_core::remove_managed_raw_overrides(
-                next_spec.program_type.kind(),
-                &state.managed_intent,
-                &mut state.raw_intent,
-            );
-        }
         state.rebuild_desired(now_unix_ms())?;
         Ok(PreparedManagedIntegrationUpdate {
             _lease: lease,
@@ -655,7 +671,7 @@ impl ConfigurationCoordinator {
         &self,
         manager: &ProgramManager,
         id: &ProgramId,
-        next_spec: &ProgramSpec,
+        _next_spec: &ProgramSpec,
         prepared: PreparedManagedIntegrationUpdate,
     ) -> Result<ConfigurationStateView> {
         let PreparedManagedIntegrationUpdate {
@@ -663,20 +679,23 @@ impl ConfigurationCoordinator {
             state,
             previous_generation,
         } = prepared;
-        self.validate_and_save(manager, id, next_spec, state, previous_generation)
+        self.persist_candidate(manager, id, state, previous_generation)
             .await
     }
 
-    async fn validate_and_save(
+    async fn persist_candidate(
         &self,
         manager: &ProgramManager,
         id: &ProgramId,
-        spec: &ProgramSpec,
-        state: ConfigurationState,
+        mut state: ConfigurationState,
         expected_generation: u64,
     ) -> Result<ConfigurationStateView> {
-        self.validate_existing(manager, id, spec, state, expected_generation)
-            .await
+        let spec = manager.refresh_binary_identity(id).await?;
+        self.retarget_state(id, &spec, &mut state).await?;
+        self.store
+            .save_configuration_state(id, &state, Some(expected_generation))
+            .await?;
+        Ok(view_for_spec(&spec, &state))
     }
 
     async fn validate_existing(
@@ -1148,64 +1167,6 @@ fn reconcile_snapshots(
     }
 }
 
-fn raw_overrides_setting(spec: &ProgramSpec, intent: &RawManualIntent, setting_id: &str) -> bool {
-    let Some(path) = guided_path_for_spec(spec, setting_id) else {
-        return false;
-    };
-    intent.operations.iter().any(|operation| {
-        let operation_path = match operation {
-            camellia_nexus_core::IntentOperation::Set { path, .. }
-            | camellia_nexus_core::IntentOperation::Delete { path }
-            | camellia_nexus_core::IntentOperation::ReorderIdentities { path, .. }
-            | camellia_nexus_core::IntentOperation::ReplaceSequence { path, .. } => path,
-        };
-        path.starts_with(operation_path) || operation_path.starts_with(&path)
-    })
-}
-
-fn remove_raw_override(spec: &ProgramSpec, intent: &mut RawManualIntent, setting_id: &str) {
-    let Some(path) = guided_path_for_spec(spec, setting_id) else {
-        return;
-    };
-    intent.operations.retain(|operation| {
-        let operation_path = match operation {
-            camellia_nexus_core::IntentOperation::Set { path, .. }
-            | camellia_nexus_core::IntentOperation::Delete { path }
-            | camellia_nexus_core::IntentOperation::ReorderIdentities { path, .. }
-            | camellia_nexus_core::IntentOperation::ReplaceSequence { path, .. } => path,
-        };
-        !(path.starts_with(operation_path) || operation_path.starts_with(&path))
-    });
-}
-
-fn guided_path_for_spec(
-    spec: &ProgramSpec,
-    setting_id: &str,
-) -> Option<Vec<camellia_nexus_core::SemanticPathSegment>> {
-    let path = match (spec.program_type.kind(), setting_id) {
-        (ProgramKind::SingBox, "logging.level") => vec!["log", "level"],
-        (ProgramKind::SingBox, "dns.strategy") => vec!["dns", "strategy"],
-        (ProgramKind::SingBox, "routing.autoDetectInterface") => {
-            vec!["route", "auto_detect_interface"]
-        }
-        (ProgramKind::Xray, "logging.level") => vec!["log", "loglevel"],
-        (ProgramKind::Xray, "routing.domainStrategy") => vec!["routing", "domainStrategy"],
-        (ProgramKind::Mihomo, "logging.level") => vec!["log-level"],
-        (ProgramKind::Mihomo, "network.ipv6") => vec!["ipv6"],
-        (ProgramKind::Mihomo, "tun.enabled") => vec!["tun", "enable"],
-        (ProgramKind::Mihomo, "tun.strictRoute") => vec!["tun", "strict-route"],
-        (ProgramKind::Mihomo, "dns.enabled") => vec!["dns", "enable"],
-        (ProgramKind::Mihomo, "dns.mode") => vec!["dns", "enhanced-mode"],
-        (ProgramKind::Mihomo, "routing.mode") => vec!["mode"],
-        _ => return None,
-    };
-    Some(
-        path.into_iter()
-            .map(|key| camellia_nexus_core::SemanticPathSegment::Key { key: key.into() })
-            .collect(),
-    )
-}
-
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1220,8 +1181,8 @@ mod tests {
     use camellia_nexus_core::{
         ConfigSourceSpec, ConfigurationFormat, CoreBinaryFingerprint, CoreCompatibilityPreference,
         CoreCompatibilityReference, CoreProbeReport, CoreTargetIdentity, ExecutableMetadata,
-        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType, RestartPolicy, SCHEMA_VERSION,
-        embedded_core_compatibility_catalog,
+        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramKind, ProgramType, RestartPolicy,
+        SCHEMA_VERSION, embedded_core_compatibility_catalog,
     };
 
     use super::*;
@@ -1322,35 +1283,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["enabled"]
         );
-    }
-
-    #[test]
-    fn guided_replace_removes_only_overlapping_raw_operations() {
-        let program = spec(Vec::new());
-        let key =
-            |value: &str| vec![camellia_nexus_core::SemanticPathSegment::Key { key: value.into() }];
-        let mut intent = RawManualIntent {
-            based_on_revision: None,
-            operations: vec![
-                camellia_nexus_core::IntentOperation::Set {
-                    path: [key("log"), key("loglevel")].concat(),
-                    value: serde_json::json!("debug"),
-                },
-                camellia_nexus_core::IntentOperation::Set {
-                    path: key("routing"),
-                    value: serde_json::json!({"domainStrategy": "IPOnDemand"}),
-                },
-            ],
-        };
-
-        assert!(raw_overrides_setting(&program, &intent, "logging.level"));
-        remove_raw_override(&program, &mut intent, "logging.level");
-        assert_eq!(intent.operations.len(), 1);
-        assert!(matches!(
-            &intent.operations[0],
-            camellia_nexus_core::IntentOperation::Set { path, .. }
-                if path == &key("routing")
-        ));
     }
 
     #[test]

@@ -1472,6 +1472,8 @@
   .workspace-recovery li span { color: var(--ui-text-secondary); }
   .configuration-loading { min-height: calc(var(--panel-resize-height, min(68vh, 900px)) + 76px); }
   .configuration > .generated-config-note { margin-bottom: var(--ui-gap-md); }
+  .configuration-stage-status { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 7px 10px; margin: 0 0 var(--ui-gap-md); color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); }
+  .configuration-stage-status > span:last-child { min-width: min(100%, 260px); flex: 1 1 260px; overflow-wrap: anywhere; }
   .config-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; margin-bottom: 9px; }
   .config-toolbar-tools, .config-toolbar-commit { display: flex; min-width: 0; align-items: center; gap: 8px; }
   .config-toolbar-tools { flex-wrap: wrap; }
@@ -1480,6 +1482,7 @@
   .config-unsaved { display: flex; min-height: 20px; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--ui-warning); font-size: var(--ui-font-size-xs); opacity: 0; }
   .config-unsaved.visible { opacity: 1; }
   .config-unsaved i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .config-saved-pending { display: flex; min-height: 20px; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--ui-accent); font-size: var(--ui-font-size-xs); }
   .config-editor-resize { position: relative; min-height: 260px; height: var(--panel-resize-height, min(68vh, 900px)); max-height: 2400px; overflow: hidden; padding-bottom: 4px; }
   .log-grid-frame { min-height: 360px; height: min(68vh, 900px); overflow: hidden; }
   .config-editor-resize { --code-editor-height: calc(100% - 8px); --code-editor-min-height: 0px; }

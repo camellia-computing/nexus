@@ -280,9 +280,9 @@ export const api = {
     initialConfig?: string;
   }) => invoke<void>('create_program', { request }),
   listInvalidPrograms: () => invoke<InvalidProgram[]>('list_invalid_programs'),
-  updateProgram: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = true) =>
+  updateProgram: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = false) =>
     invoke<void>('update_program', { spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyAfterCommit }),
-  updateProgramAndRestart: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = true) =>
+  updateProgramAndRestart: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = false) =>
     invoke<void>('update_program_and_restart', { spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyAfterCommit }),
   removeProgram: (programId: string) => invoke<void>('remove_program', { programId }),
   startProgram: (programId: string) => invoke<void>('start_program', { programId }),
@@ -297,6 +297,8 @@ export const api = {
     invoke<ConfigurationSchemaDocument | null>('load_configuration_schema', { programId }),
   getConfigurationState: (programId: string) =>
     invoke<import('./types').ConfigurationStateView>('get_configuration_state', { programId }),
+  getConfigurationWorkspace: (programId: string) =>
+    invoke<import('./types').ConfigurationStateView>('get_configuration_workspace', { programId }),
   setGuidedIntent: (
     programId: string,
     request: { settingId: string; value?: unknown; expectedGeneration: number; replaceRawOverride?: boolean },
@@ -320,10 +322,24 @@ export const api = {
       programId,
       request: { conflictId, resolution },
     }),
+  resolveRawDecision: (
+    programId: string,
+    decisionId: string,
+    resolution: import('./types').RawDecisionResolution,
+    expectedGeneration: number,
+  ) => invoke<import('./types').ConfigurationStateView>('resolve_raw_decision', {
+    programId,
+    request: { decisionId, resolution, expectedGeneration },
+  }),
   discardConfigurationDraft: (programId: string) =>
     invoke<void>('discard_configuration_draft', { programId }),
   commitConfigurationDraft: (programId: string) =>
     invoke<import('./types').ConfigurationStateView>('commit_configuration_draft', { programId }),
+  validateConfigurationCandidate: (programId: string, expectedGeneration: number) =>
+    invoke<import('./types').ConfigurationStateView>('validate_configuration_candidate', {
+      programId,
+      expectedGeneration,
+    }),
   applyConfigurationCandidate: (programId: string, expectedGeneration: number) =>
     invoke<import('./types').ConfigurationStateView>('apply_configuration_candidate', {
       programId,

@@ -108,6 +108,39 @@ test('program configuration stages use sibling workspaces without overflow', asy
   await expect(page.getByRole('tab', { name: 'Configuration', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
+test('Intent settings use the available panel width at compact desktop sizes', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const grid = page.locator('#program-panel-intent .guided-grid');
+  await expect(grid).toBeVisible();
+
+  for (const width of [1280, 1024, 760, 680, 520]) {
+    await page.setViewportSize({ width, height: 820 });
+    await expectNoViewportOverflow(page);
+    const layout = await grid.evaluate((element) => {
+      const cards = [...element.querySelectorAll<HTMLElement>(':scope > article')]
+        .map((card) => card.getBoundingClientRect());
+      const rows = new Set(cards.map((card) => Math.round(card.top)));
+      const bounds = element.getBoundingClientRect();
+      return {
+        columns: Math.max(0, ...cards.map((card) => Math.round(card.left))) === 0
+          ? 0
+          : new Set(cards.map((card) => Math.round(card.left))).size,
+        rows: rows.size,
+        cardOverflow: Math.max(0, ...cards.map((card) => Math.max(
+          bounds.left - card.left,
+          card.right - bounds.right,
+        ))),
+      };
+    });
+    expect(layout.cardOverflow).toBeLessThanOrEqual(1);
+    if (width === 520) expect(layout.columns).toBe(1);
+    if (width === 1024) expect(layout.columns).toBeGreaterThanOrEqual(2);
+    if (width === 1280) expect(layout.columns).toBeGreaterThanOrEqual(2);
+  }
+});
+
 async function replaceEditorContent(page: Page, editor: Locator, content: string) {
   await editor.focus();
   await page.keyboard.press('ControlOrMeta+A');
@@ -3035,24 +3068,41 @@ test('compatibility errors decode native wrappers and never leak into sibling ta
   await expect(panel.getByLabel('Reference compatibility target')).toHaveValue('');
 });
 
-test('Raw deletion leaves every overridden Guided control re-enterable', async ({ page }) => {
+test('Raw superseded decisions keep Guided controls re-enterable', async ({ page }) => {
   await page.setViewportSize({ width: 520, height: 820 });
   await openPreview(page, 'material', 'dark', 1.15, '&__ui_raw_all_override');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const guided = page.locator('#program-panel-intent .guided-workspace');
   await expect(guided.locator('article')).toHaveCount(2);
-  await expect(guided.locator('.projection-status').filter({ hasText: 'Overridden by Raw' }).first()).toBeVisible();
+  await expect(guided.locator('.projection-status').filter({ hasText: 'Final decision in Raw' }).first()).toBeVisible();
   const first = guided.locator('article').first();
   const control = first.locator('select');
   await expect(control).toBeEnabled();
   await control.selectOption('debug');
-  const confirmation = page.getByRole('alertdialog');
-  await expect(confirmation).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Use Guided setting', exact: true }).click();
-  await expect(first.getByText('Explicit', { exact: true })).toBeVisible();
+  await expect(first.getByText('Final decision in Raw', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const finalConfiguration = page.locator('.raw-decision-panel');
+  await expect(finalConfiguration).toBeVisible();
+  await expect(finalConfiguration.getByText('Superseded', { exact: true })).toBeVisible();
+  await expect(page.getByText('Saved candidate is ready to apply.', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.config-save')).toBeDisabled();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await expectNoViewportOverflow(page);
   await expectAccessible(page, '#program-panel-intent');
+});
+
+test('Raw final decisions can accept upstream without reopening the program', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_raw_all_override');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const panel = page.locator('.raw-decision-panel');
+  await panel.getByRole('button', { name: /\/log\/loglevel/ }).click();
+  await panel.getByRole('button', { name: 'Accept upstream', exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.locator('#program-panel-intent .projection-status').filter({ hasText: 'Final decision in Raw' })).toHaveCount(0);
 });
 
 test('Guided intent updates the Desired document and remains re-enterable', async ({ page }) => {
@@ -3082,6 +3132,52 @@ test('Guided intent updates the Desired document and remains re-enterable', asyn
   await expectAccessible(page, '#program-panel-intent');
 });
 
+test('Save, native validation and Apply remain three explicit configuration stages', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toBeVisible();
+  const save = page.getByRole('button', { name: 'Save candidate', exact: true });
+  const validate = page.getByRole('button', { name: 'Validate', exact: true });
+  const apply = page.getByRole('button', { name: 'Apply configuration', exact: true });
+
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+  await expect(save).toBeEnabled();
+  await save.click();
+
+  await expect(page.getByText('Configuration candidate saved; validate it before applying', { exact: true })).toBeVisible();
+  await expect(page.getByText('Pending validation', { exact: true }).first()).toBeVisible();
+  await expect(apply).toBeDisabled();
+
+  await validate.click();
+  await expect(page.getByText('Configuration is valid', { exact: true })).toBeVisible();
+  await expect(apply).toBeEnabled();
+  await apply.click();
+  await expect(page.getByText('Saved candidate is ready to apply.', { exact: true })).toHaveCount(0);
+  await expect(apply).toBeDisabled();
+});
+
+test('a committed Raw decision does not resurrect its editor draft after an upstream change', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  await replaceEditorContent(page, editor, '{"log":{"level":"fatal"}}');
+  await page.getByRole('button', { name: 'Save candidate', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toHaveCount(0);
+  await expect(page.locator('.config-unsaved')).toHaveCount(0);
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Log level').selectOption('warn');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+
+  await expect(page.locator('.raw-conflict-panel')).toHaveCount(0);
+  await expect(page.locator('.config-unsaved')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toHaveCount(0);
+});
+
 test('managed Dashboard ownership stays in Details and never leaks container conflicts into Intent', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 820 });
   await openPreview(page, 'cupertino', 'light');
@@ -3100,7 +3196,7 @@ test('managed Dashboard ownership stays in Details and never leaks container con
   await expectAccessible(page, '#program-panel-intent');
 });
 
-test('Details takeover confirmation is cancel-safe and removes only managed Raw ownership', async ({ page }) => {
+test('Details saves do not prompt destructive Raw takeover for unrelated paths', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 860 });
   await openPreview(page, 'material', 'dark', 1, '&__ui_raw_all_override');
   await openProgramDetails(page, 'sing-box-edge');
@@ -3111,18 +3207,9 @@ test('Details takeover confirmation is cancel-safe and removes only managed Raw 
 
   await nativePort.fill('9095');
   await details.locator('.change-notice').getByRole('button', { name: 'Save', exact: true }).click();
-  let confirmation = page.getByRole('alertdialog');
-  await expect(confirmation).toContainText('Only Raw semantics owned by the changed Details integration will be removed');
-  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(nativePort).toHaveValue('9090');
-
-  await nativePort.fill('9095');
-  await details.locator('.change-notice').getByRole('button', { name: 'Save', exact: true }).click();
-  confirmation = page.getByRole('alertdialog');
-  await confirmation.getByRole('button', { name: 'Confirm takeover', exact: true }).click();
   await expect(nativePort).toHaveValue('9095');
   await expect(details.getByText('Managed by Details', { exact: true })).toHaveCount(2);
-  await expect(details.getByText('Overridden by Raw', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
   await expectNoViewportOverflow(page);
 });
 
@@ -3136,6 +3223,22 @@ test('a saved Raw draft can be discarded outside conflict mode', async ({ page }
   await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toHaveCount(0);
   await expect(editor).toContainText('proxy-sg');
   await expectNoViewportOverflow(page);
+});
+
+test('Revert removes the durable Raw draft instead of only changing editor text', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await replaceEditorContent(page, editor, '{"route":{"final":"durable-draft"}}');
+  await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Revert', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toHaveCount(0);
+  await expect(editor).toContainText('proxy-sg');
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toHaveCount(0);
+  await expect(editor).toContainText('proxy-sg');
 });
 
 test('Raw conflict markers resolve inline and stay coherent across editor undo and redo', async ({ page }, testInfo) => {
@@ -3350,9 +3453,20 @@ test('the JSON configuration editor supports diagnostics, formatting and command
   await page.keyboard.press('Control+Enter');
   await expect(page.locator('.result').getByText('Valid configuration', { exact: true })).toBeVisible();
 
+  await replaceEditorContent(page, editor, '{"route":{"final":"block"}}');
   await editor.focus();
   await page.keyboard.press('Control+s');
-  await expect(page.locator('.result pre')).toContainText('Configuration saved');
+  await expect(page.locator('.result pre')).toContainText('Configuration candidate saved; validate it before applying');
+  await expect(page.locator('.config-save')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Save candidate', exact: true })).toBeDisabled();
+  await expect(editor.locator('.cm-line')).toHaveText([
+    '{',
+    '  "route": {',
+    '    "final": "block"',
+    '  }',
+    '}',
+    '',
+  ]);
   await expectNoViewportOverflow(page);
   await shell.screenshot({ path: testInfo.outputPath('configuration-editor-json-commands.png') });
 });

@@ -16,6 +16,7 @@ export type ConfigurationErrorContext =
   | 'compatibility-save'
   | 'guided-change'
   | 'raw-draft'
+  | 'configuration-save'
   | 'configuration-validate'
   | 'configuration-apply'
   | 'configuration-rebase';
@@ -277,6 +278,7 @@ const configurationContextLabels: Record<ConfigurationErrorContext, { title: str
   'compatibility-save': { title: 'Compatibility baseline could not be saved' },
   'guided-change': { title: 'Guided setting could not be applied' },
   'raw-draft': { title: 'Raw configuration draft could not be saved' },
+  'configuration-save': { title: 'Configuration candidate could not be saved' },
   'configuration-validate': { title: 'Configuration validation could not be completed' },
   'configuration-apply': { title: 'Configuration could not be applied' },
   'configuration-rebase': { title: 'Configuration draft could not be rebased' },
@@ -343,6 +345,16 @@ export function configurationErrorInfo(
       suggestion: 'Review the listed semantic paths, then confirm takeover to remove only overlapping Raw semantics or cancel to keep the current state.',
     };
   }
+  if (base.messageKey === 'CONFIGURATION_BLOCKING_CONFLICT') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The candidate still has blocking configuration conflicts and was not saved.',
+      fallbackMessage: '候选配置仍有阻塞性冲突，因此未保存。',
+      details: base.details || base.message,
+      suggestion: 'Resolve each conflict in its owning section or Final configuration, then save again.',
+    };
+  }
   if (base.code === 'PROGRAM_BUSY' || /program is busy|another operation/.test(technical)) {
     return {
       ...base,
@@ -359,6 +371,19 @@ export function configurationErrorInfo(
       message: 'The configuration changed elsewhere before this request was committed.',
       fallbackMessage: '配置在本次操作提交前已在其他位置更新。当前草稿和有效配置均已保留。',
       suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
+    };
+  }
+  if (
+    base.code === 'CONFIG_INVALID'
+    && /not valid json|not valid yaml|root must be an object|unsupported non-string keys/.test(technical)
+  ) {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The final configuration has a syntax or document-structure error. It was not sent to the Core.',
+      fallbackMessage: '最终配置存在语法或文档结构错误，尚未提交给 Core 校验。',
+      details: base.details || base.message,
+      suggestion: 'Correct the highlighted JSON/YAML error, then save or validate the candidate again.',
     };
   }
   if (base.code === 'CONFIG_INVALID' || /native validator|core rejected|validation failed/.test(technical)) {
