@@ -99,6 +99,8 @@
   export let jsonSchemaSemantics: JsonSchemaCompletionSemantics | undefined;
   export let markers: ConfigurationEditorMarker[] = [];
   export let activeMarkerId = '';
+  /** Semantic path selected from the Final configuration trace table. */
+  export let focusSemanticPath = '';
   export let markerActionsDisabled = false;
 
   const dispatch = createEventDispatcher<{
@@ -109,6 +111,7 @@
       conflictId: string;
       resolution: ConfigurationEditorMarkerResolution;
     };
+    pathFocus: { path: string; found: boolean };
   }>();
 
   const instanceId = ++nextEditorInstance;
@@ -291,6 +294,7 @@
   let appliedRevision = revision;
   let appliedMarkerIdentity = '';
   let appliedActiveMarkerId = '';
+  let appliedFocusSemanticPath = '';
 
   $: formatAvailable = language === 'jsonc' || language === 'yaml';
   $: schemaEnhancementExpected = configurationSchemaLoading
@@ -900,6 +904,42 @@
     }
   }
 
+  function focusPath(path: string): void {
+    if (!view || !path) return;
+    const rawKey = path.split('/').filter(Boolean).pop();
+    if (!rawKey) return;
+    const key = rawKey.replace(/\[.*$/u, '').replace(/~1/g, '/').replace(/~0/g, '~');
+    if (!key) {
+      dispatch('pathFocus', { path, found: false });
+      return;
+    }
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const document = view.state.doc;
+    let found = -1;
+    for (let lineNumber = 1; lineNumber <= document.lines; lineNumber += 1) {
+      const line = document.line(lineNumber);
+      if (new RegExp(`(?:["']${escapedKey}["']|^\\s*${escapedKey})\\s*:`).test(line.text)) {
+        found = line.from;
+        break;
+      }
+    }
+    if (found < 0) {
+      dispatch('pathFocus', { path, found: false });
+      return;
+    }
+    view.dispatch({
+      selection: { anchor: found, head: Math.min(document.length, found + key.length) },
+      effects: EditorView.scrollIntoView(found, { y: 'center' }),
+    });
+    view.focus();
+    dispatch('pathFocus', { path, found: true });
+  }
+
+  $: if (view && focusSemanticPath !== appliedFocusSemanticPath) {
+    appliedFocusSemanticPath = focusSemanticPath;
+    focusPath(focusSemanticPath);
+  }
+
   $: if (mounted) {
     void synchronizeJsonSchema(
       configurationSchema,
@@ -954,6 +994,11 @@
     if (markerIdentity !== appliedMarkerIdentity || activeChanged) {
       appliedMarkerIdentity = markerIdentity;
       appliedActiveMarkerId = activeMarkerId;
+      // CodeMirror keeps the previous async lint result until the next
+      // promise resolves. Clear it when the authoritative marker projection
+      // changes so a resolved Raw conflict cannot remain visible as a stale
+      // error while the new diagnostics are recomputed.
+      view.dispatch(setDiagnostics(view.state, []));
       synchronizeMarkerDecorations(view, activeChanged);
       forceLinting(view);
     }

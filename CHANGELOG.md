@@ -3,6 +3,20 @@
 All notable changes to Camellia Nexus will be recorded here from the first
 commercial release onward.
 
+## [1.0.7] - 2026-08-19
+
+### Build
+
+- update pnpm to 11.22.0 (#30)
+
+
+### Fixed
+
+- remediate frontend audit vulnerabilities (#31)
+
+- remediate deepmerge audit advisory (#34)
+
+
 ## [1.0.6] - 2026-08-09
 
 ### Fixed

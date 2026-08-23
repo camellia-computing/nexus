@@ -12,14 +12,22 @@
 
   const dispatch = createEventDispatcher<{
     resolve: { decisionId: string; resolution: RawDecisionResolution };
+    focusPath: { path: string };
   }>();
   let expanded = '';
   let manualValues: Record<string, string> = {};
   let manualErrors: Record<string, string> = {};
 
-  $: visible = workspace.rawDecisions.filter((decision) => decision.status !== 'dormant');
+  $: visible = workspace.rawDecisions;
   $: superseded = visible.filter((decision) => decision.status === 'superseded');
-  $: active = visible.filter((decision) => decision.status === 'active' || decision.status === 'resolved');
+  $: active = visible.filter((decision) => decision.status === 'active');
+  $: resolved = visible.filter((decision) => decision.status === 'resolved');
+  $: dormant = visible.filter((decision) => decision.status === 'dormant');
+
+  function effectiveValue(decision: RawDecisionProjection): unknown {
+    return workspace.layerTrace.find((trace) => trace.rawDecisionId === decision.decisionId)?.effectiveValue
+      ?? decision.upstreamValue;
+  }
 
   function toggle(decision: RawDecisionProjection) {
     expanded = expanded === decision.decisionId ? '' : decision.decisionId;
@@ -55,7 +63,9 @@
       </div>
       <div class="counts" aria-live="polite">
         {#if active.length}<span class="status active">{active.length} {$t('Active')}</span>{/if}
+        {#if resolved.length}<span class="status resolved">{resolved.length} {$t('Resolved')}</span>{/if}
         {#if superseded.length}<span class="status superseded">{superseded.length} {$t('Superseded')}</span>{/if}
+        {#if dormant.length}<span class="status dormant">{dormant.length} {$t('Dormant')}</span>{/if}
       </div>
     </header>
     <p class="help">
@@ -73,13 +83,15 @@
             on:click={() => toggle(decision)}
           >
             <span>{decision.semanticPath}</span>
-            <small>{$t(decision.status === 'superseded' ? 'Superseded' : decision.status === 'resolved' ? 'Resolved' : 'Active')}</small>
+            <small>{$t(decision.status === 'superseded' ? 'Superseded' : decision.status === 'resolved' ? 'Resolved' : decision.status === 'dormant' ? 'Dormant' : 'Active')}</small>
           </button>
           {#if expanded === decision.decisionId}
             <div class="decision-values">
               <div><small>{$t('Current upstream')}</small><pre>{JSON.stringify(decision.upstreamValue, null, 2) ?? $t('Field absent')}</pre></div>
               <div><small>{$t('Raw decision')}</small><pre>{JSON.stringify(decision.rawValue, null, 2) ?? $t('Delete field')}</pre></div>
+              <div><small>{$t('Effective value')}</small><pre>{JSON.stringify(effectiveValue(decision), null, 2) ?? $t('Field absent')}</pre></div>
             </div>
+            <div class="decision-basis"><span>{$t('Basis generation')}: {decision.basis.upstreamGeneration}</span><code>{decision.basis.upstreamContentHash.slice(0, 12)}</code><code>{decision.basis.upstreamPathHash.slice(0, 12)}</code><button type="button" on:click={() => dispatch('focusPath', { path: decision.semanticPath })}>{$t('Locate in editor')}</button></div>
             {#if decision.status === 'superseded'}
               <div class="resolution-actions">
                 <button type="button" on:click={() => resolve(decision, 'acceptUpstream')} disabled={disabled}>{$t('Accept upstream')}</button>
@@ -116,6 +128,7 @@
   .counts { flex-wrap: wrap; }
   .status { padding: 3px 7px; border-radius: 999px; font-size: .72rem; background: rgba(80, 105, 145, .12); }
   .status.superseded { color: #9b3030; background: rgba(205, 80, 80, .12); }
+  .status.dormant { opacity: .62; }
   .help { margin: 0; font-size: .82rem; opacity: .76; }
   ol { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
   li { min-width: 0; border: 1px solid rgba(82, 110, 160, .16); border-radius: 9px; background: rgba(255,255,255,.38); }
@@ -123,10 +136,11 @@
   .decision-heading { width: 100%; justify-content: space-between; min-width: 0; padding: 9px 10px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
   .decision-heading span { min-width: 0; overflow-wrap: anywhere; font: .78rem/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; }
   .decision-heading small { flex: 0 0 auto; opacity: .7; }
-  .decision-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 10px 9px; }
+  .decision-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0 10px 9px; }
   .decision-values small { opacity: .7; }
   pre { max-height: 180px; margin: 4px 0 0; overflow: auto; padding: 7px; border-radius: 6px; background: rgba(20,30,45,.08); font-size: .72rem; white-space: pre-wrap; overflow-wrap: anywhere; }
   .resolution-actions { flex-wrap: wrap; padding: 0 10px 10px; }
+  .decision-basis { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px 9px; padding: 0 10px 10px; color: inherit; font-size: .72rem; opacity: .78; }.decision-basis code { overflow-wrap: anywhere; }.decision-basis button { margin-left: auto; opacity: 1; }
   .manual-resolution { display: grid; gap: 6px; padding: 0 10px 10px; }
   .manual-resolution label { font-size: .78rem; font-weight: 650; }
   .manual-resolution textarea { width: 100%; min-width: 0; resize: vertical; padding: 8px; border: 1px solid rgba(90,110,150,.3); border-radius: 7px; background: rgba(255,255,255,.55); color: inherit; font: .76rem/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -134,5 +148,5 @@
   .manual-resolution button { justify-self: start; }
   button { border: 1px solid rgba(90,110,150,.28); border-radius: 7px; padding: 6px 9px; background: transparent; color: inherit; cursor: pointer; }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  @media (max-width: 680px) { .decision-values { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } }
+  @media (max-width: 760px) { .decision-values { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } .decision-basis button { margin-left: 0; } }
 </style>

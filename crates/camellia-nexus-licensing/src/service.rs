@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -537,6 +538,69 @@ impl AuthorizationService {
 
     pub fn state(&self) -> EntitlementState {
         self.guard.current_entitlement_state()
+    }
+
+    /// Temporary local-only test hook. This method exists only in the isolated
+    /// Windows build copy and must never be carried into a release branch.
+    pub fn assume_active_for_local_testing(&self, now: i64) {
+        let all_capabilities = vec![
+            crate::Capability::ManagedConfigSources,
+            crate::Capability::AdvancedDiagnostics,
+            crate::Capability::CloudSync,
+            crate::Capability::RemoteDashboard,
+            crate::Capability::Alerts,
+            crate::Capability::SharedConfigurations,
+            crate::Capability::TeamAdministration,
+            crate::Capability::AuditLog,
+            crate::Capability::Webhooks,
+            crate::Capability::ManagedProgramPackages,
+        ];
+        let entitlement = crate::VerifiedEntitlement {
+            key_id: "local-test".into(),
+            claims: crate::EntitlementClaims {
+                schema_version: 3,
+                iss: self.authority.issuer.clone(),
+                aud: self.authority.audience.clone(),
+                sub: "local-test".into(),
+                license_id: "local-test".into(),
+                device_id: "local-test".into(),
+                device_key_thumbprint: "local-test".into(),
+                plan: crate::Plan::Pro,
+                plan_revision: 1,
+                policy_hash: "0".repeat(64),
+                license_status: crate::LicenseStanding::Active,
+                capabilities: all_capabilities,
+                workspace_permissions: Vec::new(),
+                limits: BTreeMap::from([
+                    (crate::NumericLimit::MaxPrograms, 100),
+                    (crate::NumericLimit::MaxConfigSourcesPerProgram, 100),
+                    (crate::NumericLimit::MaxTeamMembers, 100),
+                    (crate::NumericLimit::MaxRemoteMonitors, 100),
+                    (crate::NumericLimit::MaxSharedPrograms, 100),
+                    (crate::NumericLimit::MaxWebhookEndpoints, 100),
+                    (crate::NumericLimit::MaxWorkspaceStorageBytes, 1_000_000_000),
+                    (crate::NumericLimit::MaxAlertRules, 100),
+                    (crate::NumericLimit::MaxAuditExportEvents, 100_000),
+                ]),
+                client_version_policy: crate::ClientVersionPolicy {
+                    minimum_version: "0.0.0".into(),
+                    recommended_version: "0.0.0".into(),
+                    enforce_after: i64::MAX,
+                },
+                license_expires_at: None,
+                license_epoch: self.authority.minimum_license_epoch,
+                device_limit: 100,
+                member_limit: 100,
+                offline_access_ends_at: now.saturating_add(365 * 24 * 60 * 60),
+                issued_at: now,
+                refresh_after: now.saturating_add(365 * 24 * 60 * 60),
+                expires_at: now.saturating_add(365 * 24 * 60 * 60),
+                token_id: "local-test".into(),
+                key_id: "local-test".into(),
+            },
+        };
+        self.guard
+            .replace_state(EntitlementState::Active { entitlement });
     }
 
     /// Loads the locally registered device without exposing its private key.

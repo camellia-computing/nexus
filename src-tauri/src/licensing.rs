@@ -60,7 +60,7 @@ pub(crate) fn initialize() -> Arc<AuthorizationService> {
     )
     .expect("embedded entitlement public keys must be valid ES256 keys");
     let secure_store = secure_store();
-    Arc::new(AuthorizationService::initialize(
+    let service = Arc::new(AuthorizationService::initialize(
         secure_store,
         LicensingAuthority {
             issuer: authority.issuer,
@@ -71,7 +71,12 @@ pub(crate) fn initialize() -> Arc<AuthorizationService> {
         ClientBuildIdentity::parse(env!("CARGO_PKG_VERSION"))
             .expect("Cargo package version must be canonical SemVer"),
         unix_now(),
-    ))
+    ));
+    // Temporary local-only test hook. This source copy is never released.
+    if std::env::var("CAMELLIA_NEXUS_LOCAL_ASSUME_ACTIVE").as_deref() == Ok("1") {
+        service.assume_active_for_local_testing(unix_now());
+    }
+    service
 }
 
 fn embedded_authority() -> EmbeddedAuthority {

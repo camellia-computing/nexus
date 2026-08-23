@@ -9,9 +9,9 @@
   import GuidedConfigurationEditor from './GuidedConfigurationEditor.svelte';
   import ManagedIntegrationStatus from './ManagedIntegrationStatus.svelte';
   import ConfigurationSurfaceIssues from './ConfigurationSurfaceIssues.svelte';
+  import FinalConfigurationWorkspace from './FinalConfigurationWorkspace.svelte';
   import ShareImportPreviewDialog from './ShareImportPreview.svelte';
   import RawConfigurationConflictPanel from './RawConfigurationConflictPanel.svelte';
-  import RawDecisionPanel from './RawDecisionPanel.svelte';
   import EnvironmentEditor from './EnvironmentEditor.svelte';
   import ErrorNotice from './ErrorNotice.svelte';
   import HomeDashboard from './features/home/HomeDashboard.svelte';
@@ -391,6 +391,8 @@
   let rawDraftSavePromise: Promise<RawDraftSession> | null = null;
   let rawDraftSaveProgramId = '';
   let configContent = '';
+  let focusSemanticPath = '';
+  let pathFocusMessage = '';
   let configEditorDirty = false;
   let candidatePendingApply = false;
   let configSaveRequiresRestart = false;
@@ -714,6 +716,23 @@
       configurationState.appliedRevision?.generation !== configurationState.desired.revision.generation
       || configurationState.appliedRevision?.contentHash !== configurationState.desired.revision.contentHash
     );
+  $: compatibilityValidationBlocked = !!busy
+    || !canRunDiagnosticsByLicense
+    || compatibilityChanged
+    || !!configEditorDirty
+    || !!rawDraftSession?.draftRevision
+    || !(configurationState?.workspace.canValidate ?? false);
+  $: compatibilityValidationReason = !canRunDiagnosticsByLicense
+    ? licenseActionHint
+    : compatibilityChanged
+      ? 'Save the compatibility target before validation.'
+      : configEditorDirty || !!rawDraftSession?.draftRevision
+      ? 'Draft must be saved or discarded first.'
+      : configurationState?.workspace.gateBlockers.some((blocker) => blocker.blocks.includes('validate'))
+        ? 'Resolve blocking conflicts before validation.'
+        : busy
+          ? 'Validation is unavailable while another configuration operation is running.'
+          : 'No current candidate is available for validation.';
   $: configSaveRequiresRestart = !!detail && isRuntimeActive(detail.state);
   $: createDashboardOptionsValue = dashboardOptionsFromDraft(createDraft);
   $: detailDashboardOptionsValue = dashboardOptionsFromManagedConfig(
@@ -1347,10 +1366,10 @@
       && draft.draftRevision > 0
       && draft.basedOnGeneration === state.generation
       ? draft.workingContent
-      : state.desired.content;
+      : state.workspace.editableDocument;
     if (localEditorDraft !== null) {
       configContent = localEditorDraft;
-      rawDraftAutosaveContent = draft?.workingContent ?? state.desired.content;
+      rawDraftAutosaveContent = draft?.workingContent ?? state.workspace.editableDocument;
     } else {
       configContent = draftContent;
       rawDraftAutosaveContent = draftContent;
@@ -1358,7 +1377,7 @@
     if (configDocument) {
       configDocument = {
         ...configDocument,
-        content: state.desired.content,
+        content: state.workspace.finalPreviewDocument,
         baseHash: state.desired.revision.contentHash,
         language: state.format,
       };
@@ -2126,14 +2145,22 @@
   }
 
   function runtimeIntegrationFingerprint(spec: ProgramSpec) {
-    return JSON.stringify(spec.managedConfig
+    const integrations = spec.managedConfig
       ? {
           singBoxDashboard: spec.managedConfig.singBoxDashboard,
           singBoxClashDashboard: spec.managedConfig.singBoxClashDashboard,
           xrayDashboard: spec.managedConfig.xrayDashboard,
           mihomoDashboard: spec.managedConfig.mihomoDashboard,
         }
-      : null);
+      : null;
+    // Creating the managed source shell is not a runtime integration change.
+    // Keep the fingerprint stable until a dashboard integration actually has
+    // a value, so a Sources-only save does not leave a false Details draft.
+    return JSON.stringify(
+      integrations && Object.values(integrations).some((value) => value !== undefined)
+        ? integrations
+        : null,
+    );
   }
 
   function validHttpsUrl(value: string) {
@@ -2836,21 +2863,30 @@
               const nonSourceSpec = structuredClone(spec) as ProgramSpec;
               if (nonSourceSpec.managedConfig) {
                 nonSourceSpec.managedConfig.sources = structuredClone(
-                  detail?.spec.managedConfig?.sources ?? [],
+                  persistedSpecForScope?.managedConfig?.sources
+                    ?? (scope === 'sources' && !persistedSpecForScope?.managedConfig ? [] : detail?.spec.managedConfig?.sources ?? []),
                 );
                 nonSourceSpec.managedConfig.remoteUpdate = structuredClone(
-                  detail?.spec.managedConfig?.remoteUpdate,
+                  persistedSpecForScope?.managedConfig?.remoteUpdate
+                    ?? (scope === 'sources' && !persistedSpecForScope?.managedConfig ? undefined : detail?.spec.managedConfig?.remoteUpdate),
                 );
               }
               // A Sources-only save is committed by the dedicated Rust
               // source transaction below.  Sending the full ProgramSpec
               // first duplicates that write and can race the controller's
               // mutation lease, surfacing a misleading PROGRAM_BUSY even
-              // though the program is stopped.  Details/all saves still
-              // persist their non-source fields first, then the source
-              // transaction rebases the candidate against that authoritative
-              // generation.
-              if (scope !== 'sources') await api.updateProgram(nonSourceSpec, expectedConfigurationGeneration, replaceOverlappingRaw, false);
+              // though the program is stopped.  The one exception is the
+              // first Sources save: persist the empty managed-config shell
+              // before the source transaction so the backend has an enabled
+              // source domain to update.  Details/all saves still persist
+              // their non-source fields first, then the source transaction
+              // rebases the candidate against that authoritative generation.
+              const enablingManagedSources = scope === 'sources'
+                && !persistedSpecForScope?.managedConfig
+                && !!nonSourceSpec.managedConfig;
+              if (scope !== 'sources' || enablingManagedSources) {
+                await api.updateProgram(nonSourceSpec, expectedConfigurationGeneration, replaceOverlappingRaw, false);
+              }
               const currentState = await api.getConfigurationState(id);
               const state = await api.updateConfigurationSources(
                 id,
@@ -2872,8 +2908,11 @@
               await adoptConfigurationState(id, retargeted);
               if (selectedId === id) {
                 compatibilitySaveStatus = retargeted.desired.validation === 'valid'
-                  ? 'Compatibility target saved; the candidate is validated and ready to apply.'
-                  : 'Compatibility target saved; validation is required before activation.';
+                  && retargeted.desired.validationEvidence?.nativeAccepted
+                  ? 'Compatibility target saved; the exact binary accepted this candidate.'
+                  : retargeted.desired.validation === 'invalid'
+                    ? 'Compatibility target saved, but the candidate needs attention. Applied and Last Known Good were retained.'
+                    : 'Compatibility target saved; validation is required before activation.';
               }
             } else {
               await api.updateProgram(spec, expectedConfigurationGeneration, replaceOverlappingRaw, false);
@@ -3862,13 +3901,13 @@
           activeRawConflictId = firstUnresolvedConflictId(draft);
           configDocument = {
             ...document,
-            content: state.desired.content,
+            content: state.workspace.finalPreviewDocument,
             baseHash: state.desired.revision.contentHash,
             language: state.format,
           };
           configContent = draft.draftRevision > 0 && draft.basedOnGeneration === state.generation
             ? draft.workingContent
-            : state.desired.content;
+            : state.workspace.editableDocument;
           rawDraftAutosaveContent = configContent;
           void loadConfigurationSchemaForEditor(id, document.configurationSchema);
         },
@@ -4012,7 +4051,7 @@
         const committedEditorDraft = configEditorDirty;
         if (committedEditorDraft) state = await commitRawEditorDraft(id, content);
         state = await api.validateConfigurationCandidate(id, state.generation);
-        if (selectedId !== id || (activeTab !== 'intent' && activeTab !== 'configuration')) return;
+        if (selectedId !== id || !['intent', 'configuration', 'compatibility'].includes(activeTab)) return;
         await adoptConfigurationState(id, state, true, !committedEditorDraft);
         if (state.desired.validation === 'valid') {
           setConfigOutputMessage('Configuration is valid.');
@@ -4061,12 +4100,12 @@
       if (selectedId === id) {
         rawDraftSession = cleanDraft;
         activeRawConflictId = firstUnresolvedConflictId(cleanDraft);
-        configContent = state.desired.content;
-        rawDraftAutosaveContent = state.desired.content;
+        configContent = state.workspace.editableDocument;
+        rawDraftAutosaveContent = state.workspace.editableDocument;
         if (configDocument) {
           configDocument = {
             ...configDocument,
-            content: state.desired.content,
+            content: state.workspace.finalPreviewDocument,
             baseHash: state.desired.revision.contentHash,
             language: state.format,
           };
@@ -4128,6 +4167,38 @@
   function validateConfigurationFromEditor() {
     if (busy || !canRunDiagnosticsByLicense || !configurationState?.workspace.canValidate) return;
     void validateConfiguration();
+  }
+
+  async function validateCompatibilityCandidate() {
+    if (!selectedId || !configurationState || busy || !canRunDiagnosticsByLicense) return;
+    const id = selectedId;
+    clearWorkspaceError('compatibility');
+    await mutateConfiguration(
+      id,
+      'validate-compatibility',
+      async () => {
+        const state = await api.validateConfigurationCandidate(id, configurationState?.generation ?? 0);
+        if (selectedId !== id) return;
+        await adoptConfigurationState(id, state, true, false);
+        compatibilitySaveStatus = state.desired.validation === 'valid'
+          ? 'Compatibility target saved; the exact binary accepted this candidate.'
+          : 'Compatibility target saved, but the candidate needs attention. Applied and Last Known Good were retained.';
+      },
+      async (value) => {
+        reportWorkspaceError('compatibility', value, 'compatibility-validate', async () => { await validateCompatibilityCandidate(); });
+      },
+    );
+  }
+
+  function openFinalConfiguration() {
+    if (selectedId) void showConfiguration();
+  }
+
+  async function focusFinalConfigurationPath(path: string) {
+    pathFocusMessage = '';
+    focusSemanticPath = '';
+    await tick();
+    focusSemanticPath = path;
   }
 
   function saveConfigurationFromEditor() {
@@ -4573,7 +4644,18 @@
     stopXrayDashboardPolling();
     activeTab = tab;
     if (!selectedId || detail?.spec.type.kind === 'generic') return;
-    await loadConfigurationStateSummary(selectedId);
+    const id = selectedId;
+    await loadConfigurationStateSummary(id);
+    if (tab === 'compatibility' && selectedId === id) {
+      try {
+        const draft = await api.getConfigurationEditorSession(id);
+        if (selectedId === id && activeTab === tab) rawDraftSession = draft;
+      } catch (error) {
+        if (selectedId === id && activeTab === tab) {
+          reportWorkspaceError('compatibility', error, 'configuration-load', async () => { await showConfigurationWorkspace(tab); });
+        }
+      }
+    }
   }
 
   function filterLog(content: string, query: string) {
@@ -5903,6 +5985,28 @@
             <div class="workspace-actions"><button type="button" on:click={() => void revertSettings('compatibility')} disabled={!!busy || !compatibilityChanged}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(false, false, 'compatibility')} disabled={!!busy || !compatibilityChanged}>{busy === 'save' ? `${$t('Saving')}…` : $t('Save target')}</button></div>
           </header>
           {#if compatibilitySaveStatus}<p class="workspace-success" role="status" aria-live="polite">{$t(compatibilitySaveStatus)}</p>{/if}
+          <section class="compatibility-flow" aria-labelledby="compatibility-flow-title">
+            <h3 id="compatibility-flow-title">{$t('Compatibility activation flow')}</h3>
+            <div class="compatibility-flow-steps">
+              <div class:complete={!!configurationState && !compatibilityChanged}><strong>1</strong><span>{$t('Compatibility target saved')}</span><small>{configurationState && !compatibilityChanged ? $t('Saved') : $t('Target not saved')}</small></div>
+              <div class:complete={configurationState?.desired.validation === 'valid'}><strong>2</strong><span>{$t('Validate current candidate')}</span><small>{configurationState?.desired.validation === 'valid' ? $t('Accepted') : $t('Required')}</small></div>
+              <div class:complete={candidatePendingApply}><strong>3</strong><span>{$t('Open Final configuration and Apply')}</span><small>{candidatePendingApply ? $t('Ready') : $t('After validation')}</small></div>
+            </div>
+            {#if configurationState}
+              <div class="compatibility-evidence-grid">
+                <div><span>{$t('Generation')}</span><code>{configurationState.generation}</code></div>
+                <div><span>{$t('Binary fingerprint')}</span><code>{detail.spec.executable.metadata?.fingerprint.sha256.slice(0, 16) ?? $t('Not available')}</code></div>
+                <div><span>{$t('Profile hash')}</span><code>{configurationState.compatibilityProfile.profileHash.slice(0, 16)}</code></div>
+                <div><span>{$t('Candidate hash')}</span><code>{configurationState.desired.revision.contentHash.slice(0, 16)}</code></div>
+                <div><span>{$t('Current effective state')}</span><strong>{$t('Applied/LKG retained')}</strong></div>
+              </div>
+            {/if}
+            <div class="compatibility-flow-actions">
+              <button type="button" on:click={() => void validateCompatibilityCandidate()} disabled={compatibilityValidationBlocked} title={$t(compatibilityValidationReason)}>{$t('Validate current candidate')}</button>
+              <button type="button" on:click={openFinalConfiguration} disabled={!configurationState}>{$t('Open Final configuration')}</button>
+            </div>
+            {#if compatibilityValidationBlocked}<p class="compatibility-notice" role="status">{$t(compatibilityValidationReason)}</p>{/if}
+          </section>
           <section class="compatibility-card">
             <div class="compatibility-card-heading"><span class:warning={detail.spec.executable.metadata?.coreTarget?.basis !== 'verifiedOfficialArtifact' && detail.spec.executable.metadata?.coreTarget?.basis !== 'trustedPackage'} class="compatibility-badge">{$t(detail.spec.executable.metadata?.coreTarget?.basis ?? 'unknown')}</span></div>
             <div class="compatibility-grid">
@@ -5925,7 +6029,13 @@
             </div>
             {#if configurationStateLoadError}<div class="compatibility-load-error" role="alert"><span>{$t('Compatibility state could not be loaded.')}</span><button type="button" on:click={() => void loadConfigurationStateSummary(selectedId)}>{$t('Retry')}</button></div>{/if}
             {#if detail.spec.executable.metadata?.coreTarget?.coordinate.kind === 'uncatalogued'}<p class="compatibility-notice" role="status">{$t(detail.spec.executable.metadata.coreTarget.coordinate.reason === 'futureVersion' ? 'This reported version is newer than the local compatibility catalog. Features remain attemptable and require validation by the exact binary.' : 'This version is not uniquely catalogued. All features remain attemptable and the exact native validator is authoritative for the candidate.')}</p>{/if}
-            {#if configurationState && !configurationState.desired.validationEvidence?.nativeAccepted}<p class="compatibility-notice" role="status">{$t('Native validation evidence is missing or stale. Validate this candidate again before activation.')}</p>{/if}
+            {#if configurationState && !configurationState.desired.validationEvidence?.nativeAccepted}
+              <p class="compatibility-notice" role="status">
+                {$t(configurationState.desired.diagnostics.some((diagnostic) => diagnostic.code === 'CORE_VALIDATION_EVIDENCE_STALE')
+                  ? 'Native validation evidence is missing or stale. Validate this candidate again before activation'
+                  : 'The exact binary must validate this candidate before activation.')}
+              </p>
+            {/if}
           </section>
         </div>
       {:else if activeTab === 'dashboard'}
@@ -5964,10 +6074,12 @@
             {#if detail.spec.managedConfig}<div class="generated-config-note"><strong>{$t('Managed configuration')}</strong><span>{$t(detail.spec.managedConfig.sources.some((source) => source.enabled) ? 'Source updates preserve Guided and Raw intent' : 'Enable a source to rebuild the Base configuration')}</span></div>{/if}
             {#if configurationState}<div class="configuration-stage-status" role="status" aria-live="polite"><span class="workspace-status">{$t(configurationState.desired.validation === 'valid' ? 'Validated' : configurationState.desired.validation === 'invalid' ? 'Needs attention' : 'Pending validation')}</span><span>{$t(configurationState.desired.validation === 'pending' ? 'Save candidate, then validate before applying.' : configurationState.desired.validation === 'invalid' ? 'Applied and Last Known Good are retained.' : 'Native evidence is bound to this exact candidate.')}</span></div>{/if}
             {#if configurationState?.workspace}
-              <RawDecisionPanel
+              <FinalConfigurationWorkspace
                 workspace={configurationState.workspace}
                 disabled={!!busy || !canEditConfigurationByLicense}
                 on:resolve={resolveRawDecision}
+                on:focusPath={(event) => { void focusFinalConfigurationPath(event.detail.path); }}
+                on:navigateSurface={(event) => { activateTab(event.detail.surface === 'details' ? 'overview' : event.detail.surface); }}
               />
             {/if}
             {#if rawDraftSession}
@@ -5980,6 +6092,10 @@
                 on:discard={() => void discardRawDraft()}
               />
             {/if}
+            <div class="final-editor-heading">
+              <div><p class="eyebrow">{$t('Final configuration')}</p><h3>{$t('Final candidate document')}</h3></div>
+              <p>{$t('This editor contains the effective final candidate. Save records it, Validate sends it to the exact binary, and Apply updates Runtime, Applied, and Last Known Good.')}</p>
+            </div>
             <div class="config-toolbar">
               <div class="config-toolbar-tools">
                 <button class="link-button documentation-link" type="button" on:click={() => void openDocumentation()}><span>{$t('Documentation')}</span><Icon name="external" size={16} /></button>
@@ -6014,11 +6130,13 @@
                   jsonSchemaSemantics={programDefinition(detail.spec.type.kind).configuration?.jsonSchemaSemantics}
                   markers={configurationEditorMarkers}
                   activeMarkerId={activeRawConflictId}
+                  focusSemanticPath={focusSemanticPath}
                   markerActionsDisabled={!!busy || !canEditConfigurationByLicense}
                   on:retrySchema={retryConfigurationSchema}
                   on:save={saveConfigurationFromEditor}
                   on:validate={validateConfigurationFromEditor}
                   on:resolveMarker={resolveRawConflict}
+                  on:pathFocus={(event) => { pathFocusMessage = event.detail.found ? '' : 'Unable to locate this semantic path in the current document.'; }}
                 />
               {/if}
               <ResizeSeparator
@@ -6030,6 +6148,7 @@
                 onKeyDown={(event) => handleResizeKeydown(event, 'detail:config')}
               />
             </div>
+            {#if pathFocusMessage}<p class="config-path-focus-notice" role="status">{$t(pathFocusMessage)}</p>{/if}
             {#if configResult || configOutput || configOutputMessage}<div class:valid={configResult?.valid} class:invalid={configResult && !configResult.valid} class="result"><strong>{$t(configResult ? (configResult.valid ? 'Valid configuration' : 'Validation failed') : 'Action output')}</strong>{#if configOutput || configOutputMessage}<pre>{configOutput || $t(configOutputMessage)}{#if configOutputTruncated}{'\n'}… {$t('Output truncated')}{/if}</pre>{/if}</div>{/if}
           {:else if !configError}<div style={resizeStyle(detailConfigHeight)} class="loading configuration-loading">{$t('Loading configuration')}…</div>{/if}
         </div>

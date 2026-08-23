@@ -3037,8 +3037,16 @@ test('unknown custom builds can persist no reference as a legal baseline', async
 
   await expect(panel.getByLabel('Compatibility baseline')).toHaveValue('unknown');
   await expect(reference).toHaveValue('');
-  await expect(panel).toContainText('Compatibility target saved; the candidate is validated and ready to apply');
+  await expect(panel).toContainText('Compatibility target saved; validation is required before activation');
   await expect(panel.locator('.error-notice')).toHaveCount(0);
+  const validate = panel.getByRole('button', { name: 'Validate current candidate', exact: true });
+  await expect(validate).toBeEnabled();
+  await validate.click();
+  await expect(panel).toContainText('Compatibility target saved; the exact binary accepted this candidate');
+  await expect(panel).toContainText('Applied/LKG retained');
+  await panel.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
+  await expect(page.locator('#program-panel-configuration').getByRole('heading', { name: 'Effective candidate', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
   await page.getByRole('tab', { name: 'Sources', exact: true }).click();
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
   await expect(panel.getByLabel('Reference compatibility target')).toHaveValue('');
@@ -3100,9 +3108,107 @@ test('Raw final decisions can accept upstream without reopening the program', as
   const panel = page.locator('.raw-decision-panel');
   await panel.getByRole('button', { name: /\/log\/loglevel/ }).click();
   await panel.getByRole('button', { name: 'Accept upstream', exact: true }).click();
-  await expect(panel).toHaveCount(0);
+  await expect(panel.getByText('Dormant', { exact: true }).first()).toBeVisible();
+  await expect(page.locator('.decision-counts')).toContainText('1 Dormant');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await expect(page.locator('#program-panel-intent .projection-status').filter({ hasText: 'Final decision in Raw' })).toHaveCount(0);
+});
+
+test('Final configuration unifies the effective document, path trace and Raw decisions', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_raw_all_override');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+
+  const workspace = page.locator('.final-workspace');
+  await expect(workspace.getByRole('heading', { name: 'Effective candidate', exact: true })).toBeVisible();
+  await expect(workspace).toContainText('Sources → Intent → Details → Final decision');
+  await expect(workspace.locator('.decision-counts')).toContainText('1 Raw decisions');
+  await expect(workspace.locator('.decision-counts')).toContainText('1 Superseded');
+  const tracePath = workspace.locator('.trace-path').filter({ hasText: '/log/loglevel' });
+  await tracePath.click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
+  await expect(editor).toBeFocused();
+  await expect(editor).toContainText('"loglevel": "warning"');
+
+  const decision = page.locator('.raw-decision-panel').getByRole('button', { name: /\/log\/loglevel/ });
+  await decision.click();
+  await page.locator('.raw-decision-panel').getByRole('button', { name: 'Keep Raw', exact: true }).click();
+  await expect(workspace.locator('.decision-counts')).toContainText('1 Resolved');
+  await expect(editor).toContainText('"loglevel": "debug"');
+  await expect(workspace.getByText('Raw decision needs rebase', { exact: true })).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-configuration');
+});
+
+test('Final configuration trace remains reachable from compact mobile to wide desktop', async ({ page }) => {
+  await openPreview(page, 'aurora', 'light', 1, '&__ui_raw_all_override');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const workspace = page.locator('.final-workspace');
+  const traceRow = workspace.locator('.trace-row[role="listitem"]').first();
+
+  for (const width of [1280, 1024, 760, 680, 520]) {
+    await page.setViewportSize({ width, height: 860 });
+    await expect(workspace).toBeVisible();
+    await expect(traceRow).toBeVisible();
+    await expectNoViewportOverflow(page);
+    const columns = await traceRow.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length);
+    if (width === 520) expect(columns).toBe(1);
+    else if (width <= 760) expect(columns).toBeLessThanOrEqual(2);
+    else expect(columns).toBeGreaterThanOrEqual(3);
+  }
+});
+
+test('Final configuration and Compatibility validation rerender fully in Chinese', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 840 });
+  await openPreview(page, 'cupertino', 'dark', 1, '&__ui_raw_all_override');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  // At compact widths the global actions live in the navigation drawer.
+  if (await page.getByRole('button', { name: 'Open navigation' }).isVisible()) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+  }
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'General' }).click();
+  await settings.getByRole('button', { name: 'Chinese' }).click();
+  await page.keyboard.press('Escape');
+
+  const workspace = page.locator('.final-workspace');
+  await expect(workspace.getByRole('heading', { name: '有效候选配置', exact: true })).toBeVisible();
+  await expect(workspace).toContainText('层级追踪');
+  await workspace.locator('.trace-status').first().click();
+  await expect(workspace).toContainText('配置源值');
+  await expect(workspace).toContainText('Raw 裁决需要重新绑定上游');
+  await page.getByRole('tab', { name: '兼容性', exact: true }).click();
+  const compatibility = page.locator('#program-panel-compatibility');
+  await expect(compatibility).toContainText('兼容性激活流程');
+  await expect(compatibility.getByRole('button', { name: '验证当前候选配置', exact: true })).toBeVisible();
+  await expect(compatibility.getByRole('button', { name: '打开最终配置', exact: true })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-compatibility');
+});
+
+test('Compatibility validation explains unsaved drafts and never applies implicitly', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const panel = page.locator('#program-panel-compatibility');
+  const validate = panel.getByRole('button', { name: 'Validate current candidate', exact: true });
+  await expect(validate).toBeDisabled();
+  await expect(panel).toContainText('Draft must be saved or discarded first');
+  await panel.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
+  await page.getByRole('button', { name: 'Discard draft', exact: true }).click();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  await expect(validate).toBeEnabled();
+  await validate.click();
+  await expect(panel).toContainText('exact binary accepted this candidate');
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toHaveCount(0);
+  await expectNoViewportOverflow(page);
 });
 
 test('Guided intent updates the Desired document and remains re-enterable', async ({ page }) => {

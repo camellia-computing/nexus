@@ -14,6 +14,7 @@ export type ConfigurationErrorContext =
   | 'sources-save'
   | 'sources-refresh'
   | 'compatibility-save'
+  | 'compatibility-validate'
   | 'guided-change'
   | 'raw-draft'
   | 'configuration-save'
@@ -276,6 +277,7 @@ const configurationContextLabels: Record<ConfigurationErrorContext, { title: str
   'sources-save': { title: 'Configuration sources could not be saved' },
   'sources-refresh': { title: 'Configuration sources could not be updated' },
   'compatibility-save': { title: 'Compatibility baseline could not be saved' },
+  'compatibility-validate': { title: 'Current candidate could not be validated' },
   'guided-change': { title: 'Guided setting could not be applied' },
   'raw-draft': { title: 'Raw configuration draft could not be saved' },
   'configuration-save': { title: 'Configuration candidate could not be saved' },

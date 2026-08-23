@@ -19,6 +19,19 @@
     LAYER_OWNERSHIP_CONFLICT: 'The same semantic path is owned by more than one configuration layer. Choose one owner before saving.',
   };
 
+  const diagnosticTitles: Record<string, string> = {
+    SOURCE_INVALID: 'Source needs attention',
+    SOURCE_UNAVAILABLE: 'Source is unavailable',
+    CORE_PROFILE_MISMATCH: 'Compatibility profile mismatch',
+    CORE_VALIDATION_EVIDENCE_STALE: 'Native validation evidence is stale',
+    CORE_INVALID: 'Candidate rejected by Core',
+    CORE_TARGET_CHANGED: 'Compatibility target changed',
+    CORE_TARGET_SOURCE_REJECTED: 'Source is not supported by this target',
+    RAW_DECISION_SUPERSEDED: 'Raw decision needs review',
+    SOURCE_VALUE_CONFLICT: 'Source values conflict',
+    LAYER_OWNERSHIP_CONFLICT: 'Configuration ownership conflict',
+  };
+
   function owns(issue: { scope?: { surface: ConfigurationSurface } }): boolean {
     return includeAll || issue.scope?.surface === surface;
   }
@@ -56,7 +69,7 @@
   <section class="surface-issues" aria-label={$t('Configuration issues')} role="status">
     {#each diagnostics as diagnostic, index (`diagnostic-${diagnostic.code}-${index}`)}
       <article>
-        <div><strong>{diagnostic.code}</strong>{#if diagnostic.scope?.ownerId}<code>{diagnostic.scope.ownerId}</code>{/if}</div>
+        <div><strong>{$t(diagnosticTitles[diagnostic.messageKey ?? diagnostic.code] ?? diagnosticTitles[diagnostic.code] ?? 'Configuration issue')}</strong><code>{diagnostic.code}</code>{#if diagnostic.scope?.ownerId}<code>{diagnostic.scope.ownerId}</code>{/if}</div>
         <p>{$t(diagnosticMessage(diagnostic.code, diagnostic.messageKey))}</p>
         {#if diagnostic.details}<details><summary>{$t('Technical details')}</summary><pre>{diagnostic.details}</pre></details>{/if}
       </article>

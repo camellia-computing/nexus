@@ -3956,8 +3956,10 @@ fn build_configuration_workspace(
 ) -> ConfigurationWorkspaceView {
     let upstream_document = serialize_semantic_document(state.format, upstream)
         .unwrap_or_else(|_| state.base.content.clone());
-    let final_preview_document = serialize_semantic_document(state.format, effective)
-        .unwrap_or_else(|_| state.desired.content.clone());
+    // The desired candidate is the single authoritative final document.  The
+    // parsed value is still used for trace construction, but the wire view
+    // must never drift from the content that Save/Validate/Apply operate on.
+    let final_preview_document = state.desired.content.clone();
     let raw_decisions = state
         .raw_intent
         .decisions
@@ -4015,7 +4017,43 @@ fn build_configuration_workspace(
         .conflicts
         .iter()
         .any(|conflict| conflict.severity == ConflictSeverity::Error);
-    let can_apply = state.ensure_apply_ready().is_ok();
+    let mut blockers = build_configuration_gate_blockers(
+        state,
+        &source_conflicts,
+        &layer_conflicts,
+        &raw_conflicts,
+    );
+    if state.ensure_apply_ready().is_err()
+        && !blockers
+            .iter()
+            .any(|blocker| blocker.blocks.contains(&ConfigurationGate::Apply))
+    {
+        let code = match state.desired.validation {
+            CandidateValidationStatus::Pending => "CORE_VALIDATION_REQUIRED",
+            CandidateValidationStatus::Invalid => "CONFIGURATION_INVALID",
+            CandidateValidationStatus::Valid => "CORE_VALIDATION_EVIDENCE_STALE",
+        };
+        blockers.push(ConfigurationGateBlocker {
+            code: code.into(),
+            message_key: code.into(),
+            scope: ConfigurationIssueScope {
+                surface: ConfigurationSurface::Configuration,
+                owner_id: None,
+            },
+            semantic_path: None,
+            blocks: vec![ConfigurationGate::Apply],
+            recovery_action: ConfigurationRecoveryAction::ReviewCandidate,
+        });
+    }
+    let can_apply = blockers
+        .iter()
+        .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Apply));
+    let can_validate = blockers
+        .iter()
+        .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Validate));
+    let can_save = blockers
+        .iter()
+        .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Save));
     ConfigurationWorkspaceView {
         upstream_document,
         final_preview_document: final_preview_document.clone(),
@@ -4026,6 +4064,7 @@ fn build_configuration_workspace(
         layer_conflicts,
         raw_conflicts,
         diagnostics: state.desired.diagnostics.clone(),
+        gate_blockers: blockers,
         save_status: if has_blocking_conflicts {
             CandidateSaveStatus::Blocked
         } else if state.desired.validation == CandidateValidationStatus::Pending {
@@ -4034,10 +4073,84 @@ fn build_configuration_workspace(
             CandidateSaveStatus::Saved
         },
         validation_status: state.desired.validation,
-        can_save: !has_blocking_conflicts,
-        can_validate: !has_blocking_conflicts,
+        can_save,
+        can_validate,
         can_apply,
     }
+}
+
+fn build_configuration_gate_blockers(
+    state: &ConfigurationState,
+    source_conflicts: &[ConfigurationConflict],
+    layer_conflicts: &[ConfigurationConflict],
+    raw_conflicts: &[ConfigurationConflict],
+) -> Vec<ConfigurationGateBlocker> {
+    let mut blockers = Vec::new();
+    let mut add_conflict = |conflict: &ConfigurationConflict| {
+        let code = conflict
+            .message_key
+            .clone()
+            .unwrap_or_else(|| "CONFIGURATION_CONFLICT".into());
+        let recovery_action = match code.as_str() {
+            "SOURCE_VALUE_CONFLICT" => ConfigurationRecoveryAction::ResolveSourceConflict,
+            "LAYER_OWNERSHIP_CONFLICT" => ConfigurationRecoveryAction::ResolveLayerConflict,
+            "RAW_DECISION_SUPERSEDED" => ConfigurationRecoveryAction::OpenFinalConfiguration,
+            _ => ConfigurationRecoveryAction::ReviewCandidate,
+        };
+        blockers.push(ConfigurationGateBlocker {
+            code: code.clone(),
+            message_key: code,
+            scope: conflict.scope.clone(),
+            semantic_path: Some(conflict.semantic_path.clone()),
+            blocks: vec![
+                ConfigurationGate::Save,
+                ConfigurationGate::Validate,
+                ConfigurationGate::Apply,
+            ],
+            recovery_action,
+        });
+    };
+    for conflict in source_conflicts
+        .iter()
+        .chain(layer_conflicts)
+        .chain(raw_conflicts)
+    {
+        if conflict.severity == ConflictSeverity::Error {
+            add_conflict(conflict);
+        }
+    }
+    for diagnostic in &state.desired.diagnostics {
+        let code = diagnostic
+            .message_key
+            .clone()
+            .unwrap_or_else(|| diagnostic.code.clone());
+        let (blocks, recovery_action) = match code.as_str() {
+            "CORE_VALIDATION_EVIDENCE_STALE" | "CORE_PROFILE_MISMATCH" | "CORE_TARGET_CHANGED" => (
+                vec![ConfigurationGate::Apply],
+                ConfigurationRecoveryAction::ValidateCandidate,
+            ),
+            "CORE_INVALID" | "CONFIG_INVALID" | "CONFIGURATION_INVALID" => (
+                vec![ConfigurationGate::Apply],
+                ConfigurationRecoveryAction::ReviewCandidate,
+            ),
+            _ => (
+                vec![ConfigurationGate::Apply],
+                ConfigurationRecoveryAction::ReviewCandidate,
+            ),
+        };
+        blockers.push(ConfigurationGateBlocker {
+            code,
+            message_key: diagnostic
+                .message_key
+                .clone()
+                .unwrap_or_else(|| "CONFIGURATION_DIAGNOSTIC".into()),
+            scope: diagnostic.scope.clone(),
+            semantic_path: None,
+            blocks,
+            recovery_action,
+        });
+    }
+    blockers
 }
 
 fn build_layer_trace(
@@ -4063,17 +4176,17 @@ fn build_layer_trace(
             let semantic_path = display_semantic_path(&path);
             let source_value = trace_path_value(base, &path);
             let guided_value = trace_path_value(guided, &path);
-            let managed_value = trace_path_value(upstream, &path);
+            let details_value = trace_path_value(upstream, &path);
             let effective_value = trace_path_value(effective, &path);
-            let raw_decision = state.raw_intent.decisions.iter().find(|decision| {
-                path_overlaps(&path, &intent_operation_path(&decision.operation))
-                    && decision.status != RawDecisionStatus::Dormant
-            });
+            let raw_decision =
+                state.raw_intent.decisions.iter().find(|decision| {
+                    path_overlaps(&path, &intent_operation_path(&decision.operation))
+                });
             let winner_layer = if raw_decision
                 .is_some_and(|decision| decision.status.participates_in_candidate())
             {
                 ConfigurationLayer::RawDecision
-            } else if managed_value != guided_value {
+            } else if details_value != guided_value {
                 ConfigurationLayer::Details
             } else if guided_value != source_value {
                 ConfigurationLayer::Intent
@@ -4110,7 +4223,7 @@ fn build_layer_trace(
                 source_ids,
                 source_value,
                 guided_value,
-                managed_value,
+                details_value,
                 raw_value: raw_decision
                     .and_then(|decision| intent_operation_value(&decision.operation)),
                 effective_value,
@@ -4253,19 +4366,18 @@ fn project_managed_integrations(
                     .flatten()
                     .is_some()
             });
-            let status = if !issue_ids.is_empty()
-                || (intent_value.is_some() && !raw_paths.is_empty())
-            {
-                ManagedIntegrationStatus::Overridden
-            } else if intent_value.is_some() {
-                ManagedIntegrationStatus::Explicit
-            } else if !raw_paths.is_empty() && effective_enabled {
-                ManagedIntegrationStatus::RawOnly
-            } else if !effective_enabled && (!managed.values.is_empty() || !raw_paths.is_empty()) {
-                ManagedIntegrationStatus::NeedsAttention
-            } else {
-                ManagedIntegrationStatus::Inactive
-            };
+            let status =
+                if !issue_ids.is_empty() || (intent_value.is_some() && !raw_paths.is_empty()) {
+                    ManagedIntegrationStatus::Overridden
+                } else if intent_value.is_some() {
+                    ManagedIntegrationStatus::Explicit
+                } else if !raw_paths.is_empty() && effective_enabled {
+                    ManagedIntegrationStatus::RawOnly
+                } else if !effective_enabled && (intent_value.is_some() || !raw_paths.is_empty()) {
+                    ManagedIntegrationStatus::NeedsAttention
+                } else {
+                    ManagedIntegrationStatus::Inactive
+                };
             ManagedIntegrationProjection {
                 integration_id: (*integration_id).into(),
                 status,
@@ -4661,6 +4773,37 @@ pub enum CandidateSaveStatus {
     PendingValidation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigurationGate {
+    Save,
+    Validate,
+    Apply,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigurationRecoveryAction {
+    ResolveSourceConflict,
+    ResolveLayerConflict,
+    OpenFinalConfiguration,
+    ValidateCandidate,
+    ReviewCandidate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationGateBlocker {
+    pub code: String,
+    pub message_key: String,
+    pub scope: ConfigurationIssueScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_path: Option<String>,
+    #[serde(default)]
+    pub blocks: Vec<ConfigurationGate>,
+    pub recovery_action: ConfigurationRecoveryAction,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationLayerTrace {
@@ -4672,7 +4815,7 @@ pub struct ConfigurationLayerTrace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guided_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub managed_value: Option<Value>,
+    pub details_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4719,6 +4862,8 @@ pub struct ConfigurationWorkspaceView {
     pub raw_conflicts: Vec<ConfigurationConflict>,
     #[serde(default)]
     pub diagnostics: Vec<ConfigurationDiagnostic>,
+    #[serde(default)]
+    pub gate_blockers: Vec<ConfigurationGateBlocker>,
     pub save_status: CandidateSaveStatus,
     pub validation_status: CandidateValidationStatus,
     pub can_save: bool,
@@ -5864,6 +6009,58 @@ mod tests {
     }
 
     #[test]
+    fn disabled_managed_integration_is_not_influenced_by_sibling_intent() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(ProgramKind::SingBox, "base", r#"{}"#)],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        sync_managed_dashboard_intent(
+            &mut state.managed_intent,
+            &ManagedConfigSpec {
+                sing_box_dashboard: Some(SingBoxDashboardSpec {
+                    listen_port: 9090,
+                    update_interval: "1d".into(),
+                }),
+                sing_box_clash_dashboard: Some(SingBoxClashDashboardSpec {
+                    listen_port: 9091,
+                    download_url: None,
+                }),
+                ..ManagedConfigSpec::default()
+            },
+        );
+        state.rebuild_desired(2).expect("enable integrations");
+
+        sync_managed_dashboard_intent(
+            &mut state.managed_intent,
+            &ManagedConfigSpec {
+                sing_box_clash_dashboard: Some(SingBoxClashDashboardSpec {
+                    listen_port: 9091,
+                    download_url: None,
+                }),
+                ..ManagedConfigSpec::default()
+            },
+        );
+        state.rebuild_desired(3).expect("disable native dashboard");
+        let native = state
+            .view()
+            .managed_integrations
+            .into_iter()
+            .find(|projection| projection.integration_id == "dashboard.singBoxApi")
+            .expect("native projection");
+        assert_eq!(native.status, ManagedIntegrationStatus::Inactive);
+        assert!(!native.effective_enabled);
+    }
+
+    #[test]
     fn v3_dashboard_values_migrate_without_touching_applied_or_lkg() {
         let merge = merge_configuration_sources(
             ProgramKind::Mihomo,
@@ -6313,6 +6510,152 @@ mod tests {
 
         assert_eq!(trace.source_ids, vec!["source-a".to_owned()]);
         assert_eq!(trace.source_value, Some(Value::from(8080)));
+    }
+
+    #[test]
+    fn workspace_final_document_is_the_exact_desired_candidate() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "source",
+                r#"{"log":{"loglevel":"warning"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        state.desired.content = "{\n  \"log\": { \"loglevel\": \"warning\" }\n}\n".into();
+
+        let view = state.view();
+        assert_eq!(view.workspace.final_preview_document, state.desired.content);
+        assert_eq!(view.workspace.editable_document, state.desired.content);
+    }
+
+    #[test]
+    fn layer_trace_keeps_guided_and_details_values_separate_and_selects_each_winner() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "source",
+                r#"{"log":{"level":"info"},"dns":{"strategy":"prefer_ipv4"},"route":{"final":"direct"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        state
+            .guided_intent
+            .set("logging.level", Value::String("debug".into()));
+        sync_managed_dashboard_intent(
+            &mut state.managed_intent,
+            &ManagedConfigSpec {
+                sing_box_dashboard: Some(SingBoxDashboardSpec {
+                    listen_port: 9090,
+                    update_interval: "1d".into(),
+                }),
+                ..ManagedConfigSpec::default()
+            },
+        );
+        state.rebuild_desired(2).expect("upstream layers");
+        let mut edited = parse_semantic_document(state.format, state.desired.content.as_bytes())
+            .expect("candidate");
+        edited["dns"]["strategy"] = Value::String("prefer_ipv6".into());
+        let edited = serialize_semantic_document(state.format, &edited).expect("edited candidate");
+        state
+            .replace_raw_from_edited(edited.as_bytes(), 3)
+            .expect("Raw decision");
+
+        let trace = state.view().workspace.layer_trace;
+        let at = |path: &str| {
+            trace
+                .iter()
+                .find(|item| item.semantic_path == path)
+                .unwrap_or_else(|| panic!("missing trace at {path}"))
+        };
+        assert_eq!(at("/route/final").winner_layer, ConfigurationLayer::Source);
+        assert_eq!(at("/log/level").winner_layer, ConfigurationLayer::Intent);
+        assert_eq!(
+            at("/log/level").guided_value,
+            at("/log/level").details_value
+        );
+        assert_eq!(
+            at("/services[tag=camellia-nexus-api]/listen_port").winner_layer,
+            ConfigurationLayer::Details
+        );
+        assert_eq!(
+            at("/services[tag=camellia-nexus-api]/listen_port").details_value,
+            Some(Value::from(9090))
+        );
+        assert_eq!(
+            at("/dns/strategy").winner_layer,
+            ConfigurationLayer::RawDecision
+        );
+        assert_eq!(
+            at("/dns/strategy").effective_value,
+            Some(Value::String("prefer_ipv6".into()))
+        );
+    }
+
+    #[test]
+    fn workspace_gate_blockers_preserve_repair_and_exact_validation_paths() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "source",
+                r#"{"log":{"level":"info"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+
+        let pending = state.view().workspace;
+        assert!(pending.can_save);
+        assert!(pending.can_validate);
+        assert!(!pending.can_apply);
+        assert!(pending.gate_blockers.iter().any(|blocker| {
+            blocker.code == "CORE_VALIDATION_REQUIRED"
+                && blocker.blocks == vec![ConfigurationGate::Apply]
+        }));
+
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        state
+            .desired
+            .validation_evidence
+            .as_mut()
+            .expect("evidence")
+            .config_hash = "stale".into();
+        let stale = state.view().workspace;
+        assert!(stale.can_save);
+        assert!(stale.can_validate);
+        assert!(!stale.can_apply);
+        assert!(stale.gate_blockers.iter().any(|blocker| {
+            blocker.code == "CORE_VALIDATION_EVIDENCE_STALE"
+                && blocker.blocks == vec![ConfigurationGate::Apply]
+        }));
     }
 
     #[test]

@@ -690,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn fast_tools_do_not_treat_closed_output_channels_as_limits() {
         let runner = NativeToolRunner::default();
-        let cwd = std::env::current_dir().expect("current directory");
+        let cwd = std::env::temp_dir();
         let command = std::env::var_os("ComSpec")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));
@@ -708,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_tools_keep_inherited_output_handles_isolated() {
         let runner = NativeToolRunner::default();
-        let cwd = std::env::current_dir().expect("current directory");
+        let cwd = std::env::temp_dir();
         let command = std::env::var_os("ComSpec")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("cmd.exe"));

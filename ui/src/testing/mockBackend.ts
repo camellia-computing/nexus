@@ -1172,12 +1172,27 @@ function configurationState(programId: string): ConfigurationStateView {
       upstreamDocument: document.content,
       finalPreviewDocument: document.content,
       editableDocument: document.content,
-      layerTrace: [],
+      layerTrace: [{
+        semanticPath: rawPreviewDecision.semanticPath,
+        sourceIds: ['preview-source'],
+        sourceValue: rawPreviewDecision.upstreamValue,
+        guidedValue: rawPreviewDecision.upstreamValue,
+        detailsValue: rawPreviewDecision.upstreamValue,
+        ...(rawAllOverridePreview ? { rawValue: rawPreviewDecision.rawValue } : {}),
+        effectiveValue: rawPreviewDecision.upstreamValue,
+        winnerLayer: 'source',
+        ...(rawAllOverridePreview ? {
+          rawDecisionId: rawPreviewDecision.decisionId,
+          rawDecisionStatus: rawPreviewDecision.status,
+        } : {}),
+        issueIds: rawAllOverridePreview ? [`RAW_DECISION_SUPERSEDED:${rawPreviewDecision.semanticPath}`] : [],
+      }],
       rawDecisions: rawAllOverridePreview ? [rawPreviewDecision] : [],
       sourceConflicts: [],
       layerConflicts: [],
       rawConflicts: rawAllOverridePreview ? [rawPreviewConflict] : [],
       diagnostics,
+      gateBlockers: [],
       saveStatus: rawAllOverridePreview ? 'blocked' : candidateNeedsAttention ? 'pendingValidation' : 'saved',
       validationStatus: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || rawAllOverridePreview ? 'invalid' : 'valid',
       canSave: !rawAllOverridePreview,
@@ -1194,6 +1209,7 @@ function configurationState(programId: string): ConfigurationStateView {
       return overlaps ? { ...projection, status: 'rawDecision', value: undefined } : projection;
     });
   }
+  refreshPreviewWorkspaceGates(state);
   previewConfigurationStates.set(programId, state);
   return structuredClone(state);
 }
@@ -1455,6 +1471,44 @@ function previewDeletePath(root: unknown, path: string[]): void {
   delete current[path[path.length - 1]];
 }
 
+function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
+  const conflictBlockers = state.desired.conflicts
+    .filter((conflict) => conflict.severity === 'error')
+    .map((conflict) => ({
+      code: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
+      messageKey: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
+      scope: conflict.scope ?? { surface: 'configuration' as const },
+      semanticPath: conflict.semanticPath,
+      blocks: ['save', 'validate', 'apply'] as const,
+      recoveryAction: conflict.messageKey === 'SOURCE_VALUE_CONFLICT'
+        ? 'resolveSourceConflict' as const
+        : conflict.messageKey === 'LAYER_OWNERSHIP_CONFLICT'
+          ? 'resolveLayerConflict' as const
+          : 'openFinalConfiguration' as const,
+    }));
+  const diagnosticBlockers = state.desired.diagnostics.map((diagnostic) => ({
+    code: diagnostic.messageKey ?? diagnostic.code,
+    messageKey: diagnostic.messageKey ?? diagnostic.code,
+    scope: diagnostic.scope ?? { surface: 'configuration' as const },
+    blocks: ['apply'] as const,
+    recoveryAction: 'reviewCandidate' as const,
+  }));
+  const needsValidation = state.desired.validation !== 'valid'
+    && conflictBlockers.length === 0
+    && diagnosticBlockers.length === 0;
+  state.workspace.gateBlockers = [
+    ...conflictBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
+    ...diagnosticBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
+    ...(needsValidation ? [{
+      code: 'CORE_VALIDATION_REQUIRED',
+      messageKey: 'CORE_VALIDATION_REQUIRED',
+      scope: { surface: 'configuration' as const },
+      blocks: ['apply' as const],
+      recoveryAction: 'validateCandidate' as const,
+    }] : []),
+  ];
+}
+
 function recomputePreviewCandidate(state: ConfigurationStateView): void {
   let document: unknown;
   try {
@@ -1493,12 +1547,28 @@ function recomputePreviewCandidate(state: ConfigurationStateView): void {
   state.desired.validationEvidence = undefined;
   state.workspace.finalPreviewDocument = content;
   state.workspace.editableDocument = content;
+  state.workspace.layerTrace = state.workspace.layerTrace.map((trace) => {
+    const decision = state.workspace.rawDecisions.find((item) => item.decisionId === trace.rawDecisionId);
+    if (!decision) return trace;
+    const participates = decision.status === 'active' || decision.status === 'resolved';
+    return {
+      ...trace,
+      rawValue: decision.rawValue,
+      effectiveValue: participates ? decision.rawValue : decision.upstreamValue,
+      winnerLayer: participates ? 'rawDecision' : 'source',
+      rawDecisionStatus: decision.status,
+      issueIds: decision.status === 'superseded'
+        ? [`RAW_DECISION_SUPERSEDED:${decision.semanticPath}`]
+        : [],
+    };
+  });
   state.workspace.rawConflicts = rawConflicts;
   state.workspace.validationStatus = state.desired.validation;
   state.workspace.saveStatus = rawConflicts.length > 0 ? 'blocked' : 'pendingValidation';
   state.workspace.canSave = rawConflicts.length === 0;
   state.workspace.canValidate = rawConflicts.length === 0;
   state.workspace.canApply = false;
+  refreshPreviewWorkspaceGates(state);
 }
 
 function updateConfigurationState(
@@ -1544,6 +1614,7 @@ function updateConfigurationState(
   state.workspace.canSave = !blocked;
   state.workspace.canValidate = !blocked;
   state.workspace.canApply = state.desired.validation === 'valid' && !blocked;
+  refreshPreviewWorkspaceGates(state);
   previewConfigurationStates.set(programId, structuredClone(state));
   return state;
 }
@@ -1613,7 +1684,7 @@ function configDocument(programId: string) {
   return {
     content: saved?.content ?? (singBox
       ? '{\n  "log": { "level": "info" },\n  "outbounds": [\n    { "type": "direct", "tag": "direct" },\n    { "type": "socks", "tag": "proxy-sg", "server": "127.0.0.1", "server_port": 1080 }\n  ],\n  "route": { "final": "proxy-sg" }\n}\n'
-      : '{\n  "log": { "level": "info" },\n  "route": { "final": "proxy-sg" }\n}\n'),
+      : '{\n  "log": { "loglevel": "warning" },\n  "route": { "final": "proxy-sg" }\n}\n'),
     baseHash: saved?.baseHash ?? 'preview-hash',
     language: 'jsonc',
     documentationUrl: 'https://example.test/docs',
@@ -2457,15 +2528,9 @@ export function installMockBackend() {
           if (candidate.executable.metadata) candidate.executable.metadata.coreTarget = target;
           state.compatibilityProfile = mockCompatibilityProfile(candidate.type.kind, target);
           state.desired.compatibilityProfileHash = state.compatibilityProfile.profileHash;
-          state.desired.validation = 'valid';
-          state.desired.validationEvidence = {
-            binarySha256: candidate.executable.metadata?.fingerprint.sha256 ?? 'a'.repeat(64),
-            profileHash: state.compatibilityProfile.profileHash,
-            configHash: state.desired.revision.contentHash,
-            validatorContractRevision: 'preview-validator-v1',
-            nativeAccepted: true,
-            validatedUnixMs: Date.now(),
-          };
+          state.desired.validation = 'pending';
+          state.desired.validationEvidence = undefined;
+          state.desired.diagnostics = [];
         });
       }
       case 'remove_program': delete specs[stringArg(args, 'programId')]; return null;

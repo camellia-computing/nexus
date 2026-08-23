@@ -449,12 +449,27 @@ export interface ManagedIntegrationProjection {
 }
 export type ConfigurationLayer = 'source' | 'intent' | 'details' | 'rawDecision';
 export type CandidateSaveStatus = 'blocked' | 'saved' | 'pendingValidation';
+export type ConfigurationGate = 'save' | 'validate' | 'apply';
+export type ConfigurationRecoveryAction =
+  | 'resolveSourceConflict'
+  | 'resolveLayerConflict'
+  | 'openFinalConfiguration'
+  | 'validateCandidate'
+  | 'reviewCandidate';
+export interface ConfigurationGateBlocker {
+  code: string;
+  messageKey: string;
+  scope: ConfigurationIssueScope;
+  semanticPath?: string;
+  blocks: ConfigurationGate[];
+  recoveryAction: ConfigurationRecoveryAction;
+}
 export interface ConfigurationLayerTrace {
   semanticPath: string;
   sourceIds: string[];
   sourceValue?: unknown;
   guidedValue?: unknown;
-  managedValue?: unknown;
+  detailsValue?: unknown;
   rawValue?: unknown;
   effectiveValue?: unknown;
   winnerLayer: ConfigurationLayer;
@@ -482,6 +497,7 @@ export interface ConfigurationWorkspaceView {
   layerConflicts: ConfigurationConflict[];
   rawConflicts: ConfigurationConflict[];
   diagnostics: ConfigurationDiagnostic[];
+  gateBlockers: ConfigurationGateBlocker[];
   saveStatus: CandidateSaveStatus;
   validationStatus: CandidateValidationStatus;
   canSave: boolean;
