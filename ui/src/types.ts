@@ -448,7 +448,6 @@ export interface ManagedIntegrationProjection {
   issueIds: string[];
 }
 export type ConfigurationLayer = 'source' | 'intent' | 'details' | 'rawDecision';
-export type CandidateSaveStatus = 'blocked' | 'saved' | 'pendingValidation';
 export type ConfigurationGate = 'save' | 'validate' | 'apply';
 export type ConfigurationRecoveryAction =
   | 'resolveSourceConflict'
@@ -464,19 +463,6 @@ export interface ConfigurationGateBlocker {
   blocks: ConfigurationGate[];
   recoveryAction: ConfigurationRecoveryAction;
 }
-export interface ConfigurationLayerTrace {
-  semanticPath: string;
-  sourceIds: string[];
-  sourceValue?: unknown;
-  guidedValue?: unknown;
-  detailsValue?: unknown;
-  rawValue?: unknown;
-  effectiveValue?: unknown;
-  winnerLayer: ConfigurationLayer;
-  rawDecisionId?: string;
-  rawDecisionStatus?: RawDecisionStatus;
-  issueIds: string[];
-}
 export interface RawDecisionProjection {
   decisionId: string;
   semanticPath: string;
@@ -487,22 +473,46 @@ export interface RawDecisionProjection {
   upstreamValue?: unknown;
   rawValue?: unknown;
 }
-export interface ConfigurationWorkspaceView {
-  upstreamDocument: string;
-  finalPreviewDocument: string;
-  editableDocument: string;
-  layerTrace: ConfigurationLayerTrace[];
-  rawDecisions: RawDecisionProjection[];
-  sourceConflicts: ConfigurationConflict[];
-  layerConflicts: ConfigurationConflict[];
-  rawConflicts: ConfigurationConflict[];
-  diagnostics: ConfigurationDiagnostic[];
-  gateBlockers: ConfigurationGateBlocker[];
-  saveStatus: CandidateSaveStatus;
+export interface ConfigurationEditorIssue {
+  id: string;
+  code: string;
+  messageKey: string;
+  semanticPath: string;
+  severity: 'warning' | 'error';
+  blocking: boolean;
+}
+export interface ConfigurationEditorPath {
+  semanticPath: string;
+  segments: SemanticPathSegment[];
+  sourceIds: string[];
+  sourceValue?: unknown;
+  intentValue?: unknown;
+  detailsValue?: unknown;
+  rawValue?: unknown;
+  effectiveValue?: unknown;
+  winnerLayer: ConfigurationLayer;
+  rawDecision?: RawDecisionProjection;
+  issues: ConfigurationEditorIssue[];
+}
+export interface ConfigurationDecisionCounts {
+  active: number;
+  resolved: number;
+  superseded: number;
+  dormant: number;
+}
+export interface ConfigurationEditorView {
+  content: string;
+  revision: ConfigurationRevision;
+  paths: ConfigurationEditorPath[];
+  decisionCounts: ConfigurationDecisionCounts;
+  blockers: ConfigurationGateBlocker[];
   validationStatus: CandidateValidationStatus;
   canSave: boolean;
   canValidate: boolean;
   canApply: boolean;
+}
+export interface ConfigurationWorkspaceView {
+  editor: ConfigurationEditorView;
 }
 export interface ConfigurationStateView {
   schemaVersion: number;

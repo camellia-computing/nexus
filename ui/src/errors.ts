@@ -279,7 +279,7 @@ const configurationContextLabels: Record<ConfigurationErrorContext, { title: str
   'compatibility-save': { title: 'Compatibility baseline could not be saved' },
   'compatibility-validate': { title: 'Current candidate could not be validated' },
   'guided-change': { title: 'Guided setting could not be applied' },
-  'raw-draft': { title: 'Raw configuration draft could not be saved' },
+  'raw-draft': { title: 'Final configuration draft could not be saved' },
   'configuration-save': { title: 'Configuration candidate could not be saved' },
   'configuration-validate': { title: 'Configuration validation could not be completed' },
   'configuration-apply': { title: 'Configuration could not be applied' },
@@ -341,10 +341,10 @@ export function configurationErrorInfo(
     return {
       ...base,
       title: contextTitle,
-      message: 'Raw configuration currently owns one or more fields managed by this Details integration.',
-      fallbackMessage: 'Raw 配置当前接管了“详情”集成所负责的一个或多个字段。',
+      message: 'Final configuration decisions currently own one or more fields managed by this Details integration.',
+      fallbackMessage: '最终配置决定当前接管了“详情”集成所负责的一个或多个字段。',
       details: base.details || base.message,
-      suggestion: 'Review the listed semantic paths, then confirm takeover to remove only overlapping Raw semantics or cancel to keep the current state.',
+      suggestion: 'Review the listed semantic paths, then confirm takeover to remove only overlapping Final configuration decisions or cancel to keep the current state.',
     };
   }
   if (base.messageKey === 'CONFIGURATION_BLOCKING_CONFLICT') {
@@ -386,6 +386,16 @@ export function configurationErrorInfo(
       fallbackMessage: '最终配置存在语法或文档结构错误，尚未提交给 Core 校验。',
       details: base.details || base.message,
       suggestion: 'Correct the highlighted JSON/YAML error, then save or validate the candidate again.',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_STATIC_INVALID') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The final configuration contains a field value that is invalid before native validation.',
+      fallbackMessage: '最终配置包含可在 Core 校验前确定为无效的字段值，候选配置尚未保存。',
+      details: base.details || base.message,
+      suggestion: 'Correct the field shown in technical details, save the candidate, then validate it with the exact binary.',
     };
   }
   if (base.code === 'CONFIG_INVALID' || /native validator|core rejected|validation failed/.test(technical)) {

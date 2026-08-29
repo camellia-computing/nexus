@@ -4,6 +4,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { installPreviewInvokeTransport } from '../api';
 import { canUseProgramLifecycleAction, deriveLicenseAccess } from '../licenseAccess';
 import { PROGRAM_SPEC_SCHEMA_VERSION } from '../types';
+import { semanticPathSegments } from '../editor/configurationMarkerModel';
 import type {
   AppSettings,
   ConfigSource,
@@ -39,6 +40,7 @@ import type {
   GuidedProjection,
   GuidedSettingDescriptor,
   RawDraftSession,
+  RawDecisionProjection,
   IntentOperation,
   ConfigurationConflict,
   ShareImportPreview,
@@ -955,6 +957,7 @@ const previewConfigurationDocuments = new Map<string, {
   baseHash: string;
 }>();
 const previewConfigurationStates = new Map<string, ConfigurationStateView>();
+const previewUpstreamDocuments = new Map<string, string>();
 const previewRawDrafts = new Map<string, RawDraftSession>();
 
 function previewGuidedSettings(kind: ProgramSpec['type']['kind']): {
@@ -1111,7 +1114,7 @@ function configurationState(programId: string): ConfigurationStateView {
       ...(configurationSourcePreview === 'stale'
         ? { message: 'Latest read failed; using the last parsed snapshot.' }
         : configurationSourcePreview === 'invalid'
-          ? { message: 'Latest content could not be parsed.' }
+          ? { message: 'Configuration is not valid JSON' }
           : configurationSourcePreview === 'unavailable'
             ? { message: 'No usable observation or snapshot is available.' }
             : {}),
@@ -1169,35 +1172,40 @@ function configurationState(programId: string): ConfigurationStateView {
       { kind: 'commit', commitSha: 'a'.repeat(40) },
     ],
     workspace: {
-      upstreamDocument: document.content,
-      finalPreviewDocument: document.content,
-      editableDocument: document.content,
-      layerTrace: [{
-        semanticPath: rawPreviewDecision.semanticPath,
-        sourceIds: ['preview-source'],
-        sourceValue: rawPreviewDecision.upstreamValue,
-        guidedValue: rawPreviewDecision.upstreamValue,
-        detailsValue: rawPreviewDecision.upstreamValue,
-        ...(rawAllOverridePreview ? { rawValue: rawPreviewDecision.rawValue } : {}),
-        effectiveValue: rawPreviewDecision.upstreamValue,
-        winnerLayer: 'source',
-        ...(rawAllOverridePreview ? {
-          rawDecisionId: rawPreviewDecision.decisionId,
-          rawDecisionStatus: rawPreviewDecision.status,
-        } : {}),
-        issueIds: rawAllOverridePreview ? [`RAW_DECISION_SUPERSEDED:${rawPreviewDecision.semanticPath}`] : [],
-      }],
-      rawDecisions: rawAllOverridePreview ? [rawPreviewDecision] : [],
-      sourceConflicts: [],
-      layerConflicts: [],
-      rawConflicts: rawAllOverridePreview ? [rawPreviewConflict] : [],
-      diagnostics,
-      gateBlockers: [],
-      saveStatus: rawAllOverridePreview ? 'blocked' : candidateNeedsAttention ? 'pendingValidation' : 'saved',
-      validationStatus: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || rawAllOverridePreview ? 'invalid' : 'valid',
-      canSave: !rawAllOverridePreview,
-      canValidate: !rawAllOverridePreview,
-      canApply: !candidateNeedsAttention && !rawAllOverridePreview,
+      editor: {
+        content: document.content,
+        revision: { generation, contentHash: desiredHash, createdUnixMs: Date.now() },
+        paths: [{
+          semanticPath: rawPreviewDecision.semanticPath,
+          segments: rawPreviewPath,
+          sourceIds: ['preview-source'],
+          sourceValue: rawPreviewDecision.upstreamValue,
+          intentValue: rawPreviewDecision.upstreamValue,
+          detailsValue: rawPreviewDecision.upstreamValue,
+          ...(rawAllOverridePreview ? { rawValue: rawPreviewDecision.rawValue, rawDecision: rawPreviewDecision } : {}),
+          effectiveValue: rawPreviewDecision.upstreamValue,
+          winnerLayer: 'source',
+          issues: rawAllOverridePreview ? [{
+            id: `RAW_DECISION_SUPERSEDED:${rawPreviewDecision.semanticPath}`,
+            code: 'RAW_DECISION_SUPERSEDED',
+            messageKey: 'RAW_DECISION_SUPERSEDED',
+            semanticPath: rawPreviewDecision.semanticPath,
+            severity: 'error' as const,
+            blocking: true,
+          }] : [],
+        }],
+        decisionCounts: {
+          active: 0,
+          resolved: 0,
+          superseded: rawAllOverridePreview ? 1 : 0,
+          dormant: 0,
+        },
+        blockers: [],
+        validationStatus: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || rawAllOverridePreview ? 'invalid' : 'valid',
+        canSave: !rawAllOverridePreview,
+        canValidate: !rawAllOverridePreview,
+        canApply: !candidateNeedsAttention && !rawAllOverridePreview,
+      },
     },
   };
   if (rawAllOverridePreview && kind !== 'generic') {
@@ -1209,7 +1217,9 @@ function configurationState(programId: string): ConfigurationStateView {
       return overlaps ? { ...projection, status: 'rawDecision', value: undefined } : projection;
     });
   }
+  previewUpstreamDocuments.set(programId, document.content);
   refreshPreviewWorkspaceGates(state);
+  syncPreviewEditor(state);
   previewConfigurationStates.set(programId, state);
   return structuredClone(state);
 }
@@ -1225,7 +1235,7 @@ function rawDraftSession(programId: string): RawDraftSession {
       sessionId: `preview-draft-${programId}`,
       draftRevision: 1,
       basedOnGeneration: state.generation,
-      baseContent: state.workspace.upstreamDocument,
+      baseContent: previewUpstreamDocuments.get(programId) ?? state.workspace.editor.content,
       userContent,
       workingContent: userContent,
       conflicts: [{
@@ -1255,9 +1265,9 @@ function rawDraftSession(programId: string): RawDraftSession {
     sessionId: `preview-draft-${programId}`,
     draftRevision: 0,
     basedOnGeneration: state.generation,
-    baseContent: state.workspace.upstreamDocument,
-    userContent: state.workspace.finalPreviewDocument,
-    workingContent: state.workspace.finalPreviewDocument,
+    baseContent: previewUpstreamDocuments.get(programId) ?? state.workspace.editor.content,
+    userContent: state.workspace.editor.content,
+    workingContent: state.workspace.editor.content,
     conflicts: [],
     resolutions: {},
     unresolvedConflictIds: [],
@@ -1471,6 +1481,10 @@ function previewDeletePath(root: unknown, path: string[]): void {
   delete current[path[path.length - 1]];
 }
 
+function previewRawDecisions(state: ConfigurationStateView): RawDecisionProjection[] {
+  return state.workspace.editor.paths.flatMap((path) => path.rawDecision ? [path.rawDecision] : []);
+}
+
 function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
   const conflictBlockers = state.desired.conflicts
     .filter((conflict) => conflict.severity === 'error')
@@ -1496,7 +1510,7 @@ function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
   const needsValidation = state.desired.validation !== 'valid'
     && conflictBlockers.length === 0
     && diagnosticBlockers.length === 0;
-  state.workspace.gateBlockers = [
+  state.workspace.editor.blockers = [
     ...conflictBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
     ...diagnosticBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
     ...(needsValidation ? [{
@@ -1509,14 +1523,15 @@ function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
   ];
 }
 
-function recomputePreviewCandidate(state: ConfigurationStateView): void {
+function recomputePreviewCandidate(programId: string, state: ConfigurationStateView): void {
   let document: unknown;
   try {
-    document = JSON.parse(state.workspace.upstreamDocument);
+    document = JSON.parse(previewUpstreamDocuments.get(programId) ?? state.desired.content);
   } catch {
     return;
   }
-  for (const decision of state.workspace.rawDecisions) {
+  const decisions = previewRawDecisions(state);
+  for (const decision of decisions) {
     if (decision.status !== 'active' && decision.status !== 'resolved') continue;
     const path = previewPathSegments(decision.operation.path);
     if (decision.operation.operation === 'set') previewWritePath(document, path, decision.rawValue);
@@ -1528,7 +1543,7 @@ function recomputePreviewCandidate(state: ConfigurationStateView): void {
   const preservedConflicts = state.desired.conflicts.filter(
     (conflict) => conflict.messageKey !== 'RAW_DECISION_SUPERSEDED',
   );
-  const rawConflicts = state.workspace.rawDecisions
+  const rawConflicts = decisions
     .filter((decision) => decision.status === 'superseded')
     .map((decision) => ({
       semanticPath: decision.semanticPath,
@@ -1545,30 +1560,56 @@ function recomputePreviewCandidate(state: ConfigurationStateView): void {
     ? 'invalid'
     : 'pending';
   state.desired.validationEvidence = undefined;
-  state.workspace.finalPreviewDocument = content;
-  state.workspace.editableDocument = content;
-  state.workspace.layerTrace = state.workspace.layerTrace.map((trace) => {
-    const decision = state.workspace.rawDecisions.find((item) => item.decisionId === trace.rawDecisionId);
-    if (!decision) return trace;
+  state.workspace.editor.paths = state.workspace.editor.paths.map((path) => {
+    const decision = path.rawDecision;
+    if (!decision) return path;
     const participates = decision.status === 'active' || decision.status === 'resolved';
     return {
-      ...trace,
+      ...path,
       rawValue: decision.rawValue,
       effectiveValue: participates ? decision.rawValue : decision.upstreamValue,
       winnerLayer: participates ? 'rawDecision' : 'source',
-      rawDecisionStatus: decision.status,
-      issueIds: decision.status === 'superseded'
-        ? [`RAW_DECISION_SUPERSEDED:${decision.semanticPath}`]
-        : [],
+      rawDecision: decision,
     };
   });
-  state.workspace.rawConflicts = rawConflicts;
-  state.workspace.validationStatus = state.desired.validation;
-  state.workspace.saveStatus = rawConflicts.length > 0 ? 'blocked' : 'pendingValidation';
-  state.workspace.canSave = rawConflicts.length === 0;
-  state.workspace.canValidate = rawConflicts.length === 0;
-  state.workspace.canApply = false;
   refreshPreviewWorkspaceGates(state);
+  syncPreviewEditor(state);
+}
+
+function syncPreviewEditor(state: ConfigurationStateView): void {
+  const decisions = previewRawDecisions(state);
+  const conflicts = state.desired.conflicts;
+  state.workspace.editor.content = state.desired.content;
+  state.workspace.editor.revision = structuredClone(state.desired.revision);
+  state.workspace.editor.paths = state.workspace.editor.paths.map((path) => ({
+    ...path,
+    issues: conflicts
+      .filter((conflict) => conflict.semanticPath === path.semanticPath)
+      .map((conflict) => ({
+        id: `${conflict.messageKey ?? 'CONFIGURATION_CONFLICT'}:${conflict.semanticPath}`,
+        code: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
+        messageKey: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
+        semanticPath: conflict.semanticPath,
+        severity: conflict.severity,
+        blocking: conflict.severity === 'error',
+      })),
+  }));
+  state.workspace.editor.decisionCounts = {
+    active: decisions.filter((decision) => decision.status === 'active').length,
+    resolved: decisions.filter((decision) => decision.status === 'resolved').length,
+    superseded: decisions.filter((decision) => decision.status === 'superseded').length,
+    dormant: decisions.filter((decision) => decision.status === 'dormant').length,
+  };
+  state.workspace.editor.validationStatus = state.desired.validation;
+  state.workspace.editor.canSave = state.workspace.editor.blockers.every(
+    (blocker) => !blocker.blocks.includes('save'),
+  );
+  state.workspace.editor.canValidate = state.workspace.editor.blockers.every(
+    (blocker) => !blocker.blocks.includes('validate'),
+  );
+  state.workspace.editor.canApply = state.workspace.editor.blockers.every(
+    (blocker) => !blocker.blocks.includes('apply'),
+  );
 }
 
 function updateConfigurationState(
@@ -1601,20 +1642,8 @@ function updateConfigurationState(
       createdUnixMs: Date.now(),
     };
   }
-  state.workspace.finalPreviewDocument = state.desired.content;
-  state.workspace.editableDocument = state.desired.content;
-  state.workspace.validationStatus = state.desired.validation;
-  state.workspace.diagnostics = structuredClone(state.desired.diagnostics);
-  const blocked = state.desired.conflicts.some((conflict) => conflict.severity === 'error');
-  state.workspace.saveStatus = blocked
-    ? 'blocked'
-    : state.desired.validation === 'pending'
-      ? 'pendingValidation'
-      : 'saved';
-  state.workspace.canSave = !blocked;
-  state.workspace.canValidate = !blocked;
-  state.workspace.canApply = state.desired.validation === 'valid' && !blocked;
   refreshPreviewWorkspaceGates(state);
+  syncPreviewEditor(state);
   previewConfigurationStates.set(programId, structuredClone(state));
   return state;
 }
@@ -2435,6 +2464,7 @@ export function installMockBackend() {
           validatePreviewCompatibility(next as ProgramSpec);
           specs[nextSpec.id] = structuredClone(nextSpec);
           previewConfigurationStates.delete(nextSpec.id);
+          previewUpstreamDocuments.delete(nextSpec.id);
         }
         return null;
       }
@@ -2446,6 +2476,7 @@ export function installMockBackend() {
           validatePreviewCompatibility(next as ProgramSpec);
           specs[nextSpec.id] = structuredClone(nextSpec);
           previewConfigurationStates.delete(nextSpec.id);
+          previewUpstreamDocuments.delete(nextSpec.id);
         }
         setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() });
         return null;
@@ -2674,7 +2705,7 @@ export function installMockBackend() {
           resolution?: import('../types').RawDecisionResolution;
         } | undefined;
         return updateConfigurationState(programId, (state) => {
-          const decision = state.workspace.rawDecisions.find(
+          const decision = previewRawDecisions(state).find(
             (item) => item.decisionId === request?.decisionId,
           );
           if (!decision || !request?.resolution) {
@@ -2693,7 +2724,7 @@ export function installMockBackend() {
             };
             decision.rawValue = request.resolution.manualEdit.value;
           }
-          recomputePreviewCandidate(state);
+          recomputePreviewCandidate(programId, state);
           const decisionPath = previewPathSegments(decision.operation.path);
           state.guidedProjection = state.guidedProjection.map((projection) => {
             const guidedPath = previewGuidedPath(state.kind, projection.settingId);
@@ -2730,11 +2761,6 @@ export function installMockBackend() {
           current.desired.diagnostics = [];
           current.desired.conflicts = [];
         });
-        state.workspace.validationStatus = 'pending';
-        state.workspace.saveStatus = 'pendingValidation';
-        state.workspace.canSave = true;
-        state.workspace.canValidate = true;
-        state.workspace.canApply = false;
         previewConfigurationStates.set(programId, structuredClone(state));
         previewRawDrafts.delete(programId);
         return state;
@@ -2760,9 +2786,6 @@ export function installMockBackend() {
             validatedUnixMs: Date.now(),
           };
           state.desired.diagnostics = [];
-          state.workspace.validationStatus = 'valid';
-          state.workspace.saveStatus = 'saved';
-          state.workspace.canApply = true;
         }, false);
       }
       case 'set_guided_intent': {
@@ -2791,7 +2814,9 @@ export function installMockBackend() {
           }
           let upstreamDocument: unknown;
           try {
-            upstreamDocument = JSON.parse(state.workspace.upstreamDocument);
+            upstreamDocument = JSON.parse(
+              previewUpstreamDocuments.get(programId) ?? state.workspace.editor.content,
+            );
           } catch {
             upstreamDocument = {};
           }
@@ -2800,13 +2825,13 @@ export function installMockBackend() {
             previewGuidedPath(state.kind, settingId) ?? [],
             nextValue,
           );
-          state.workspace.upstreamDocument = `${JSON.stringify(upstreamDocument, null, 2)}\n`;
+          previewUpstreamDocuments.set(programId, `${JSON.stringify(upstreamDocument, null, 2)}\n`);
           if (projection) {
             projection.status = guided.value === undefined ? 'inherited' : 'explicit';
             projection.value = nextValue;
             projection.intentValue = guided.value;
           }
-          for (const decision of state.workspace.rawDecisions) {
+          for (const decision of previewRawDecisions(state)) {
             const decisionPath = previewPathSegments(decision.operation.path);
             const guidedPath = previewGuidedPath(state.kind, settingId) ?? [];
             if ((decision.status === 'active' || decision.status === 'resolved')
@@ -2815,9 +2840,9 @@ export function installMockBackend() {
               decision.upstreamValue = previewReadPath(upstreamDocument, decisionPath);
             }
           }
-          recomputePreviewCandidate(state);
+          recomputePreviewCandidate(programId, state);
           const changedPath = previewGuidedPath(state.kind, settingId) ?? [];
-          const hasRawDecision = state.workspace.rawDecisions.some((decision) =>
+          const hasRawDecision = previewRawDecisions(state).some((decision) =>
             decision.status !== 'dormant'
             && previewPathsOverlap(previewPathSegments(decision.operation.path), changedPath),
           );

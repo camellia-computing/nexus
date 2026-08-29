@@ -90,6 +90,34 @@ test('program configuration stages use sibling workspaces without overflow', asy
   await page.setViewportSize({ width: 680, height: 720 });
   await openPreview(page, 'cupertino', 'light');
   await openProgramDetails(page, 'sing-box-edge');
+  for (const width of [1280, 1024, 760, 680, 520]) {
+    await page.setViewportSize({ width, height: 760 });
+    const tabLayout = await page.locator('.program-tabs').evaluate((tabs) => {
+      const bounds = tabs.getBoundingClientRect();
+      const buttons = [...tabs.querySelectorAll<HTMLElement>('[role="tab"]')]
+        .map((button) => {
+          const buttonBounds = button.getBoundingClientRect();
+          return {
+            left: buttonBounds.left,
+            right: buttonBounds.right,
+            label: button.querySelector<HTMLElement>('.tab-label')?.innerText ?? '',
+          };
+        });
+      return {
+        overflow: tabs.scrollWidth - tabs.clientWidth,
+        buttons,
+        left: bounds.left,
+        right: bounds.right,
+      };
+    });
+    expect(tabLayout.overflow).toBeLessThanOrEqual(1);
+    expect(tabLayout.buttons.every((button) => (
+      button.left >= tabLayout.left - 1
+      && button.right <= tabLayout.right + 1
+      && button.label.trim().length > 0
+    ))).toBe(true);
+    await expectNoViewportOverflow(page);
+  }
   for (const tabName of ['Details', 'Intent', 'Sources', 'Compatibility', 'Configuration', 'Logs']) {
     const tab = page.getByRole('tab', { name: tabName, exact: true });
     await expect(tab).toBeVisible();
@@ -2205,20 +2233,21 @@ test('Xray, configuration, resize and log history interactions remain functional
   await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Dump parsed configuration' })).toBeVisible();
   const configToolbarLayout = await page.locator('.config-toolbar').evaluate((element) => {
-    const toolbar = element.getBoundingClientRect();
-    const managedNotice = element.previousElementSibling?.getBoundingClientRect();
+    const workspace = element.closest<HTMLElement>('.final-editor-workspace')!;
+    const editor = workspace.querySelector<HTMLElement>('.editor-slot')!.getBoundingClientRect();
+    const actions = workspace.querySelector<HTMLElement>('.editor-actions')!.getBoundingClientRect();
     const tools = element.querySelector<HTMLElement>('.config-toolbar-tools')!.getBoundingClientRect();
     const commit = element.querySelector<HTMLElement>('.config-toolbar-commit')!.getBoundingClientRect();
     const commitButtons = [...element.querySelectorAll<HTMLElement>('.config-toolbar-commit button')]
       .map((button) => button.getBoundingClientRect());
     return {
-      managedNoticeGap: managedNotice ? toolbar.top - managedNotice.bottom : -1,
+      editorActionsGap: actions.top - editor.bottom,
       groupsOverlap: tools.right > commit.left && tools.left < commit.right
         && tools.bottom > commit.top && tools.top < commit.bottom,
       commitButtonTopDelta: Math.abs(commitButtons[0].top - commitButtons[1].top),
     };
   });
-  expect(configToolbarLayout.managedNoticeGap).toBeGreaterThanOrEqual(12);
+  expect(configToolbarLayout.editorActionsGap).toBeGreaterThanOrEqual(8);
   expect(configToolbarLayout.groupsOverlap).toBe(false);
   expect(configToolbarLayout.commitButtonTopDelta).toBeLessThan(2);
   const configContainer = page.locator('.config-editor-resize');
@@ -2966,6 +2995,8 @@ test('invalid and unavailable sources retain visible recovery diagnostics', asyn
     const sources = page.locator('#program-panel-sources');
     const source = sources.locator('.source-status-item').filter({ hasText: 'Production routing' });
     await expect(source).toContainText(scenario.status);
+    await expect(source.locator('.source-status-reason')).not.toBeEmpty();
+    await expect(source.getByRole('button', { name: 'Retry source update', exact: true })).toBeVisible();
     await expect(sources.getByText(scenario.code, { exact: true })).toBeVisible();
     await expect(sources.locator('.surface-issues')).toContainText(scenario.message.replace(/\.$/, ''));
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
@@ -3045,7 +3076,7 @@ test('unknown custom builds can persist no reference as a legal baseline', async
   await expect(panel).toContainText('Compatibility target saved; the exact binary accepted this candidate');
   await expect(panel).toContainText('Applied/LKG retained');
   await panel.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
-  await expect(page.locator('#program-panel-configuration').getByRole('heading', { name: 'Effective candidate', exact: true })).toBeVisible();
+  await expect(page.locator('#program-panel-configuration').getByRole('heading', { name: 'Final configuration', exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
   await page.getByRole('tab', { name: 'Sources', exact: true }).click();
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
@@ -3076,21 +3107,21 @@ test('compatibility errors decode native wrappers and never leak into sibling ta
   await expect(panel.getByLabel('Reference compatibility target')).toHaveValue('');
 });
 
-test('Raw superseded decisions keep Guided controls re-enterable', async ({ page }) => {
+test('superseded Final configuration decisions keep Intent controls re-enterable', async ({ page }) => {
   await page.setViewportSize({ width: 520, height: 820 });
   await openPreview(page, 'material', 'dark', 1.15, '&__ui_raw_all_override');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const guided = page.locator('#program-panel-intent .guided-workspace');
   await expect(guided.locator('article')).toHaveCount(2);
-  await expect(guided.locator('.projection-status').filter({ hasText: 'Final decision in Raw' }).first()).toBeVisible();
+  await expect(guided.locator('.projection-status').filter({ hasText: 'Final configuration decision' }).first()).toBeVisible();
   const first = guided.locator('article').first();
   const control = first.locator('select');
   await expect(control).toBeEnabled();
   await control.selectOption('debug');
-  await expect(first.getByText('Final decision in Raw', { exact: true })).toBeVisible();
+  await expect(first.getByText('Final configuration decision', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
-  const finalConfiguration = page.locator('.raw-decision-panel');
+  const finalConfiguration = page.locator('.final-editor-workspace');
   await expect(finalConfiguration).toBeVisible();
   await expect(finalConfiguration.getByText('Superseded', { exact: true })).toBeVisible();
   await expect(page.getByText('Saved candidate is ready to apply.', { exact: true })).toHaveCount(0);
@@ -3100,64 +3131,81 @@ test('Raw superseded decisions keep Guided controls re-enterable', async ({ page
   await expectAccessible(page, '#program-panel-intent');
 });
 
-test('Raw final decisions can accept upstream without reopening the program', async ({ page }) => {
+test('Final configuration decisions can accept upstream without reopening the program', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 820 });
   await openPreview(page, 'material', 'dark', 1, '&__ui_raw_all_override');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
-  const panel = page.locator('.raw-decision-panel');
-  await panel.getByRole('button', { name: /\/log\/loglevel/ }).click();
+  const panel = page.locator('.final-editor-workspace');
+  await panel.getByText(/Superseded: \/log\/loglevel/, { exact: true }).click();
   await panel.getByRole('button', { name: 'Accept upstream', exact: true }).click();
-  await expect(panel.getByText('Dormant', { exact: true }).first()).toBeVisible();
-  await expect(page.locator('.decision-counts')).toContainText('1 Dormant');
+  await expect(page.locator('.decision-summary')).toContainText('1 Dormant');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await expect(page.locator('#program-panel-intent .projection-status').filter({ hasText: 'Final decision in Raw' })).toHaveCount(0);
+  await expect(page.locator('#program-panel-intent .projection-status').filter({ hasText: 'Final configuration decision' })).toHaveCount(0);
 });
 
-test('Final configuration unifies the effective document, path trace and Raw decisions', async ({ page }) => {
+test('Final configuration keeps the effective document and path decisions in one editor', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 860 });
   await openPreview(page, 'material', 'dark', 1, '&__ui_raw_all_override');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
 
-  const workspace = page.locator('.final-workspace');
-  await expect(workspace.getByRole('heading', { name: 'Effective candidate', exact: true })).toBeVisible();
-  await expect(workspace).toContainText('Sources → Intent → Details → Final decision');
-  await expect(workspace.locator('.decision-counts')).toContainText('1 Raw decisions');
-  await expect(workspace.locator('.decision-counts')).toContainText('1 Superseded');
-  const tracePath = workspace.locator('.trace-path').filter({ hasText: '/log/loglevel' });
-  await tracePath.click();
+  const workspace = page.locator('.final-editor-workspace');
+  await expect(workspace.getByRole('heading', { name: 'Final configuration', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Final configuration', exact: true })).toHaveCount(1);
+  await expect(page.locator('.generated-config-note, .raw-decision-panel, .trace-table, .raw-conflict-panel')).toHaveCount(0);
+  await expect(workspace.locator('.pipeline')).toContainText('Sources');
+  await expect(workspace.locator('.pipeline')).toContainText('Final decision');
+  await expect(workspace.locator('.decision-summary')).toContainText('1 Superseded');
+  await workspace.getByText(/Superseded: \/log\/loglevel/, { exact: true }).click();
   const editor = page.getByRole('textbox', { name: 'Configuration editor' });
   await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
   await expect(editor).toBeFocused();
   await expect(editor).toContainText('"loglevel": "warning"');
 
-  const decision = page.locator('.raw-decision-panel').getByRole('button', { name: /\/log\/loglevel/ });
-  await decision.click();
-  await page.locator('.raw-decision-panel').getByRole('button', { name: 'Keep Raw', exact: true }).click();
-  await expect(workspace.locator('.decision-counts')).toContainText('1 Resolved');
+  await page.locator('.path-inspector').getByRole('button', { name: 'Keep final decision', exact: true }).click();
+  await expect(workspace.locator('.decision-summary')).toContainText('1 Resolved');
   await expect(editor).toContainText('"loglevel": "debug"');
-  await expect(workspace.getByText('Raw decision needs rebase', { exact: true })).toHaveCount(0);
+  await expect(workspace.getByText('Final decision needs review', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Problems: No problems', exact: true })).toBeVisible();
   await expectNoViewportOverflow(page);
   await expectAccessible(page, '#program-panel-configuration');
+});
+
+test('Final configuration requires an explicit Save before Validate', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  const validate = page.locator('.config-toolbar').getByRole('button', { name: 'Validate', exact: true });
+
+  await expect(validate).toBeEnabled();
+  await replaceEditorContent(page, editor, '{"log": }');
+  await expect(page.getByText('Unsaved configuration', { exact: true })).toBeVisible();
+  await expect(validate).toBeDisabled();
+  await expect(validate).toHaveAttribute('title', /Draft must be saved or discarded first/);
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const compatibilityValidate = page.locator('#program-panel-compatibility')
+    .getByRole('button', { name: 'Validate current candidate', exact: true });
+  await expect(compatibilityValidate).toBeDisabled();
+  await expect(page.locator('#program-panel-compatibility')).toContainText('Draft must be saved or discarded first');
 });
 
 test('Final configuration trace remains reachable from compact mobile to wide desktop', async ({ page }) => {
   await openPreview(page, 'aurora', 'light', 1, '&__ui_raw_all_override');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
-  const workspace = page.locator('.final-workspace');
-  const traceRow = workspace.locator('.trace-row[role="listitem"]').first();
+  const workspace = page.locator('.final-editor-workspace');
+  const editorShell = page.locator('.code-editor-shell');
 
   for (const width of [1280, 1024, 760, 680, 520]) {
     await page.setViewportSize({ width, height: 860 });
     await expect(workspace).toBeVisible();
-    await expect(traceRow).toBeVisible();
+    await expect(editorShell).toBeVisible();
     await expectNoViewportOverflow(page);
-    const columns = await traceRow.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length);
-    if (width === 520) expect(columns).toBe(1);
-    else if (width <= 760) expect(columns).toBeLessThanOrEqual(2);
-    else expect(columns).toBeGreaterThanOrEqual(3);
+    const editorWidth = await editorShell.evaluate((element) => element.getBoundingClientRect().width);
+    expect(editorWidth).toBeGreaterThan(0);
   }
 });
 
@@ -3176,12 +3224,11 @@ test('Final configuration and Compatibility validation rerender fully in Chinese
   await settings.getByRole('button', { name: 'Chinese' }).click();
   await page.keyboard.press('Escape');
 
-  const workspace = page.locator('.final-workspace');
-  await expect(workspace.getByRole('heading', { name: '有效候选配置', exact: true })).toBeVisible();
-  await expect(workspace).toContainText('层级追踪');
-  await workspace.locator('.trace-status').first().click();
+  const workspace = page.locator('.final-editor-workspace');
+  await expect(workspace.getByRole('heading', { name: '最终配置', exact: true })).toBeVisible();
+  await workspace.getByText(/已被上游替代: \/log\/loglevel/, { exact: true }).click();
   await expect(workspace).toContainText('配置源值');
-  await expect(workspace).toContainText('Raw 裁决需要重新绑定上游');
+  await expect(workspace).toContainText('最终决定需要处理');
   await page.getByRole('tab', { name: '兼容性', exact: true }).click();
   const compatibility = page.locator('#program-panel-compatibility');
   await expect(compatibility).toContainText('兼容性激活流程');
@@ -3279,7 +3326,7 @@ test('a committed Raw decision does not resurrect its editor draft after an upst
   await page.getByLabel('Log level').selectOption('warn');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
 
-  await expect(page.locator('.raw-conflict-panel')).toHaveCount(0);
+  await expect(page.locator('.path-inspector')).toHaveCount(0);
   await expect(page.locator('.config-unsaved')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toHaveCount(0);
 });
@@ -3352,11 +3399,10 @@ test('Raw conflict markers resolve inline and stay coherent across editor undo a
   await openPreview(page, 'material', 'dark', 1.05, '&__ui_raw_conflict');
   const editor = await openProgramConfiguration(page, 'xray-primary');
   const shell = page.locator('.code-editor-shell');
-  const panel = page.locator('.raw-conflict-panel');
   const widget = shell.locator('.cm-configuration-conflict-widget');
 
-  await expect(panel.getByRole('heading', { name: '1 blocking conflicts' })).toBeVisible();
-  await expect(panel.getByRole('button', { name: /\/route\/final/ })).toBeVisible();
+  await expect(page.locator('.path-inspector')).toContainText('Draft conflict');
+  await expect(page.locator('.path-inspector').getByText(/\/route\/final/)).toBeVisible();
   await expect(shell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
     .toHaveCount(1);
   await expect(widget).toContainText('Conflict: /route/final');
@@ -3366,7 +3412,7 @@ test('Raw conflict markers resolve inline and stay coherent across editor undo a
   await expectAccessible(page, '.code-editor-shell');
 
   await widget.getByRole('button', { name: 'Use Updated', exact: true }).click();
-  await expect(panel).toHaveCount(0);
+  await expect(page.locator('.path-inspector')).toHaveCount(0);
   await expect(editor).toContainText('source-route');
   const undo = shell.getByRole('button', { name: 'Undo', exact: true });
   const redo = shell.getByRole('button', { name: 'Redo', exact: true });
@@ -3374,13 +3420,13 @@ test('Raw conflict markers resolve inline and stay coherent across editor undo a
 
   await undo.click();
   await expect(editor).toContainText('mine-route');
-  await expect(panel.getByRole('heading', { name: '1 blocking conflicts' })).toBeVisible();
+  await expect(page.locator('.path-inspector')).toContainText('Draft conflict');
   await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(1);
 
   await expect(redo).toBeEnabled();
   await redo.click();
   await expect(editor).toContainText('source-route');
-  await expect(panel).toHaveCount(0);
+  await expect(page.locator('.path-inspector')).toHaveCount(0);
   await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(0);
   await shell.screenshot({ path: testInfo.outputPath('configuration-raw-conflict-inline.png') });
 });
@@ -3555,6 +3601,14 @@ test('the JSON configuration editor supports diagnostics, formatting and command
     'false',
   );
 
+  const validateCandidate = page.locator('.config-toolbar').getByRole('button', { name: 'Validate', exact: true });
+  await expect(validateCandidate).toBeDisabled();
+  await editor.focus();
+  await page.keyboard.press('Control+Enter');
+  await expect(page.locator('.result').getByText('Valid configuration', { exact: true })).toHaveCount(0);
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('.result pre')).toContainText('Configuration candidate saved; validate it before applying');
+  await expect(validateCandidate).toBeEnabled();
   await editor.focus();
   await page.keyboard.press('Control+Enter');
   await expect(page.locator('.result').getByText('Valid configuration', { exact: true })).toBeVisible();

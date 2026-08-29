@@ -48,7 +48,7 @@
   function dependencyHint(descriptor: GuidedSettingDescriptor): string | undefined {
     if (!descriptor.enabledWhen) return undefined;
     const dependency = projectionById.get(descriptor.enabledWhen);
-    if (dependency?.status === 'overridden' || dependency?.status === 'rawDecision') return 'The parent setting has a Raw final decision.';
+    if (dependency?.status === 'overridden' || dependency?.status === 'rawDecision') return 'The parent setting has a Final configuration decision.';
     return dependency?.value === true ? undefined : 'Dependency unavailable';
   }
 
@@ -75,7 +75,7 @@
       case 'explicit': return 'Explicit';
       case 'custom': return 'Custom / Advanced';
       case 'overridden':
-      case 'rawDecision': return 'Final decision in Raw';
+      case 'rawDecision': return 'Final configuration decision';
       default: return 'Following source';
     }
   }
@@ -101,7 +101,7 @@
     CORE_INVALID: 'The Core rejected this candidate; Applied and Last Known Good were retained.',
     CORE_TARGET_CHANGED: 'The Core compatibility target changed; review and validate the candidate again.',
     CORE_TARGET_SOURCE_REJECTED: 'A source item is not expressible for the selected Core compatibility target.',
-    RAW_DECISION_SUPERSEDED: 'The upstream value changed after this Raw decision was created. Resolve it in Final configuration.',
+    RAW_DECISION_SUPERSEDED: 'The upstream value changed after this Final configuration decision was created. Review it in Final configuration.',
   };
 
   function diagnosticMessage(code: string, message: string, messageKey?: string): string {
@@ -125,13 +125,13 @@
   function conflictMessage(reason: string, messageKey?: string): string {
     if (messageKey === 'CONFIGURATION_RAW_OVERRIDE'
       || reason === 'Dashboard Guided intent is overridden by Raw configuration') {
-      return translate('This setting currently has a Raw final decision.');
+      return translate('This setting currently has a Final configuration decision.');
     }
     if (messageKey === 'CONFIGURATION_RAW_CONFLICT') {
-      return translate('The Raw operation conflicts with the current source or Guided value.');
+      return translate('The Final configuration decision conflicts with the current Source or Intent value.');
     }
     if (messageKey === 'CONFIGURATION_IDENTITY_DUPLICATED') {
-      return translate('A Raw identity is duplicated and cannot be applied safely.');
+      return translate('A Final configuration identity is duplicated and cannot be applied safely.');
     }
     return translate(
       'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.',
@@ -211,7 +211,7 @@
               </button>
             </div>
             {#if projection.status === 'overridden' || projection.status === 'rawDecision'}
-              <p>{$t('This setting currently has a Raw final decision.')} {$t('Changing it updates the upstream value and re-evaluates this Raw path.')}</p>
+              <p>{$t('This setting currently has a Final configuration decision.')} {$t('Changing it updates the upstream value and re-evaluates this Final configuration path.')}</p>
             {:else if projection.status === 'custom'}
               <p>{$t('The effective configuration cannot be represented safely by this simple control.')}</p>
             {/if}

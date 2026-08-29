@@ -725,7 +725,7 @@ const managedRawOverrideError = configurationErrorInfo({
   message: 'Managed integration is overridden by Raw configuration',
   details: '{"semanticPaths":["/experimental/clash_api/external_controller"]}',
 }, 'details-save');
-assert.match(managedRawOverrideError.message, /Raw configuration currently owns/);
+assert.match(managedRawOverrideError.message, /Final configuration decisions currently own/);
 assert.match(managedRawOverrideError.suggestion, /confirm takeover/);
 assert.match(managedRawOverrideError.details, /external_controller/);
 for (const [code, title, message] of [

@@ -2311,15 +2311,6 @@ pub fn project_guided_settings(
         .collect()
 }
 
-fn candidate_raw_operations(raw: &RawManualIntent) -> impl Iterator<Item = &IntentOperation> {
-    raw.operations.iter().chain(
-        raw.decisions
-            .iter()
-            .filter(|decision| decision.status.participates_in_candidate())
-            .map(|decision| &decision.operation),
-    )
-}
-
 fn visible_raw_operations(raw: &RawManualIntent) -> impl Iterator<Item = &IntentOperation> {
     raw.operations.iter().chain(
         raw.decisions
@@ -2458,8 +2449,7 @@ fn bind_raw_operations(
         .into_iter()
         .enumerate()
         .map(|(index, operation)| {
-            let path = intent_operation_path(&operation);
-            let upstream_path_hash = semantic_path_value_hash(upstream, &path);
+            let upstream_path_hash = semantic_operation_basis_hash(upstream, &operation);
             let decision_id = raw_decision_id(&operation, &upstream_content_hash, index);
             RawDecision {
                 decision_id,
@@ -2484,13 +2474,59 @@ fn semantic_document_hash(value: &Value) -> String {
     )
 }
 
-fn semantic_path_value_hash(root: &Value, path: &[SemanticPathSegment]) -> String {
-    let value = raw_conflict_path_value(root, path).ok().flatten().cloned();
+fn semantic_operation_basis_hash(root: &Value, operation: &IntentOperation) -> String {
+    let path = intent_operation_path(operation);
+    let mut current = Some(root);
+    let mut anchors = Vec::with_capacity(path.len());
+    for segment in &path {
+        let (state, next) = match (current, segment) {
+            (Some(Value::Object(values)), SemanticPathSegment::Key { key }) => {
+                match values.get(key) {
+                    Some(value) => (format!("present:{}", value_shape(value)), Some(value)),
+                    None => ("missing".to_owned(), None),
+                }
+            }
+            (Some(Value::Array(values)), SemanticPathSegment::Identity { field, value }) => {
+                let matches = values
+                    .iter()
+                    .filter(|item| item.get(field).and_then(Value::as_str) == Some(value))
+                    .collect::<Vec<_>>();
+                match matches.as_slice() {
+                    [] => ("missing".to_owned(), None),
+                    [value] => (format!("present:{}", value_shape(value)), Some(*value)),
+                    _ => ("duplicate".to_owned(), None),
+                }
+            }
+            (Some(value), _) => (format!("typeMismatch:{}", value_shape(value)), None),
+            (None, _) => ("ancestorMissing".to_owned(), None),
+        };
+        anchors.push((segment.clone(), state));
+        current = next;
+    }
+    let value = current.cloned().map(|value| {
+        if is_sing_box_dashboard_interval_path(&path)
+            && let Some(nanos) = value.as_str().and_then(parse_dashboard_interval_nanos)
+        {
+            return json!({ "durationNanos": nanos.to_string() });
+        }
+        value
+    });
     hash_bytes(
-        serde_json::to_vec(&value)
-            .expect("semantic path values are serializable")
+        serde_json::to_vec(&(anchors, value))
+            .expect("semantic operation basis values are serializable")
             .as_slice(),
     )
+}
+
+fn value_shape(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn raw_decision_id(
@@ -2521,8 +2557,7 @@ fn reconcile_raw_decisions(
         if !decision.status.participates_in_candidate() {
             continue;
         }
-        let path = intent_operation_path(&decision.operation);
-        let current_path_hash = semantic_path_value_hash(upstream, &path);
+        let current_path_hash = semantic_operation_basis_hash(upstream, &decision.operation);
         if current_path_hash != decision.basis.upstream_path_hash {
             decision.status = RawDecisionStatus::Superseded;
         }
@@ -2681,9 +2716,33 @@ pub fn apply_raw_intent(
 ) -> (Value, Vec<ConfigurationConflict>) {
     let mut effective = base.clone();
     let mut conflicts = Vec::new();
-    for operation in candidate_raw_operations(intent) {
+    for operation in &intent.operations {
         if let Err(conflict) = apply_intent_operation(&mut effective, operation) {
             conflicts.push(*conflict);
+        }
+    }
+    for decision in intent
+        .decisions
+        .iter()
+        .filter(|decision| decision.status.participates_in_candidate())
+    {
+        if let Err(conflict) = apply_intent_operation(&mut effective, &decision.operation) {
+            let rebound_set = decision.status == RawDecisionStatus::Resolved
+                && decision.basis.upstream_path_hash
+                    == semantic_operation_basis_hash(base, &decision.operation)
+                && matches!(&decision.operation, IntentOperation::Set { .. });
+            if rebound_set {
+                let IntentOperation::Set { path, value } = &decision.operation else {
+                    unreachable!("rebound_set only matches Set operations");
+                };
+                if let Err(rebound_conflict) =
+                    set_semantic_path_creating_anchors(&mut effective, path, value.clone())
+                {
+                    conflicts.push(*rebound_conflict);
+                }
+            } else {
+                conflicts.push(*conflict);
+            }
         }
     }
     (effective, conflicts)
@@ -2757,10 +2816,22 @@ pub fn resolve_raw_decision(
             decision.status = RawDecisionStatus::Dormant;
         }
         RawDecisionResolution::KeepRaw => {
+            let mut preview = upstream.clone();
+            if apply_intent_operation(&mut preview, &decision.operation).is_err() {
+                let IntentOperation::Set { path, value } = &decision.operation else {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigConflict,
+                        "This final decision cannot be kept because its upstream sequence no longer exists. Accept upstream or provide a complete manual value.",
+                    ));
+                };
+                set_semantic_path_creating_anchors(&mut preview, path, value.clone()).map_err(
+                    |conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason),
+                )?;
+            }
             decision.basis = RawDecisionBasis {
                 upstream_generation,
                 upstream_content_hash,
-                upstream_path_hash: semantic_path_value_hash(upstream, &path),
+                upstream_path_hash: semantic_operation_basis_hash(upstream, &decision.operation),
             };
             decision.status = RawDecisionStatus::Resolved;
         }
@@ -2772,7 +2843,7 @@ pub fn resolve_raw_decision(
             decision.basis = RawDecisionBasis {
                 upstream_generation,
                 upstream_content_hash,
-                upstream_path_hash: semantic_path_value_hash(upstream, &path),
+                upstream_path_hash: semantic_operation_basis_hash(upstream, &decision.operation),
             };
             decision.status = RawDecisionStatus::Resolved;
         }
@@ -3261,6 +3332,92 @@ fn set_semantic_path(
     Ok(())
 }
 
+/// Applies an explicitly rebound Set decision even when an upstream update
+/// removed one of its object/identity anchors. This is deliberately not used
+/// for Active decisions: an upstream removal must first supersede the old
+/// decision, and only an explicit Keep/Manual resolution may recreate the
+/// minimum container chain required by that path.
+fn set_semantic_path_creating_anchors(
+    root: &mut Value,
+    path: &[SemanticPathSegment],
+    value: Value,
+) -> std::result::Result<(), Box<ConfigurationConflict>> {
+    fn apply(
+        current: &mut Value,
+        remaining: &[SemanticPathSegment],
+        full_path: &[SemanticPathSegment],
+        offset: usize,
+        value: Value,
+    ) -> std::result::Result<(), Box<ConfigurationConflict>> {
+        let Some((segment, tail)) = remaining.split_first() else {
+            *current = value;
+            return Ok(());
+        };
+        match segment {
+            SemanticPathSegment::Key { key } => {
+                let object = current.as_object_mut().ok_or_else(|| {
+                    intent_conflict(
+                        &full_path[..offset],
+                        "A final decision cannot recreate an anchor through a non-object value",
+                        Some(value.clone()),
+                    )
+                })?;
+                if tail.is_empty() {
+                    object.insert(key.clone(), value);
+                    return Ok(());
+                }
+                let child = object.entry(key.clone()).or_insert_with(|| match tail[0] {
+                    SemanticPathSegment::Key { .. } => Value::Object(Map::new()),
+                    SemanticPathSegment::Identity { .. } => Value::Array(Vec::new()),
+                });
+                apply(child, tail, full_path, offset + 1, value)
+            }
+            SemanticPathSegment::Identity {
+                field,
+                value: identity,
+            } => {
+                let values = current.as_array_mut().ok_or_else(|| {
+                    intent_conflict(
+                        &full_path[..offset],
+                        "A final identity decision cannot recreate an anchor through a non-array value",
+                        Some(value.clone()),
+                    )
+                })?;
+                if tail.is_empty() {
+                    if let Some(index) = identity_index(values, field, identity)? {
+                        values[index] = value;
+                    } else {
+                        values.push(value);
+                    }
+                    return Ok(());
+                }
+                let index = if let Some(index) = identity_index(values, field, identity)? {
+                    index
+                } else {
+                    if !matches!(tail[0], SemanticPathSegment::Key { .. }) {
+                        return Err(intent_conflict(
+                            &full_path[..=offset],
+                            "A nested identity anchor cannot be reconstructed safely",
+                            Some(value),
+                        ));
+                    }
+                    let mut identity_object = Map::new();
+                    identity_object.insert(field.clone(), Value::String(identity.clone()));
+                    values.push(Value::Object(identity_object));
+                    values.len() - 1
+                };
+                apply(&mut values[index], tail, full_path, offset + 1, value)
+            }
+        }
+    }
+
+    if path.is_empty() {
+        *root = value;
+        return Ok(());
+    }
+    apply(root, path, path, 0, value)
+}
+
 fn delete_semantic_path(
     root: &mut Value,
     path: &[SemanticPathSegment],
@@ -3710,6 +3867,7 @@ impl ConfigurationState {
         let mut guided = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
         apply_dashboard_intent(self.kind, &mut guided, &self.managed_intent)?;
         let edited = parse_semantic_document(self.format, edited)?;
+        validate_static_candidate(self.kind, &edited)?;
         let mut next = diff_raw_decisions(&guided, &edited, self.generation);
         // Preserve an unchanged participating decision verbatim. Recreating
         // it would change its id/basis even though the final document did not
@@ -3954,8 +4112,6 @@ fn build_configuration_workspace(
     upstream: &Value,
     effective: &Value,
 ) -> ConfigurationWorkspaceView {
-    let upstream_document = serialize_semantic_document(state.format, upstream)
-        .unwrap_or_else(|_| state.base.content.clone());
     // The desired candidate is the single authoritative final document.  The
     // parsed value is still used for trace construction, but the wire view
     // must never drift from the content that Save/Validate/Apply operate on.
@@ -4012,11 +4168,6 @@ fn build_configuration_workspace(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let has_blocking_conflicts = state
-        .desired
-        .conflicts
-        .iter()
-        .any(|conflict| conflict.severity == ConflictSeverity::Error);
     let mut blockers = build_configuration_gate_blockers(
         state,
         &source_conflicts,
@@ -4054,29 +4205,144 @@ fn build_configuration_workspace(
     let can_save = blockers
         .iter()
         .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Save));
-    ConfigurationWorkspaceView {
-        upstream_document,
-        final_preview_document: final_preview_document.clone(),
-        editable_document: final_preview_document,
-        layer_trace: build_layer_trace(state, base, guided, upstream, effective),
-        raw_decisions,
-        source_conflicts,
-        layer_conflicts,
-        raw_conflicts,
-        diagnostics: state.desired.diagnostics.clone(),
-        gate_blockers: blockers,
-        save_status: if has_blocking_conflicts {
-            CandidateSaveStatus::Blocked
-        } else if state.desired.validation == CandidateValidationStatus::Pending {
-            CandidateSaveStatus::PendingValidation
-        } else {
-            CandidateSaveStatus::Saved
+    let layer_trace = build_layer_trace(state, base, guided, upstream, effective);
+    let editor_paths =
+        build_configuration_editor_paths(&layer_trace, &raw_decisions, &state.desired);
+    let editor = ConfigurationEditorView {
+        content: final_preview_document.clone(),
+        revision: state.desired.revision.clone(),
+        paths: editor_paths,
+        decision_counts: ConfigurationDecisionCounts {
+            active: raw_decisions
+                .iter()
+                .filter(|decision| decision.status == RawDecisionStatus::Active)
+                .count() as u32,
+            resolved: raw_decisions
+                .iter()
+                .filter(|decision| decision.status == RawDecisionStatus::Resolved)
+                .count() as u32,
+            superseded: raw_decisions
+                .iter()
+                .filter(|decision| decision.status == RawDecisionStatus::Superseded)
+                .count() as u32,
+            dormant: raw_decisions
+                .iter()
+                .filter(|decision| decision.status == RawDecisionStatus::Dormant)
+                .count() as u32,
         },
+        blockers,
         validation_status: state.desired.validation,
         can_save,
         can_validate,
         can_apply,
+    };
+    ConfigurationWorkspaceView { editor }
+}
+
+fn build_configuration_editor_paths(
+    traces: &[ConfigurationLayerTrace],
+    decisions: &[RawDecisionProjection],
+    desired: &ConfigurationCandidate,
+) -> Vec<ConfigurationEditorPath> {
+    traces
+        .iter()
+        .map(|trace| {
+            let raw_decision = trace
+                .raw_decision_id
+                .as_ref()
+                .and_then(|id| {
+                    decisions
+                        .iter()
+                        .find(|decision| &decision.decision_id == id)
+                })
+                .cloned();
+            let issues = desired
+                .conflicts
+                .iter()
+                .filter(|conflict| {
+                    semantic_paths_overlap(&conflict.semantic_path, &trace.semantic_path)
+                })
+                .map(|conflict| ConfigurationEditorIssue {
+                    id: format!(
+                        "{}:{}",
+                        conflict
+                            .message_key
+                            .as_deref()
+                            .unwrap_or("CONFIGURATION_CONFLICT"),
+                        conflict.semantic_path
+                    ),
+                    code: conflict
+                        .message_key
+                        .clone()
+                        .unwrap_or_else(|| "CONFIGURATION_CONFLICT".into()),
+                    message_key: conflict
+                        .message_key
+                        .clone()
+                        .unwrap_or_else(|| "CONFIGURATION_CONFLICT".into()),
+                    semantic_path: conflict.semantic_path.clone(),
+                    severity: conflict.severity,
+                    blocking: conflict.severity == ConflictSeverity::Error,
+                })
+                .collect();
+            ConfigurationEditorPath {
+                semantic_path: trace.semantic_path.clone(),
+                segments: semantic_path_segments(&trace.semantic_path),
+                source_ids: trace.source_ids.clone(),
+                source_value: trace.source_value.clone(),
+                intent_value: trace.guided_value.clone(),
+                details_value: trace.details_value.clone(),
+                raw_value: trace.raw_value.clone(),
+                effective_value: trace.effective_value.clone(),
+                winner_layer: trace.winner_layer,
+                raw_decision,
+                issues,
+            }
+        })
+        .collect()
+}
+
+fn semantic_paths_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left == "/"
+        || right == "/"
+        || left.starts_with(&format!("{right}/"))
+        || right.starts_with(&format!("{left}/"))
+}
+
+fn semantic_path_segments(path: &str) -> Vec<SemanticPathSegment> {
+    if path.is_empty() || path == "/" {
+        return Vec::new();
     }
+    path.split('/')
+        .skip(1)
+        .fold(Vec::new(), |mut segments, encoded| {
+            let decoded = encoded.replace("~1", "/").replace("~0", "~");
+            let (key, selectors) = decoded
+                .find('[')
+                .map(|index| (&decoded[..index], &decoded[index..]))
+                .unwrap_or((decoded.as_str(), ""));
+            if !key.is_empty() {
+                segments.push(SemanticPathSegment::Key { key: key.into() });
+            }
+            let mut remainder = selectors;
+            while let Some(start) = remainder.find('[') {
+                let after = &remainder[start + 1..];
+                let Some(end) = after.find(']') else { break };
+                let selector = &after[..end];
+                let Some((field, value)) = selector.split_once('=') else {
+                    remainder = &after[end + 1..];
+                    continue;
+                };
+                if !field.is_empty() {
+                    segments.push(SemanticPathSegment::Identity {
+                        field: field.into(),
+                        value: value.into(),
+                    });
+                }
+                remainder = &after[end + 1..];
+            }
+            segments
+        })
 }
 
 fn build_configuration_gate_blockers(
@@ -4178,10 +4444,7 @@ fn build_layer_trace(
             let guided_value = trace_path_value(guided, &path);
             let details_value = trace_path_value(upstream, &path);
             let effective_value = trace_path_value(effective, &path);
-            let raw_decision =
-                state.raw_intent.decisions.iter().find(|decision| {
-                    path_overlaps(&path, &intent_operation_path(&decision.operation))
-                });
+            let raw_decision = raw_decision_for_trace_path(&state.raw_intent.decisions, &path);
             let winner_layer = if raw_decision
                 .is_some_and(|decision| decision.status.participates_in_candidate())
             {
@@ -4234,6 +4497,45 @@ fn build_layer_trace(
             }
         })
         .collect()
+}
+
+fn raw_decision_for_trace_path<'a>(
+    decisions: &'a [RawDecision],
+    path: &[SemanticPathSegment],
+) -> Option<&'a RawDecision> {
+    let status_priority = |status: RawDecisionStatus| match status {
+        RawDecisionStatus::Superseded => 3_u8,
+        RawDecisionStatus::Resolved | RawDecisionStatus::Active => 2,
+        RawDecisionStatus::Dormant => 1,
+    };
+    let exact = decisions
+        .iter()
+        .filter(|decision| intent_operation_path(&decision.operation) == path)
+        .max_by_key(|decision| status_priority(decision.status));
+    if exact.is_some() {
+        return exact;
+    }
+    // A Set/Delete at an ancestor owns its descendants. Sequence operations
+    // only own their exact array path; allowing a reorder to match every
+    // identity child hid the actual decision from the inspector.
+    decisions
+        .iter()
+        .filter(|decision| decision.status.participates_in_candidate())
+        .filter_map(|decision| {
+            let operation_path = intent_operation_path(&decision.operation);
+            let propagates = matches!(
+                &decision.operation,
+                IntentOperation::Set { .. } | IntentOperation::Delete { .. }
+            );
+            (propagates && operation_path.len() < path.len() && path.starts_with(&operation_path))
+                .then_some((
+                    operation_path.len(),
+                    status_priority(decision.status),
+                    decision,
+                ))
+        })
+        .max_by_key(|(path_len, priority, _)| (*path_len, *priority))
+        .map(|(_, _, decision)| decision)
 }
 
 fn semantic_path_to_pointer(root: &Value, path: &[SemanticPathSegment]) -> Option<String> {
@@ -4366,18 +4668,19 @@ fn project_managed_integrations(
                     .flatten()
                     .is_some()
             });
-            let status =
-                if !issue_ids.is_empty() || (intent_value.is_some() && !raw_paths.is_empty()) {
-                    ManagedIntegrationStatus::Overridden
-                } else if intent_value.is_some() {
-                    ManagedIntegrationStatus::Explicit
-                } else if !raw_paths.is_empty() && effective_enabled {
-                    ManagedIntegrationStatus::RawOnly
-                } else if !effective_enabled && (intent_value.is_some() || !raw_paths.is_empty()) {
-                    ManagedIntegrationStatus::NeedsAttention
-                } else {
-                    ManagedIntegrationStatus::Inactive
-                };
+            let status = if intent_value.is_none() && !issue_ids.is_empty() {
+                ManagedIntegrationStatus::NeedsAttention
+            } else if intent_value.is_some() && (!issue_ids.is_empty() || !raw_paths.is_empty()) {
+                ManagedIntegrationStatus::Overridden
+            } else if intent_value.is_some() {
+                ManagedIntegrationStatus::Explicit
+            } else if !raw_paths.is_empty() && effective_enabled {
+                ManagedIntegrationStatus::RawOnly
+            } else if !effective_enabled && (intent_value.is_some() || !raw_paths.is_empty()) {
+                ManagedIntegrationStatus::NeedsAttention
+            } else {
+                ManagedIntegrationStatus::Inactive
+            };
             ManagedIntegrationProjection {
                 integration_id: (*integration_id).into(),
                 status,
@@ -4767,14 +5070,6 @@ pub enum ConfigurationLayer {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum CandidateSaveStatus {
-    Blocked,
-    Saved,
-    PendingValidation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum ConfigurationGate {
     Save,
     Validate,
@@ -4846,29 +5141,69 @@ pub struct RawDecisionProjection {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigurationWorkspaceView {
-    pub upstream_document: String,
-    pub final_preview_document: String,
-    pub editable_document: String,
+pub struct ConfigurationEditorIssue {
+    pub id: String,
+    pub code: String,
+    pub message_key: String,
+    pub semantic_path: String,
+    pub severity: ConflictSeverity,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationEditorPath {
+    pub semantic_path: String,
     #[serde(default)]
-    pub layer_trace: Vec<ConfigurationLayerTrace>,
+    pub segments: Vec<SemanticPathSegment>,
     #[serde(default)]
-    pub raw_decisions: Vec<RawDecisionProjection>,
+    pub source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_value: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_value: Option<Value>,
+    pub winner_layer: ConfigurationLayer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_decision: Option<RawDecisionProjection>,
     #[serde(default)]
-    pub source_conflicts: Vec<ConfigurationConflict>,
+    pub issues: Vec<ConfigurationEditorIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationDecisionCounts {
+    pub active: u32,
+    pub resolved: u32,
+    pub superseded: u32,
+    pub dormant: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationEditorView {
+    pub content: String,
+    pub revision: ConfigurationRevision,
     #[serde(default)]
-    pub layer_conflicts: Vec<ConfigurationConflict>,
+    pub paths: Vec<ConfigurationEditorPath>,
+    pub decision_counts: ConfigurationDecisionCounts,
     #[serde(default)]
-    pub raw_conflicts: Vec<ConfigurationConflict>,
-    #[serde(default)]
-    pub diagnostics: Vec<ConfigurationDiagnostic>,
-    #[serde(default)]
-    pub gate_blockers: Vec<ConfigurationGateBlocker>,
-    pub save_status: CandidateSaveStatus,
+    pub blockers: Vec<ConfigurationGateBlocker>,
     pub validation_status: CandidateValidationStatus,
     pub can_save: bool,
     pub can_validate: bool,
     pub can_apply: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationWorkspaceView {
+    pub editor: ConfigurationEditorView,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4925,6 +5260,78 @@ pub fn parse_semantic_document(format: ConfigurationFormat, content: &[u8]) -> R
     };
     ensure_root_mapping(&value)?;
     Ok(value)
+}
+
+fn validate_static_candidate(kind: ProgramKind, root: &Value) -> Result<()> {
+    fn path_key(parent: &str, key: &str) -> String {
+        format!("{parent}/{}", key.replace('~', "~0").replace('/', "~1"))
+    }
+
+    fn known_port_path(kind: ProgramKind, parent: &str, key: &str) -> bool {
+        matches!(
+            key,
+            "listen_port" | "server_port" | "api_port" | "metrics_port"
+        ) || key.ends_with("-port")
+            || (key == "port"
+                && (kind == ProgramKind::Mihomo
+                    || parent.starts_with("/inbounds")
+                    || parent.starts_with("/outbounds")))
+    }
+
+    fn invalid(path: &str, details: impl Into<String>) -> CamelliaNexusError {
+        CamelliaNexusError::new(
+            ErrorCode::ConfigInvalid,
+            "Configuration candidate failed static validation",
+        )
+        .with_message_key("CONFIGURATION_STATIC_INVALID")
+        .with_details(format!("{path}: {}", details.into()))
+    }
+
+    fn walk(kind: ProgramKind, value: &Value, path: &str) -> Result<()> {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    let child_path = path_key(path, key);
+                    if known_port_path(kind, path, key) {
+                        let valid = child
+                            .as_u64()
+                            .is_some_and(|port| (1..=65_535).contains(&port));
+                        if !valid {
+                            return Err(invalid(
+                                &child_path,
+                                "port must be an integer between 1 and 65535",
+                            ));
+                        }
+                    }
+                    walk(kind, child, &child_path)?;
+                }
+            }
+            Value::Array(values) => {
+                let mut identities = BTreeSet::new();
+                for (index, child) in values.iter().enumerate() {
+                    let child_path = if let Some((field, identity)) = semantic_identity(child) {
+                        if !identities.insert((field.clone(), identity.clone())) {
+                            return Err(invalid(
+                                &format!("{path}[{field}={identity}]"),
+                                "semantic identity is duplicated",
+                            ));
+                        }
+                        format!("{path}[{field}={identity}]")
+                    } else {
+                        format!("{path}/{index}")
+                    };
+                    walk(kind, child, &child_path)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    if !root.is_object() {
+        return Err(invalid("/", "configuration root must be an object"));
+    }
+    walk(kind, root, "")
 }
 
 pub fn serialize_semantic_document(format: ConfigurationFormat, value: &Value) -> Result<String> {
@@ -5593,7 +6000,7 @@ mod tests {
             .expect("evidence")
             .config_hash = "stale-config-hash".into();
 
-        assert!(!state.view().workspace.can_apply);
+        assert!(!state.view().workspace.editor.can_apply);
         let error = state.mark_applied().expect_err("stale evidence must fail");
         assert_eq!(error.code, ErrorCode::ConfigConflict);
         assert!(state.applied.is_none());
@@ -5903,6 +6310,196 @@ mod tests {
     }
 
     #[test]
+    fn removing_managed_parent_supersedes_child_and_reorder_decisions_without_anchor_noise() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(ProgramKind::SingBox, "base", r#"{}"#)],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        sync_managed_dashboard_intent(
+            &mut state.managed_intent,
+            &ManagedConfigSpec {
+                sing_box_dashboard: Some(SingBoxDashboardSpec {
+                    listen_port: 9090,
+                    update_interval: "1d".into(),
+                }),
+                sing_box_clash_dashboard: Some(SingBoxClashDashboardSpec {
+                    listen_port: 9091,
+                    download_url: None,
+                }),
+                ..ManagedConfigSpec::default()
+            },
+        );
+        state.rebuild_desired(2).expect("enable dashboards");
+
+        let mut edited =
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
+        edited["experimental"]["clash_api"]["secret"] = Value::String("keep".into());
+        edited["services"]
+            .as_array_mut()
+            .expect("managed services")
+            .push(json!({
+                "type": "api",
+                "tag": "custom-test-service",
+                "listen": "127.0.0.1",
+                "listen_port": 43901
+            }));
+        state
+            .replace_raw_from_edited(&serde_json::to_vec(&edited).unwrap(), 3)
+            .expect("create child and reorder decisions");
+        assert_eq!(state.raw_intent.decisions.len(), 3);
+        assert!(state.desired.conflicts.is_empty());
+
+        state.managed_intent = ManagedIntegrationIntent::default();
+        state.rebuild_desired(4).expect("disable dashboards");
+
+        assert!(
+            state
+                .raw_intent
+                .decisions
+                .iter()
+                .all(|decision| decision.status == RawDecisionStatus::Superseded)
+        );
+        assert_eq!(state.desired.conflicts.len(), 3);
+        assert!(state.desired.conflicts.iter().all(|conflict| {
+            conflict.message_key.as_deref() == Some("RAW_DECISION_SUPERSEDED")
+        }));
+        let candidate =
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
+        assert!(candidate.get("experimental").is_none());
+        assert!(candidate.get("services").is_none());
+
+        let view = state.view();
+        for decision in &state.raw_intent.decisions {
+            let decision_path = display_semantic_path(&intent_operation_path(&decision.operation));
+            let editor_path = view
+                .workspace
+                .editor
+                .paths
+                .iter()
+                .find(|path| path.semantic_path == decision_path)
+                .expect("decision has an editor path");
+            assert_eq!(
+                editor_path
+                    .raw_decision
+                    .as_ref()
+                    .map(|projection| projection.decision_id.as_str()),
+                Some(decision.decision_id.as_str())
+            );
+        }
+        let native = view
+            .managed_integrations
+            .iter()
+            .find(|projection| projection.integration_id == "dashboard.singBoxApi")
+            .expect("native projection");
+        assert_eq!(native.status, ManagedIntegrationStatus::NeedsAttention);
+
+        let secret_id = state
+            .raw_intent
+            .decisions
+            .iter()
+            .find(|decision| {
+                display_semantic_path(&intent_operation_path(&decision.operation))
+                    == "/experimental/clash_api/secret"
+            })
+            .map(|decision| decision.decision_id.clone())
+            .expect("secret decision");
+        state
+            .resolve_raw_decision(&secret_id, RawDecisionResolution::KeepRaw, 5)
+            .expect("explicitly keep child decision");
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["experimental"]
+                ["clash_api"]["secret"],
+            "keep"
+        );
+        assert_eq!(
+            state
+                .raw_intent
+                .decisions
+                .iter()
+                .find(|decision| decision.decision_id == secret_id)
+                .map(|decision| decision.status),
+            Some(RawDecisionStatus::Resolved)
+        );
+
+        let remaining = state
+            .raw_intent
+            .decisions
+            .iter()
+            .filter(|decision| decision.status == RawDecisionStatus::Superseded)
+            .map(|decision| decision.decision_id.clone())
+            .collect::<Vec<_>>();
+        for (offset, decision_id) in remaining.iter().enumerate() {
+            state
+                .resolve_raw_decision(
+                    decision_id,
+                    RawDecisionResolution::AcceptUpstream,
+                    6 + offset as u64,
+                )
+                .expect("accept remaining upstream decisions");
+        }
+        assert!(state.desired.conflicts.is_empty());
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
+    }
+
+    #[test]
+    fn raw_editor_static_validation_rejects_invalid_ports_and_duplicate_identities() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "base",
+                r#"{"inbounds":[{"tag":"local","port":1080}]}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        let original_generation = state.generation;
+        let original_content = state.desired.content.clone();
+
+        for invalid_document in [
+            r#"{"inbounds":[{"tag":"local","port":70000}]}"#,
+            r#"{"inbounds":[{"tag":"local","port":"not-a-port"}]}"#,
+            r#"{"inbounds":[{"tag":"local","port":1080},{"tag":"local","port":1081}]}"#,
+        ] {
+            let error = state
+                .replace_raw_from_edited(invalid_document.as_bytes(), 2)
+                .expect_err("invalid candidate");
+            assert_eq!(error.code, ErrorCode::ConfigInvalid);
+            assert_eq!(
+                error.message_key.as_deref(),
+                Some("CONFIGURATION_STATIC_INVALID")
+            );
+            assert_eq!(state.generation, original_generation);
+            assert_eq!(state.desired.content, original_content);
+            assert!(state.raw_intent.decisions.is_empty());
+        }
+
+        state
+            .replace_raw_from_edited(
+                br#"{"inbounds":[{"tag":"local","port":1080}],"future_extension":{"port":"opaque"}}"#,
+                3,
+            )
+            .expect("unknown extensions remain available to the native validator");
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
+    }
+
+    #[test]
     fn managed_takeover_preserves_unowned_fields_from_an_ancestor_set() {
         let mut managed = ManagedIntegrationIntent::default();
         managed.set("dashboard.singBoxClash.listenPort", Value::from(9091));
@@ -6186,7 +6783,7 @@ mod tests {
                 .map(|projection| projection.status),
             Some(GuidedProjectionStatus::RawDecision)
         );
-        assert!(!state.view().workspace.can_save);
+        assert!(!state.view().workspace.editor.can_save);
         assert_eq!(
             parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
                 ["level"],
@@ -6482,7 +7079,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_layer_trace_resolves_indexed_source_provenance() {
+    fn identity_editor_path_resolves_indexed_source_provenance() {
         let merge = merge_configuration_sources(
             ProgramKind::SingBox,
             &[snapshot(
@@ -6503,7 +7100,8 @@ mod tests {
         let trace = state
             .view()
             .workspace
-            .layer_trace
+            .editor
+            .paths
             .into_iter()
             .find(|trace| trace.semantic_path == "/services[tag=second]/listen_port")
             .expect("identity trace");
@@ -6534,12 +7132,22 @@ mod tests {
         state.desired.content = "{\n  \"log\": { \"loglevel\": \"warning\" }\n}\n".into();
 
         let view = state.view();
-        assert_eq!(view.workspace.final_preview_document, state.desired.content);
-        assert_eq!(view.workspace.editable_document, state.desired.content);
+        assert_eq!(view.workspace.editor.content, state.desired.content);
+        assert_eq!(
+            view.workspace.editor.revision, state.desired.revision,
+            "the editor must use the same candidate revision as Desired"
+        );
+        assert!(
+            view.workspace
+                .editor
+                .paths
+                .iter()
+                .any(|path| path.semantic_path == "/log/loglevel")
+        );
     }
 
     #[test]
-    fn layer_trace_keeps_guided_and_details_values_separate_and_selects_each_winner() {
+    fn editor_paths_keep_intent_and_details_values_separate_and_select_each_winner() {
         let merge = merge_configuration_sources(
             ProgramKind::SingBox,
             &[snapshot(
@@ -6579,7 +7187,8 @@ mod tests {
             .replace_raw_from_edited(edited.as_bytes(), 3)
             .expect("Raw decision");
 
-        let trace = state.view().workspace.layer_trace;
+        let workspace = state.view().workspace;
+        let trace = workspace.editor.paths.clone();
         let at = |path: &str| {
             trace
                 .iter()
@@ -6589,7 +7198,7 @@ mod tests {
         assert_eq!(at("/route/final").winner_layer, ConfigurationLayer::Source);
         assert_eq!(at("/log/level").winner_layer, ConfigurationLayer::Intent);
         assert_eq!(
-            at("/log/level").guided_value,
+            at("/log/level").intent_value,
             at("/log/level").details_value
         );
         assert_eq!(
@@ -6608,6 +7217,13 @@ mod tests {
             at("/dns/strategy").effective_value,
             Some(Value::String("prefer_ipv6".into()))
         );
+        let editor_path = at("/dns/strategy");
+        assert_eq!(editor_path.winner_layer, ConfigurationLayer::RawDecision);
+        assert_eq!(
+            editor_path.effective_value,
+            Some(Value::String("prefer_ipv6".into()))
+        );
+        assert!(editor_path.raw_decision.is_some());
     }
 
     #[test]
@@ -6630,11 +7246,11 @@ mod tests {
         )
         .expect("state");
 
-        let pending = state.view().workspace;
+        let pending = state.view().workspace.editor;
         assert!(pending.can_save);
         assert!(pending.can_validate);
         assert!(!pending.can_apply);
-        assert!(pending.gate_blockers.iter().any(|blocker| {
+        assert!(pending.blockers.iter().any(|blocker| {
             blocker.code == "CORE_VALIDATION_REQUIRED"
                 && blocker.blocks == vec![ConfigurationGate::Apply]
         }));
@@ -6648,11 +7264,11 @@ mod tests {
             .as_mut()
             .expect("evidence")
             .config_hash = "stale".into();
-        let stale = state.view().workspace;
+        let stale = state.view().workspace.editor;
         assert!(stale.can_save);
         assert!(stale.can_validate);
         assert!(!stale.can_apply);
-        assert!(stale.gate_blockers.iter().any(|blocker| {
+        assert!(stale.blockers.iter().any(|blocker| {
             blocker.code == "CORE_VALIDATION_EVIDENCE_STALE"
                 && blocker.blocks == vec![ConfigurationGate::Apply]
         }));
@@ -6696,7 +7312,11 @@ mod tests {
             RawDecisionStatus::Active
         );
         assert_eq!(
-            state.view().workspace.raw_decisions[0].semantic_path,
+            state.view().workspace.editor.paths[0]
+                .raw_decision
+                .as_ref()
+                .expect("migrated editor decision")
+                .semantic_path,
             "/log/loglevel"
         );
     }

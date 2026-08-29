@@ -9,7 +9,7 @@
     inactive: 'Inactive',
     explicit: 'Managed by Details',
     overridden: 'Overridden by Raw',
-    rawOnly: 'Provided by Raw',
+    rawOnly: 'Provided by Final configuration',
     needsAttention: 'Needs attention',
   };
 </script>
@@ -23,12 +23,12 @@
     {#if projection.status === 'rawOnly'}
       <small>{$t('This feature is currently provided by Raw advanced configuration. Details is not claiming ownership.')}</small>
     {:else if projection.status === 'overridden'}
-      <small>{$t('This integration has a Raw final decision on one or more paths. Upstream changes can reopen those paths in Final configuration.')}</small>
+      <small>{$t('This integration has a Final configuration decision on one or more paths. Upstream changes can reopen only those paths for review.')}</small>
     {:else if projection.status === 'needsAttention'}
       <small>{$t('The current candidate could not generate this integration safely. Applied and Last Known Good were retained.')}</small>
     {/if}
     {#if projection.rawPaths.length > 0}
-      <div class="managed-paths" aria-label={$t('Raw semantic paths')}>
+      <div class="managed-paths" aria-label={$t('Final decision paths')}>
         {#each projection.rawPaths as path (path)}<code>{path}</code>{/each}
       </div>
     {/if}

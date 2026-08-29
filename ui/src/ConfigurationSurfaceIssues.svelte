@@ -14,7 +14,7 @@
     CORE_INVALID: 'The Core rejected this candidate; Applied and Last Known Good were retained.',
     CORE_TARGET_CHANGED: 'The Core compatibility target changed; review and validate the candidate again.',
     CORE_TARGET_SOURCE_REJECTED: 'A source item is not expressible for the selected Core compatibility target.',
-    RAW_DECISION_SUPERSEDED: 'The upstream value changed after this Raw decision was created. Resolve it before saving or applying.',
+    RAW_DECISION_SUPERSEDED: 'The upstream value changed after this Final configuration decision was created. Review it before saving or applying.',
     SOURCE_VALUE_CONFLICT: 'A source value conflict must be resolved before this candidate can be saved.',
     LAYER_OWNERSHIP_CONFLICT: 'The same semantic path is owned by more than one configuration layer. Choose one owner before saving.',
   };
@@ -27,7 +27,7 @@
     CORE_INVALID: 'Candidate rejected by Core',
     CORE_TARGET_CHANGED: 'Compatibility target changed',
     CORE_TARGET_SOURCE_REJECTED: 'Source is not supported by this target',
-    RAW_DECISION_SUPERSEDED: 'Raw decision needs review',
+    RAW_DECISION_SUPERSEDED: 'Final decision needs review',
     SOURCE_VALUE_CONFLICT: 'Source values conflict',
     LAYER_OWNERSHIP_CONFLICT: 'Configuration ownership conflict',
   };
@@ -44,7 +44,7 @@
 
   function conflictMessage(messageKey?: string): string {
     if (messageKey === 'RAW_DECISION_SUPERSEDED') {
-      return 'The upstream value changed after this Raw decision was created. Resolve it before saving or applying.';
+      return 'The upstream value changed after this Final configuration decision was created. Review it before saving or applying.';
     }
     if (messageKey === 'SOURCE_VALUE_CONFLICT') {
       return 'A source value conflict must be resolved before this candidate can be saved.';
@@ -53,12 +53,12 @@
       return 'The same semantic path is owned by more than one configuration layer. Choose one owner before saving.';
     }
     if (messageKey === 'CONFIGURATION_RAW_OVERRIDE') {
-      return 'Raw configuration overlaps fields owned by this integration. Confirm takeover before Details can replace them.';
+      return 'Final configuration decisions overlap fields owned by this integration. Confirm takeover before Details can replace them.';
     }
     if (messageKey === 'CONFIGURATION_IDENTITY_DUPLICATED') {
-      return 'A Raw identity is duplicated and cannot be applied safely.';
+      return 'A Final configuration identity is duplicated and cannot be applied safely.';
     }
-    return 'The Raw operation conflicts with the current source or Guided value.';
+    return 'The Final configuration decision conflicts with the current Source or Intent value.';
   }
 
   $: diagnostics = (state?.desired.diagnostics ?? []).filter(owns);

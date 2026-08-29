@@ -112,6 +112,7 @@
       resolution: ConfigurationEditorMarkerResolution;
     };
     pathFocus: { path: string; found: boolean };
+    markerPathSelected: { path: string };
   }>();
 
   const instanceId = ++nextEditorInstance;
@@ -225,19 +226,32 @@
 
     toDOM(): HTMLElement {
       const container = document.createElement('span');
-      container.className = 'cm-configuration-conflict-widget';
+      container.className = `cm-configuration-path-widget ${this.marker.kind === 'conflict' ? 'cm-configuration-conflict-widget' : 'cm-configuration-source-widget'}`;
       container.dataset.markerId = this.marker.id;
       const label = document.createElement('span');
       label.className = 'cm-configuration-conflict-label';
-      label.textContent = `${translate('Conflict')}: ${this.marker.semanticPath}`;
+      const markerLabel = this.marker.status === 'superseded'
+        ? translate('Superseded')
+        : this.marker.layer === 'rawDecision'
+          ? translate('Final decision')
+          : this.marker.layer === 'details'
+            ? translate('Details')
+            : this.marker.layer === 'intent'
+              ? translate('Intent')
+              : this.marker.layer === 'source'
+                ? translate('Source')
+                : translate('Conflict');
+      label.textContent = `${markerLabel}: ${this.marker.semanticPath}`;
       label.title = this.marker.message;
       container.append(label);
-      container.append(
-        this.actionButton('keepMine', translate('Keep Mine')),
-        this.actionButton('useUpdated', translate('Use Updated')),
-      );
-      if (this.marker.canCombine) {
-        container.append(this.actionButton('combine', translate('Combine')));
+      if (this.marker.resolvable) {
+        container.append(
+          this.actionButton('keepMine', translate('Keep Mine')),
+          this.actionButton('useUpdated', translate('Use Updated')),
+        );
+        if (this.marker.canCombine) {
+          container.append(this.actionButton('combine', translate('Combine')));
+        }
       }
       return container;
     }
@@ -535,7 +549,9 @@
           ? translate('Conflict')
           : marker.kind === 'validation'
             ? translate('Core validation')
-            : translate('Configuration warning'),
+            : marker.kind === 'warning'
+              ? translate('Configuration warning')
+              : translate('Configuration source'),
         message: `${marker.semanticPath}: ${marker.message}`,
       };
     });
@@ -572,6 +588,17 @@
         }).range(line.from),
       );
       if (marker.kind === 'conflict' && marker.resolvable) {
+        decorations.push(
+          Decoration.widget({
+            widget: new ConfigurationConflictWidget(
+              marker,
+              markerActionsDisabled,
+              resolveConfigurationMarker,
+            ),
+            side: 1,
+          }).range(line.to),
+        );
+      } else if (marker.layer || marker.status) {
         decorations.push(
           Decoration.widget({
             widget: new ConfigurationConflictWidget(
@@ -853,6 +880,18 @@
           schemaCompletionCompartment.of([]),
           readOnlyCompartment.of(editorReadOnly(readOnly)),
           markerDecorationField,
+          EditorView.domEventHandlers({
+            click: (event) => {
+              const target = event.target as HTMLElement | null;
+              const markerId = target?.closest<HTMLElement>('[data-marker-id]')?.dataset.markerId;
+              if (!markerId) return false;
+              const marker = markers.find((item) => item.id === markerId);
+              if (!marker) return false;
+              dispatch('markerPathSelected', { path: marker.semanticPath });
+              focusPath(marker.semanticPath);
+              return false;
+            },
+          }),
           EditorView.updateListener.of((update: ViewUpdate) => {
             if (update.docChanged) {
               if (!formatting) setFormatStatus('');
@@ -1382,7 +1421,8 @@
   }
 
   .editor :global(.cm-lint-marker-error),
-  .editor :global(.cm-lint-marker-warning) {
+  .editor :global(.cm-lint-marker-warning),
+  .editor :global(.cm-lint-marker-info) {
     width: 11px;
     height: 11px;
   }
@@ -1397,16 +1437,17 @@
 
   .editor :global(.cm-configuration-marker) {
     border-radius: 3px;
-    text-decoration-line: underline;
-    text-decoration-style: wavy;
-    text-decoration-thickness: 1.5px;
-    text-underline-offset: 3px;
+    box-decoration-break: clone;
   }
 
   .editor :global(.cm-configuration-marker-conflict),
   .editor :global(.cm-configuration-marker-error) {
     background: color-mix(in srgb, var(--ui-danger-soft) 46%, transparent);
+    text-decoration-line: underline;
+    text-decoration-style: wavy;
+    text-decoration-thickness: 1.5px;
     text-decoration-color: var(--ui-danger);
+    text-underline-offset: 3px;
   }
 
   .editor :global(.cm-configuration-marker-warning) {
@@ -1414,8 +1455,18 @@
     text-decoration-color: var(--ui-warning);
   }
 
+  .editor :global(.cm-configuration-marker-info),
+  .editor :global(.cm-configuration-marker-source) {
+    background: color-mix(in srgb, var(--ui-brand-soft) 34%, transparent);
+  }
+
   .editor :global(.cm-configuration-marker-line) {
     box-shadow: inset 3px 0 color-mix(in srgb, var(--ui-warning) 72%, transparent);
+  }
+
+  .editor :global(.cm-configuration-marker-line.cm-configuration-marker-info),
+  .editor :global(.cm-configuration-marker-line.cm-configuration-marker-source) {
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--ui-brand) 58%, transparent);
   }
 
   .editor :global(.cm-configuration-marker-line.cm-configuration-marker-error),
@@ -1442,6 +1493,25 @@
     color: var(--ui-text-primary);
     font: var(--ui-font-size-xs)/1.25 var(--ui-font-body, system-ui, sans-serif);
     vertical-align: middle;
+  }
+
+  .editor :global(.cm-configuration-source-widget) {
+    display: inline-flex;
+    max-width: calc(100% - 18px);
+    min-height: 22px;
+    align-items: center;
+    margin: 2px 8px 2px 14px;
+    border: 1px solid color-mix(in srgb, var(--ui-brand) 24%, var(--ui-border-default));
+    border-radius: var(--ui-radius-xs);
+    background: color-mix(in srgb, var(--ui-brand-soft) 48%, var(--ui-surface-raised));
+    padding: 2px 7px;
+    color: var(--ui-text-secondary);
+    font: var(--ui-font-size-xs)/1.25 var(--ui-font-body, system-ui, sans-serif);
+    vertical-align: middle;
+  }
+
+  .editor :global(.cm-configuration-source-widget .cm-configuration-conflict-label) {
+    color: var(--ui-brand);
   }
 
   .editor :global(.cm-configuration-conflict-label) {

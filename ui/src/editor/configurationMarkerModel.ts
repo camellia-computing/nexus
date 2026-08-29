@@ -1,17 +1,22 @@
-import type { SemanticPathSegment } from '../types';
+import type { ConfigurationLayer, RawDecisionStatus, SemanticPathSegment } from '../types';
 
-export type ConfigurationEditorMarkerKind = 'conflict' | 'validation' | 'warning';
+export type ConfigurationEditorMarkerKind = 'conflict' | 'validation' | 'warning' | 'source';
 export type ConfigurationEditorMarkerResolution = 'keepMine' | 'useUpdated' | 'combine';
 
 export interface ConfigurationEditorMarker {
   id: string;
   kind: ConfigurationEditorMarkerKind;
-  severity: 'error' | 'warning';
+  severity: 'error' | 'warning' | 'info';
   message: string;
   semanticPath: string;
   segments: SemanticPathSegment[];
   resolvable?: boolean;
   canCombine?: boolean;
+  layer?: ConfigurationLayer;
+  status?: RawDecisionStatus;
+  messageKey?: string;
+  sourceIds?: string[];
+  issueIds?: string[];
 }
 
 export function semanticPathSegments(path: string): SemanticPathSegment[] {

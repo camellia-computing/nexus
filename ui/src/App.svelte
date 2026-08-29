@@ -9,9 +9,8 @@
   import GuidedConfigurationEditor from './GuidedConfigurationEditor.svelte';
   import ManagedIntegrationStatus from './ManagedIntegrationStatus.svelte';
   import ConfigurationSurfaceIssues from './ConfigurationSurfaceIssues.svelte';
-  import FinalConfigurationWorkspace from './FinalConfigurationWorkspace.svelte';
+  import FinalConfigurationEditor from './FinalConfigurationEditor.svelte';
   import ShareImportPreviewDialog from './ShareImportPreview.svelte';
-  import RawConfigurationConflictPanel from './RawConfigurationConflictPanel.svelte';
   import EnvironmentEditor from './EnvironmentEditor.svelte';
   import ErrorNotice from './ErrorNotice.svelte';
   import HomeDashboard from './features/home/HomeDashboard.svelte';
@@ -392,6 +391,7 @@
   let rawDraftSaveProgramId = '';
   let configContent = '';
   let focusSemanticPath = '';
+  let selectedEditorPath = '';
   let pathFocusMessage = '';
   let configEditorDirty = false;
   let candidatePendingApply = false;
@@ -410,6 +410,9 @@
   $: managedIntegrationById = new Map(
     (configurationState?.managedIntegrations ?? []).map((projection) => [projection.integrationId, projection]),
   );
+  $: if (selectedEditorPath && configurationState && !configurationState.workspace.editor.paths.some((path) => path.semanticPath === selectedEditorPath)) {
+    selectedEditorPath = '';
+  }
   $: rawDraftConflicts = unresolvedDraftConflicts(rawDraftSession);
   $: if (
     rawDraftConflicts.length
@@ -514,14 +517,23 @@
         canCombine: conflict.canCombine,
       });
     }
-    for (const [index, conflict] of (state?.desired.conflicts ?? []).entries()) {
+    for (const path of (state?.workspace.editor.paths ?? [])) {
+      const superseded = path.rawDecision?.status === 'superseded';
+      const blocking = path.issues.some((issue) => issue.blocking);
+      const layer = path.winnerLayer;
+      if (!superseded && !blocking && layer === 'source') continue;
       editorMarkers.push({
-        id: `desired-conflict:${index}:${conflict.semanticPath}`,
-        kind: conflict.severity === 'error' ? 'validation' : 'warning',
-        severity: conflict.severity,
-        message: conflict.reason,
-        semanticPath: conflict.semanticPath || '/',
-        segments: semanticPathSegments(conflict.semanticPath),
+        id: `editor-path:${path.semanticPath}`,
+        kind: superseded || blocking ? 'conflict' : 'source',
+        severity: superseded || blocking ? 'error' : 'info',
+        messageKey: superseded ? 'RAW_DECISION_SUPERSEDED' : path.issues[0]?.messageKey ?? 'CONFIGURATION_PATH_SOURCE',
+        message: translate(superseded ? 'This final decision is superseded by a newer upstream value.' : 'This path is contributed by an upstream configuration layer.'),
+        semanticPath: path.semanticPath || '/',
+        segments: path.segments.length > 0 ? path.segments : semanticPathSegments(path.semanticPath),
+        sourceIds: path.sourceIds,
+        issueIds: path.issues.map((issue) => issue.id),
+        layer,
+        status: path.rawDecision?.status,
       });
     }
     for (const [index, diagnostic] of (state?.desired.diagnostics ?? []).entries()) {
@@ -711,7 +723,7 @@
   $: configEditorDirty = configDocument !== null && configContent !== configDocument.content;
   $: candidatePendingApply = configurationState !== null
     && configurationState.desired.validation === 'valid'
-    && configurationState.workspace.canApply
+    && configurationState.workspace.editor.canApply
     && (
       configurationState.appliedRevision?.generation !== configurationState.desired.revision.generation
       || configurationState.appliedRevision?.contentHash !== configurationState.desired.revision.contentHash
@@ -721,14 +733,28 @@
     || compatibilityChanged
     || !!configEditorDirty
     || !!rawDraftSession?.draftRevision
-    || !(configurationState?.workspace.canValidate ?? false);
+    || !(configurationState?.workspace.editor.canValidate ?? false);
   $: compatibilityValidationReason = !canRunDiagnosticsByLicense
     ? licenseActionHint
     : compatibilityChanged
       ? 'Save the compatibility target before validation.'
       : configEditorDirty || !!rawDraftSession?.draftRevision
       ? 'Draft must be saved or discarded first.'
-      : configurationState?.workspace.gateBlockers.some((blocker) => blocker.blocks.includes('validate'))
+      : configurationState?.workspace.editor.blockers.some((blocker) => blocker.blocks.includes('validate'))
+        ? 'Resolve blocking conflicts before validation.'
+        : busy
+          ? 'Validation is unavailable while another configuration operation is running.'
+          : 'No current candidate is available for validation.';
+  $: configurationValidationBlocked = !!busy
+    || !canRunDiagnosticsByLicense
+    || !!configEditorDirty
+    || !!rawDraftSession?.draftRevision
+    || !(configurationState?.workspace.editor.canValidate ?? false);
+  $: configurationValidationReason = !canRunDiagnosticsByLicense
+    ? licenseActionHint
+    : configEditorDirty || !!rawDraftSession?.draftRevision
+      ? 'Draft must be saved or discarded first.'
+      : configurationState?.workspace.editor.blockers.some((blocker) => blocker.blocks.includes('validate'))
         ? 'Resolve blocking conflicts before validation.'
         : busy
           ? 'Validation is unavailable while another configuration operation is running.'
@@ -1366,10 +1392,10 @@
       && draft.draftRevision > 0
       && draft.basedOnGeneration === state.generation
       ? draft.workingContent
-      : state.workspace.editableDocument;
+      : state.workspace.editor.content;
     if (localEditorDraft !== null) {
       configContent = localEditorDraft;
-      rawDraftAutosaveContent = draft?.workingContent ?? state.workspace.editableDocument;
+      rawDraftAutosaveContent = draft?.workingContent ?? state.workspace.editor.content;
     } else {
       configContent = draftContent;
       rawDraftAutosaveContent = draftContent;
@@ -1377,7 +1403,7 @@
     if (configDocument) {
       configDocument = {
         ...configDocument,
-        content: state.workspace.finalPreviewDocument,
+        content: state.workspace.editor.content,
         baseHash: state.desired.revision.contentHash,
         language: state.format,
       };
@@ -3393,10 +3419,6 @@
     );
   }
 
-  function navigateRawConflict(event: CustomEvent<{ conflictId: string }>) {
-    activeRawConflictId = event.detail.conflictId;
-  }
-
   async function discardRawDraft() {
     if (!selectedId) return;
     const id = selectedId;
@@ -3901,13 +3923,13 @@
           activeRawConflictId = firstUnresolvedConflictId(draft);
           configDocument = {
             ...document,
-            content: state.workspace.finalPreviewDocument,
+            content: state.workspace.editor.content,
             baseHash: state.desired.revision.contentHash,
             language: state.format,
           };
           configContent = draft.draftRevision > 0 && draft.basedOnGeneration === state.generation
             ? draft.workingContent
-            : state.workspace.editableDocument;
+            : state.workspace.editor.content;
           rawDraftAutosaveContent = configContent;
           void loadConfigurationSchemaForEditor(id, document.configurationSchema);
         },
@@ -4039,20 +4061,17 @@
   }
 
   async function validateConfiguration() {
-    if (!configDocument || !selectedId) return;
+    if (!configDocument || !selectedId || configurationValidationBlocked) return;
     clearConfigurationError();
     const id = selectedId;
-    const content = configContent;
     await mutateConfiguration(
       id,
       'validate',
       async () => {
         let state = configurationState ?? await api.getConfigurationState(id);
-        const committedEditorDraft = configEditorDirty;
-        if (committedEditorDraft) state = await commitRawEditorDraft(id, content);
         state = await api.validateConfigurationCandidate(id, state.generation);
         if (selectedId !== id || !['intent', 'configuration', 'compatibility'].includes(activeTab)) return;
-        await adoptConfigurationState(id, state, true, !committedEditorDraft);
+        await adoptConfigurationState(id, state, true, true);
         if (state.desired.validation === 'valid') {
           setConfigOutputMessage('Configuration is valid.');
         } else {
@@ -4100,12 +4119,12 @@
       if (selectedId === id) {
         rawDraftSession = cleanDraft;
         activeRawConflictId = firstUnresolvedConflictId(cleanDraft);
-        configContent = state.workspace.editableDocument;
-        rawDraftAutosaveContent = state.workspace.editableDocument;
+        configContent = state.workspace.editor.content;
+        rawDraftAutosaveContent = state.workspace.editor.content;
         if (configDocument) {
           configDocument = {
             ...configDocument,
-            content: state.workspace.finalPreviewDocument,
+            content: state.workspace.editor.content,
             baseHash: state.desired.revision.contentHash,
             language: state.format,
           };
@@ -4165,12 +4184,12 @@
   }
 
   function validateConfigurationFromEditor() {
-    if (busy || !canRunDiagnosticsByLicense || !configurationState?.workspace.canValidate) return;
+    if (configurationValidationBlocked) return;
     void validateConfiguration();
   }
 
   async function validateCompatibilityCandidate() {
-    if (!selectedId || !configurationState || busy || !canRunDiagnosticsByLicense) return;
+    if (!selectedId || !configurationState || compatibilityValidationBlocked) return;
     const id = selectedId;
     clearWorkspaceError('compatibility');
     await mutateConfiguration(
@@ -4196,13 +4215,14 @@
 
   async function focusFinalConfigurationPath(path: string) {
     pathFocusMessage = '';
+    selectedEditorPath = path;
     focusSemanticPath = '';
     await tick();
     focusSemanticPath = path;
   }
 
   function saveConfigurationFromEditor() {
-    if (busy || !configEditorDirty || !configurationState?.workspace.canSave || !canEditConfigurationByLicense) return;
+    if (busy || !configEditorDirty || !configurationState?.workspace.editor.canSave || !canEditConfigurationByLicense) return;
     void saveConfigurationCandidate();
   }
 
@@ -5968,7 +5988,9 @@
                 {#each configurationState.sourceStatuses as source (source.sourceId)}
                   <div class="source-status-item" class:warning={source.freshness === 'stale'} class:problem={source.freshness === 'invalid' || source.freshness === 'unavailable'}>
                     <span>{source.sourceName}: {$t(source.freshness)}</span>
-                    {#if sourceStatusExplanation(source)}<small title={source.message ?? ''}>{$t(sourceStatusExplanation(source) ?? '')}</small>{/if}
+                    {#if source.message}<small class="source-status-reason">{$t(source.message)}</small>{/if}
+                    {#if sourceStatusExplanation(source)}<small>{$t(sourceStatusExplanation(source) ?? '')}</small>{/if}
+                    {#if source.freshness !== 'fresh'}<button type="button" class="source-status-retry" on:click={() => void refreshManagedConfiguration()} disabled={!!busy || managedConfigChanged}>{$t('Retry source update')}</button>{/if}
                   </div>
                 {/each}
               {:else if configurationStateLoadingId === detail.spec.id}{$t('Loading')}…{:else}{$t('Unavailable')}{/if}
@@ -6069,87 +6091,69 @@
       {:else if activeTab === 'configuration'}
         <div id="program-panel-configuration" role="tabpanel" tabindex="0" aria-labelledby="program-tab-configuration" class="panel configuration">
           {#if configError}<ErrorNotice error={configError} dismissible onDismiss={() => { configError = null; clearWorkspaceError('configuration'); }} actionLabel="Retry" onAction={() => retryWorkspaceError('configuration')} actionBusy={workspaceErrorBusyScope === 'configuration'} />{/if}
-          <ConfigurationSurfaceIssues state={configurationState} surface="configuration" includeAll />
           {#if configDocument}
-            {#if detail.spec.managedConfig}<div class="generated-config-note"><strong>{$t('Managed configuration')}</strong><span>{$t(detail.spec.managedConfig.sources.some((source) => source.enabled) ? 'Source updates preserve Guided and Raw intent' : 'Enable a source to rebuild the Base configuration')}</span></div>{/if}
-            {#if configurationState}<div class="configuration-stage-status" role="status" aria-live="polite"><span class="workspace-status">{$t(configurationState.desired.validation === 'valid' ? 'Validated' : configurationState.desired.validation === 'invalid' ? 'Needs attention' : 'Pending validation')}</span><span>{$t(configurationState.desired.validation === 'pending' ? 'Save candidate, then validate before applying.' : configurationState.desired.validation === 'invalid' ? 'Applied and Last Known Good are retained.' : 'Native evidence is bound to this exact candidate.')}</span></div>{/if}
             {#if configurationState?.workspace}
-              <FinalConfigurationWorkspace
+              <FinalConfigurationEditor
                 workspace={configurationState.workspace}
-                disabled={!!busy || !canEditConfigurationByLicense}
-                on:resolve={resolveRawDecision}
-                on:focusPath={(event) => { void focusFinalConfigurationPath(event.detail.path); }}
-                on:navigateSurface={(event) => { activateTab(event.detail.surface === 'details' ? 'overview' : event.detail.surface); }}
-              />
-            {/if}
-            {#if rawDraftSession}
-              <RawConfigurationConflictPanel
                 draft={rawDraftSession}
+                selectedPath={selectedEditorPath}
                 disabled={!!busy || !canEditConfigurationByLicense}
-                on:resolve={resolveRawConflict}
-                on:navigate={navigateRawConflict}
-                on:rebase={() => void rebaseRawDraft()}
-                on:discard={() => void discardRawDraft()}
-              />
+                appliedMatchesCandidate={configurationState.appliedRevision?.contentHash === configurationState.desired.revision.contentHash}
+                lastKnownGoodMatchesCandidate={configurationState.lastKnownGoodRevision?.contentHash === configurationState.desired.revision.contentHash}
+                on:focusPath={(event) => { void focusFinalConfigurationPath(event.detail.path); }}
+                on:resolveDecision={resolveRawDecision}
+                on:resolveDraftConflict={resolveRawConflict}
+                on:rebaseDraft={() => void rebaseRawDraft()}
+                on:discardDraft={() => void discardRawDraft()}
+                on:navigateSurface={(event) => { activateTab(event.detail.surface === 'details' ? 'overview' : event.detail.surface); }}
+              >
+                <svelte:fragment slot="actions">
+                <div class="config-toolbar">
+                  <div class="config-toolbar-tools">
+                    <button class="link-button documentation-link" type="button" on:click={() => void openDocumentation()}><span>{$t('Documentation')}</span><Icon name="external" size={16} /></button>
+                    <button type="button" on:click={() => void validateConfiguration()} disabled={configurationValidationBlocked} title={$t(configurationValidationBlocked ? configurationValidationReason : 'Validate')}>{$t('Validate')}</button>
+                    {#each actions as action (action.id)}<button type="button" on:click={() => void runProgramAction(action)} disabled={!!busy || !actionAllowed(action)} title={$t(canRunDiagnosticsByLicense ? action.label : licenseActionHint)}>{$t(action.label)}</button>{/each}
+                  </div>
+                  <div class="config-toolbar-commit">
+                    {#if rawDraftSession?.draftRevision}<button type="button" on:click={() => void discardRawDraft()} disabled={!!busy || !canEditConfigurationByLicense}>{$t('Discard draft')}</button>{/if}
+                    <button type="button" on:click={revertConfiguration} disabled={!!busy || !configEditorDirty}>{$t('Revert')}</button>
+                    <button type="button" on:click={() => void saveConfigurationCandidate()} disabled={!!busy || !configEditorDirty || !configurationState.workspace.editor.canSave || !canEditConfigurationByLicense} title={$t(canEditConfigurationByLicense ? 'Save configuration candidate' : licenseActionHint)}>{busy === 'save-candidate' ? `${$t('Saving')}…` : $t('Save candidate')}</button>
+                    <button class="primary config-save" type="button" on:click={() => void applyConfiguration()} disabled={!!busy || configEditorDirty || !candidatePendingApply || !configurationState.workspace.editor.canApply || !canEditConfigurationByLicense} title={$t(canEditConfigurationByLicense ? (configSaveRequiresRestart ? 'Apply and restart' : 'Apply configuration') : licenseActionHint)}>{busy === 'apply' ? `${$t('Applying')}…` : $t(configSaveRequiresRestart ? 'Apply and restart' : 'Apply configuration')}</button>
+                  </div>
+                </div>
+                  {#if configEditorDirty}<div class="config-unsaved"><i></i><span>{$t('Unsaved configuration')}</span></div>{:else if configurationState.desired.validation === 'pending'}<div class="config-saved-pending" role="status"><span>{$t('Save candidate, then validate before applying.')}</span></div>{:else if candidatePendingApply}<div class="config-saved-pending" role="status"><span>{$t('Saved candidate is ready to apply.')}</span></div>{/if}
+                </svelte:fragment>
+                <svelte:fragment slot="editor">
+                <div style={resizeStyle(detailConfigHeight)} class="config-editor-resize">
+                  {#if CodeEditorView}
+                    <CodeEditorView
+                      bind:value={configContent}
+                      {theme}
+                      language={configDocument.language}
+                      revision={configDocument.baseHash}
+                      configurationSchema={configurationSchemaDocument}
+                      configurationSchemaLoading={configurationSchemaLoading}
+                      configurationSchemaError={configurationSchemaError}
+                      jsonSchemaSemantics={programDefinition(detail.spec.type.kind).configuration?.jsonSchemaSemantics}
+                      markers={configurationEditorMarkers}
+                      activeMarkerId={activeRawConflictId}
+                      focusSemanticPath={focusSemanticPath}
+                      markerActionsDisabled={!!busy || !canEditConfigurationByLicense}
+                      on:retrySchema={retryConfigurationSchema}
+                      on:save={saveConfigurationFromEditor}
+                      on:validate={validateConfigurationFromEditor}
+                      on:resolveMarker={resolveRawConflict}
+                      on:pathFocus={(event) => { pathFocusMessage = event.detail.found ? '' : 'Unable to locate this semantic path in the current document.'; }}
+                      on:markerPathSelected={(event) => { selectedEditorPath = event.detail.path; void focusFinalConfigurationPath(event.detail.path); }}
+                    />
+                  {/if}
+                  <ResizeSeparator label={$t('Resize panel')} value={detailConfigHeight ?? 720} min={detailPaneResizeMinHeight} max={detailPaneResizeMaxHeight} onPointerDown={(event) => beginResizeFromHandle(event, 'detail:config')} onKeyDown={(event) => handleResizeKeydown(event, 'detail:config')} />
+                </div>
+                  {#if pathFocusMessage}<p class="config-path-focus-notice" role="status">{$t(pathFocusMessage)}</p>{/if}
+                  {#if configResult || configOutput || configOutputMessage}<div class:valid={configResult?.valid} class:invalid={configResult && !configResult.valid} class="result"><strong>{$t(configResult ? (configResult.valid ? 'Valid configuration' : 'Validation failed') : 'Action output')}</strong>{#if configOutput || configOutputMessage}<pre>{configOutput || $t(configOutputMessage)}{#if configOutputTruncated}{'\n'}… {$t('Output truncated')}{/if}</pre>{/if}</div>{/if}
+                </svelte:fragment>
+              </FinalConfigurationEditor>
             {/if}
-            <div class="final-editor-heading">
-              <div><p class="eyebrow">{$t('Final configuration')}</p><h3>{$t('Final candidate document')}</h3></div>
-              <p>{$t('This editor contains the effective final candidate. Save records it, Validate sends it to the exact binary, and Apply updates Runtime, Applied, and Last Known Good.')}</p>
-            </div>
-            <div class="config-toolbar">
-              <div class="config-toolbar-tools">
-                <button class="link-button documentation-link" type="button" on:click={() => void openDocumentation()}><span>{$t('Documentation')}</span><Icon name="external" size={16} /></button>
-                <button type="button" on:click={() => void validateConfiguration()} disabled={!!busy || !canRunDiagnosticsByLicense || !configurationState?.workspace.canValidate} title={$t(canRunDiagnosticsByLicense ? 'Validate' : licenseActionHint)}>{$t('Validate')}</button>
-                {#each actions as action (action.id)}
-                  <button type="button" on:click={() => void runProgramAction(action)} disabled={!!busy || !actionAllowed(action)} title={$t(canRunDiagnosticsByLicense ? action.label : licenseActionHint)}>{$t(action.label)}</button>
-                {/each}
-              </div>
-              <div class="config-toolbar-commit">
-                {#if rawDraftSession?.draftRevision}
-                  <button type="button" on:click={() => void discardRawDraft()} disabled={!!busy || !canEditConfigurationByLicense}>{$t('Discard draft')}</button>
-                {/if}
-                <button type="button" on:click={revertConfiguration} disabled={!!busy || !configEditorDirty}>{$t('Revert')}</button>
-                <button type="button" on:click={() => void saveConfigurationCandidate()} disabled={!!busy || !configEditorDirty || !configurationState?.workspace.canSave || !canEditConfigurationByLicense} title={$t(canEditConfigurationByLicense ? 'Save configuration candidate' : licenseActionHint)}>{busy === 'save-candidate' ? `${$t('Saving')}…` : $t('Save candidate')}</button>
-                <button class="primary config-save" type="button" on:click={() => void applyConfiguration()} disabled={!!busy || configEditorDirty || !candidatePendingApply || !configurationState?.workspace.canApply || !canEditConfigurationByLicense} title={$t(canEditConfigurationByLicense ? (configSaveRequiresRestart ? 'Apply and restart' : 'Apply configuration') : licenseActionHint)}>{busy === 'apply' ? `${$t('Applying')}…` : $t(configSaveRequiresRestart ? 'Apply and restart' : 'Apply configuration')}</button>
-              </div>
-            </div>
-            {#if configEditorDirty}<div class="config-unsaved"><i></i><span>{$t('Unsaved configuration')}</span></div>{:else if configurationState?.desired.validation === 'pending'}<div class="config-saved-pending" role="status"><span>{$t('Save candidate, then validate before applying.')}</span></div>{:else if candidatePendingApply}<div class="config-saved-pending" role="status"><span>{$t('Saved candidate is ready to apply.')}</span></div>{/if}
-            <div
-              style={resizeStyle(detailConfigHeight)}
-              class="config-editor-resize"
-            >
-              {#if CodeEditorView}
-                <CodeEditorView
-                  bind:value={configContent}
-                  {theme}
-                  language={configDocument.language}
-                  revision={configDocument.baseHash}
-                  configurationSchema={configurationSchemaDocument}
-                  configurationSchemaLoading={configurationSchemaLoading}
-                  configurationSchemaError={configurationSchemaError}
-                  jsonSchemaSemantics={programDefinition(detail.spec.type.kind).configuration?.jsonSchemaSemantics}
-                  markers={configurationEditorMarkers}
-                  activeMarkerId={activeRawConflictId}
-                  focusSemanticPath={focusSemanticPath}
-                  markerActionsDisabled={!!busy || !canEditConfigurationByLicense}
-                  on:retrySchema={retryConfigurationSchema}
-                  on:save={saveConfigurationFromEditor}
-                  on:validate={validateConfigurationFromEditor}
-                  on:resolveMarker={resolveRawConflict}
-                  on:pathFocus={(event) => { pathFocusMessage = event.detail.found ? '' : 'Unable to locate this semantic path in the current document.'; }}
-                />
-              {/if}
-              <ResizeSeparator
-                label={$t('Resize panel')}
-                value={detailConfigHeight ?? 720}
-                min={detailPaneResizeMinHeight}
-                max={detailPaneResizeMaxHeight}
-                onPointerDown={(event) => beginResizeFromHandle(event, 'detail:config')}
-                onKeyDown={(event) => handleResizeKeydown(event, 'detail:config')}
-              />
-            </div>
-            {#if pathFocusMessage}<p class="config-path-focus-notice" role="status">{$t(pathFocusMessage)}</p>{/if}
-            {#if configResult || configOutput || configOutputMessage}<div class:valid={configResult?.valid} class:invalid={configResult && !configResult.valid} class="result"><strong>{$t(configResult ? (configResult.valid ? 'Valid configuration' : 'Validation failed') : 'Action output')}</strong>{#if configOutput || configOutputMessage}<pre>{configOutput || $t(configOutputMessage)}{#if configOutputTruncated}{'\n'}… {$t('Output truncated')}{/if}</pre>{/if}</div>{/if}
           {:else if !configError}<div style={resizeStyle(detailConfigHeight)} class="loading configuration-loading">{$t('Loading configuration')}…</div>{/if}
         </div>
       {:else}

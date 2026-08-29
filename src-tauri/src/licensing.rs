@@ -72,10 +72,6 @@ pub(crate) fn initialize() -> Arc<AuthorizationService> {
             .expect("Cargo package version must be canonical SemVer"),
         unix_now(),
     ));
-    // Temporary local-only test hook. This source copy is never released.
-    if std::env::var("CAMELLIA_NEXUS_LOCAL_ASSUME_ACTIVE").as_deref() == Ok("1") {
-        service.assume_active_for_local_testing(unix_now());
-    }
     service
 }
 
