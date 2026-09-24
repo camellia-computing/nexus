@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CamelliaNexusError, ErrorCode, Result};
 
-pub const SCHEMA_VERSION: u32 = 6;
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CONFIGURATION_SCHEMA_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ARGUMENTS: usize = 256;
@@ -64,15 +63,11 @@ impl std::fmt::Display for ProgramId {
 pub enum ExecutableSpec {
     Managed {
         path: PathBuf,
-        #[serde(default)]
-        compatibility: crate::CoreCompatibilityPreference,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<ExecutableMetadata>,
     },
     External {
         path: PathBuf,
-        #[serde(default)]
-        compatibility: crate::CoreCompatibilityPreference,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<ExecutableMetadata>,
     },
@@ -95,22 +90,6 @@ impl ExecutableSpec {
         match self {
             Self::Managed { metadata, .. } | Self::External { metadata, .. } => {
                 *metadata = Some(value)
-            }
-        }
-    }
-
-    pub fn compatibility(&self) -> &crate::CoreCompatibilityPreference {
-        match self {
-            Self::Managed { compatibility, .. } | Self::External { compatibility, .. } => {
-                compatibility
-            }
-        }
-    }
-
-    pub fn set_compatibility(&mut self, value: crate::CoreCompatibilityPreference) {
-        match self {
-            Self::Managed { compatibility, .. } | Self::External { compatibility, .. } => {
-                *compatibility = value
             }
         }
     }
@@ -425,7 +404,6 @@ fn default_dashboard_update_interval() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProgramSpec {
-    pub schema_version: u32,
     pub id: ProgramId,
     pub name: String,
     pub executable: ExecutableSpec,
@@ -475,20 +453,11 @@ impl ProgramSpec {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != SCHEMA_VERSION {
-            return Err(CamelliaNexusError::invalid_spec(format!(
-                "Unsupported schema version {}",
-                self.schema_version
-            )));
-        }
         if self.name.trim().is_empty() || self.name.len() > 128 || self.name.contains('\0') {
             return Err(CamelliaNexusError::invalid_spec(
                 "Program name must contain 1 to 128 bytes",
             ));
         }
-        self.executable
-            .compatibility()
-            .validate_for_program(self.program_type.kind())?;
         validate_path_text(&self.working_directory)?;
         match &self.executable {
             ExecutableSpec::Managed { path, .. } => {
@@ -829,7 +798,7 @@ fn valid_dashboard_interval(value: &str) -> bool {
 
 /// Parse the integer duration grammar accepted by sing-box's dashboard
 /// duration type.  Keeping this in the Core model lets validation, generated
-/// configuration and semantic Raw comparisons agree that representations such
+/// configuration and semantic Final editor comparisons agree that representations such
 /// as `1d` and `24h0m0s` carry the same value.
 pub(crate) fn parse_dashboard_interval_nanos(value: &str) -> Option<u64> {
     if value.is_empty() || value.len() > 32 {
@@ -886,7 +855,7 @@ pub(crate) fn parse_dashboard_interval_nanos(value: &str) -> Option<u64> {
 
 /// Return sing-box's stable Go-duration spelling for a valid integer duration.
 /// This intentionally uses hours rather than days, so `1d` is emitted as the
-/// native-equivalent `24h0m0s` and does not create a Raw formatting diff.
+/// native-equivalent `24h0m0s` and does not create a Final editor formatting diff.
 pub(crate) fn normalize_dashboard_interval(value: &str) -> Option<String> {
     let mut nanos = parse_dashboard_interval_nanos(value)?;
     if nanos == 0 {
@@ -1267,8 +1236,7 @@ pub struct ActionDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionResult {
-    pub stdout: String,
-    pub stderr: String,
+    pub report: crate::NativeDiagnosticReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_content: Option<String>,
 }
@@ -1277,8 +1245,7 @@ pub struct ActionResult {
 #[serde(rename_all = "camelCase")]
 pub struct ValidationResult {
     pub valid: bool,
-    pub stdout: String,
-    pub stderr: String,
+    pub report: crate::NativeDiagnosticReport,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1345,12 +1312,10 @@ mod tests {
     #[test]
     fn managed_working_directory_follows_executable_parent() {
         let mut spec = ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("nested-tool").expect("id"),
             name: "Nested tool".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/tools/program".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic { args: Vec::new() },
@@ -1369,12 +1334,10 @@ mod tests {
     #[test]
     fn current_program_contract_rejects_unknown_fields() {
         let spec = ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("strict-contract").expect("id"),
             name: "Strict contract".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/program".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic { args: Vec::new() },
@@ -1397,9 +1360,11 @@ mod tests {
             .remove("privilegePolicy");
         assert!(serde_json::from_value::<ProgramSpec>(missing_policy).is_err());
 
-        let mut nested = serde_json::to_value(spec).expect("serialize spec");
-        nested["executable"]["obsolete"] = serde_json::Value::Bool(true);
-        assert!(serde_json::from_value::<ProgramSpec>(nested).is_err());
+        for field in ["obsolete", "compatibility"] {
+            let mut nested = serde_json::to_value(&spec).expect("serialize spec");
+            nested["executable"][field] = serde_json::json!({"mode": "release", "tag": "v99.0.0"});
+            assert!(serde_json::from_value::<ProgramSpec>(nested).is_err());
+        }
     }
 
     #[test]
@@ -1484,12 +1449,10 @@ mod tests {
 
     fn mihomo_spec(extra_args: Vec<String>) -> ProgramSpec {
         ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("mihomo-main").expect("id"),
             name: "Mihomo".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/mihomo".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Mihomo { extra_args },
@@ -1598,12 +1561,10 @@ mod tests {
         assert!(value["authentication"].get("password").is_none());
 
         let mut spec = ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("remote-auth").expect("id"),
             name: "Remote auth".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/sing-box".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::SingBox {
@@ -1679,12 +1640,10 @@ mod tests {
             })
             .collect();
         let mut spec = ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("team-sources").expect("id"),
             name: "Team sources".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/sing-box".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::SingBox {

@@ -24,8 +24,8 @@ pub const MAX_SHARE_ITEMS: usize = 10_000;
 pub const MAX_SHARE_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_SHARE_QUERY_PARAMETERS: usize = 128;
 pub const MAX_SHARE_PARAMETER_BYTES: usize = 16 * 1024;
-pub const SHARE_PARSER_REVISION: &str = "share-v1-20260811";
-pub const SHARE_TRANSLATOR_REVISION: &str = "translator-v2-20260811";
+pub const SHARE_PARSER_REVISION: &str = crate::CORE_IMPLEMENTATION_REVISION;
+pub const SHARE_TRANSLATOR_REVISION: &str = crate::CORE_IMPLEMENTATION_REVISION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -205,7 +205,7 @@ pub struct SourceItemProvenance {
     pub original_hash: String,
     pub target: CoreTargetIdentity,
     pub profile_hash: String,
-    pub catalog_revision: String,
+    pub knowledge_hash: String,
     #[serde(default)]
     pub feature_decisions: Vec<CoreFeatureDecision>,
     pub translation_fidelity: TranslationFidelity,
@@ -315,7 +315,7 @@ pub struct TranslationSummary {
     pub target: CoreTargetIdentity,
     pub translator_revision: String,
     pub profile_hash: String,
-    pub catalog_revision: String,
+    pub knowledge_hash: String,
     #[serde(default)]
     pub feature_decisions: Vec<CoreFeatureDecision>,
     pub fidelity: TranslationFidelity,
@@ -1225,7 +1225,7 @@ pub fn translate_share_item(
         target: target.clone(),
         translator_revision: SHARE_TRANSLATOR_REVISION.into(),
         profile_hash: profile.profile_hash.clone(),
-        catalog_revision: target.catalog_revision.clone(),
+        knowledge_hash: target.knowledge_hash.clone(),
         feature_decisions: feature_decisions.clone(),
         fidelity,
         warnings: warnings.clone(),
@@ -1242,7 +1242,7 @@ pub fn translate_share_item(
         original_hash: item.original_hash.clone(),
         target: target.clone(),
         profile_hash: profile.profile_hash,
-        catalog_revision: target.catalog_revision.clone(),
+        knowledge_hash: target.knowledge_hash.clone(),
         feature_decisions,
         translation_fidelity: fidelity,
         warnings: warnings.into_iter().map(|issue| issue.message).collect(),
@@ -1293,23 +1293,23 @@ fn translate_fragment(
             )
         })?;
     match decision.availability {
-        CoreFeatureAvailability::Supported => {}
-        CoreFeatureAvailability::Unsupported => warnings.push(ConfigurationIssue::warning(
-            "TARGET_VERSION_REPORTS_UNSUPPORTED",
-            format!(
-                "The compatibility catalog does not list {} for {}; a backported custom build may still accept the candidate",
-                item.protocol,
-                target.target.display_version()
-            ),
-            ConfigurationStage::TargetTranslate,
-        )),
-        CoreFeatureAvailability::Unknown => warnings.push(ConfigurationIssue::warning(
+        CoreFeatureAvailability::SourceDeclared => {}
+        CoreFeatureAvailability::SourceUnavailable
+            if target.target.program == ProgramKind::Xray
+                && item.protocol == ShareProtocol::Tuic => {}
+        CoreFeatureAvailability::SourceUnavailable => {
+            return Err(ConfigurationIssue::error(
+                "TARGET_SOURCE_UNAVAILABLE",
+                format!(
+                    "The maintained source baseline has no registered {} outbound",
+                    item.protocol
+                ),
+                ConfigurationStage::TargetTranslate,
+            ));
+        }
+        CoreFeatureAvailability::Unconfirmed => warnings.push(ConfigurationIssue::warning(
             "TARGET_CAPABILITY_UNKNOWN",
-            format!(
-                "{} support is unknown for {}; the exact binary validator will decide this candidate",
-                item.protocol,
-                target.target.display_version()
-            ),
+            "Program identity must be confirmed before applying this translation",
             ConfigurationStage::TargetTranslate,
         )),
     }
@@ -2055,16 +2055,18 @@ mod tests {
     }
 
     #[test]
-    fn tracked_channel_capabilities_are_applied_without_cross_channel_fallback() {
+    fn maintained_xray_baselines_reject_tuic_translation() {
         let tuic =
             parse_share_item("tuic://123e4567-e89b-12d3-a456-426614174000:secret@example.com:443")
                 .expect("tuic");
-        for channel in [
-            crate::CoreTrackedChannel::Development,
-            crate::CoreTrackedChannel::Stable,
-        ] {
-            let xray = crate::tracked_core_target(ProgramKind::Xray, channel)
-                .expect("tracked Xray identity");
+        let knowledge = crate::embedded_core_knowledge().unwrap();
+        for baseline in &knowledge.program(ProgramKind::Xray).unwrap().releases {
+            let probe = crate::CoreProbeReport::from_program_output(
+                ProgramKind::Xray,
+                &format!("Xray {}", baseline.version),
+            );
+            let xray =
+                crate::CoreTargetIdentity::from_probe(ProgramKind::Xray, &probe, None).unwrap();
             let translated =
                 translate_share_item(&tuic, &xray, "rev", 0).expect("translation decision");
             assert!(translated.fragment.is_none());

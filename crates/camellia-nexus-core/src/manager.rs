@@ -125,6 +125,12 @@ pub struct PreparedPackageGuard {
     _operation: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 
+impl PreparedPackageGuard {
+    pub fn next_spec(&self) -> &ProgramSpec {
+        &self.next_spec
+    }
+}
+
 impl PreparedProgramCreate {
     pub fn program_id(&self) -> &ProgramId {
         &self.spec.id
@@ -380,7 +386,8 @@ impl ProgramManager {
                         ErrorCode::ConfigInvalid,
                         "Initial configuration is invalid",
                     )
-                    .with_details(format!("{}\n{}", validation.stdout, validation.stderr)));
+                    .with_message_key(&validation.report.message_key)
+                    .with_details(serde_json::to_string(&validation.report)?));
                 }
             }
             self.program_store
@@ -471,7 +478,8 @@ impl ProgramManager {
                     ErrorCode::ConfigInvalid,
                     "Configuration is invalid for the selected program type",
                 )
-                .with_details(format!("{}\n{}", validation.stdout, validation.stderr)));
+                .with_message_key(&validation.report.message_key)
+                .with_details(serde_json::to_string(&validation.report)?));
             }
         }
         Ok(PreparedProgramUpdate {
@@ -614,11 +622,6 @@ impl ProgramManager {
         Ok(())
     }
 
-    pub async fn replace_package(&self, id: &ProgramId, source: PathBuf) -> Result<()> {
-        let prepared = self.prepare_package(id, source).await?;
-        self.commit_package(prepared).await
-    }
-
     pub async fn prepare_package(
         &self,
         id: &ProgramId,
@@ -701,7 +704,11 @@ impl ProgramManager {
         self.program_store.discard_package(staged).await
     }
 
-    pub async fn commit_package(&self, prepared: PreparedPackageGuard) -> Result<()> {
+    pub async fn commit_package(
+        &self,
+        prepared: PreparedPackageGuard,
+        configuration: Option<crate::PackageConfigurationUpdate>,
+    ) -> Result<()> {
         let _mutation = match self.lifecycle.mutation_permit().await {
             Ok(permit) => permit,
             Err(error) => {
@@ -736,6 +743,7 @@ impl ProgramManager {
                     expected_spec: Box::new(expected_spec),
                     next_spec: Box::new(next_spec),
                     staged: Box::new(staged),
+                    configuration: configuration.map(Box::new),
                 },
                 mutation_guard,
             )
@@ -771,19 +779,44 @@ impl ProgramManager {
         Ok(handle.spec().await)
     }
 
-    /// Refresh the probed executable identity only when the on-disk fingerprint
-    /// differs from the controller snapshot. Ordinary configuration reads can
-    /// therefore share the controller's read lease instead of racing a write
-    /// mutation and producing a misleading PROGRAM_BUSY error.
+    /// Checks persisted acceptance against the current files without executing the program.
+    pub async fn verify_applied_config(&self, expected_spec: &ProgramSpec) -> Result<()> {
+        let handle = self.handle(&expected_spec.id).await?;
+        let _lease = handle.operation_lease().await?;
+        if handle.spec().await != *expected_spec {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Program settings changed",
+            )
+            .with_message_key("CORE_TARGET_CHANGED"));
+        }
+        self.config_service
+            .activation_preflight(expected_spec, None)
+            .await?;
+        if handle.spec().await != *expected_spec {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Program settings changed",
+            )
+            .with_message_key("CORE_TARGET_CHANGED"));
+        }
+        Ok(())
+    }
+
+    /// Reuse identity observations only for the current file and probe implementation.
     pub async fn refresh_binary_identity_if_changed(&self, id: &ProgramId) -> Result<ProgramSpec> {
         let handle = self.handle(id).await?;
         let lease = handle.operation_lease().await?;
         let spec = handle.spec().await;
         let current: ExecutableMetadata = self.program_store.executable_metadata(&spec).await?;
-        let unchanged = spec
-            .executable
-            .metadata()
-            .is_some_and(|metadata| metadata.fingerprint == current.fingerprint);
+        let unchanged = spec.executable.metadata().is_some_and(|metadata| {
+            metadata.fingerprint == current.fingerprint
+                && (spec.program_type.kind() == crate::ProgramKind::Generic
+                    || metadata
+                        .probe
+                        .as_ref()
+                        .is_some_and(|probe| probe.revision == crate::CORE_BINARY_PROBE_REVISION))
+        });
         drop(lease);
         if unchanged {
             Ok(spec)
@@ -830,6 +863,28 @@ impl ProgramManager {
         self.config_service.load(target_spec).await
     }
 
+    pub async fn assess_configuration(
+        &self,
+        id: &ProgramId,
+        content: &str,
+    ) -> Result<Option<crate::ConfigurationAssessment>> {
+        let handle = self.handle(id).await?;
+        let _lease = handle.operation_lease().await?;
+        let spec = handle.spec().await;
+        let assessment = self
+            .config_service
+            .assess_configuration(&spec, content)
+            .await?;
+        if handle.spec().await != spec {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Program changed during configuration assessment",
+            )
+            .with_message_key("CORE_TARGET_CHANGED"));
+        }
+        Ok(assessment)
+    }
+
     pub async fn validate_config(
         &self,
         id: &ProgramId,
@@ -853,7 +908,7 @@ impl ProgramManager {
         interactive: bool,
     ) -> Result<String> {
         let prepared = self
-            .prepare_config(id, expected_spec, expected_spec, content, base_hash)
+            .prepare_config(id, expected_spec, content, base_hash)
             .await?;
         self.apply_prepared_config(id, expected_spec, prepared, interactive)
             .await
@@ -862,27 +917,26 @@ impl ProgramManager {
     pub async fn prepare_config(
         &self,
         id: &ProgramId,
-        expected_current_spec: &ProgramSpec,
-        target_spec: &ProgramSpec,
+        expected_spec: &ProgramSpec,
         content: String,
         base_hash: String,
     ) -> Result<PreparedConfigGuard> {
-        if &expected_current_spec.id != id || &target_spec.id != id {
+        if &expected_spec.id != id {
             return Err(CamelliaNexusError::invalid_spec(
                 "Prepared configuration Program ids do not match",
             ));
         }
-        target_spec.validate()?;
+        expected_spec.validate()?;
         let handle = self.handle(id).await?;
         let current = handle.spec().await;
-        if current != *expected_current_spec {
+        if current != *expected_spec {
             return Err(CamelliaNexusError::new(
                 ErrorCode::ConfigConflict,
                 "Program settings changed before configuration preparation began",
             ));
         }
         self.config_service
-            .prepare_apply(target_spec, content, base_hash)
+            .prepare_apply(expected_spec, content, base_hash)
             .await
     }
 
@@ -929,78 +983,13 @@ impl ProgramManager {
             .mutate_reserved(
                 Mutation::ApplyPreparedConfig {
                     expected_spec: Box::new(expected_spec.clone()),
-                    prepared,
+                    prepared: Box::new(prepared),
                     interactive,
                 },
                 mutation_guard,
             )
             .await?
             .ok_or_else(|| CamelliaNexusError::new(ErrorCode::Internal, "Missing config hash"))
-    }
-
-    pub async fn commit_update_and_apply_config(
-        &self,
-        update: PreparedProgramUpdate,
-        prepared: PreparedConfigGuard,
-        interactive: bool,
-    ) -> Result<String> {
-        let _mutation = match self.lifecycle.mutation_permit().await {
-            Ok(permit) => permit,
-            Err(error) => {
-                let _ = self.config_service.discard(prepared).await;
-                return Err(error);
-            }
-        };
-        let _registry = self.registry_mutations.lock().await;
-        if let Err(error) = self
-            .ensure_external_profile_compatible(&update.next_spec)
-            .await
-        {
-            let _ = self.config_service.discard(prepared).await;
-            return Err(error);
-        }
-        if let Err(error) = self
-            .ensure_dashboard_port_available(&update.next_spec)
-            .await
-        {
-            let _ = self.config_service.discard(prepared).await;
-            return Err(error);
-        }
-        let handle = match self.handle(&update.next_spec.id).await {
-            Ok(handle) => handle,
-            Err(error) => {
-                let _ = self.config_service.discard(prepared).await;
-                return Err(error);
-            }
-        };
-        let _lease = match handle.operation_lease().await {
-            Ok(lease) => lease,
-            Err(error) => {
-                let _ = self.config_service.discard(prepared).await;
-                return Err(error);
-            }
-        };
-        let mutation_guard = match handle.try_reserve_mutation() {
-            Ok(guard) => guard,
-            Err(error) => {
-                let _ = self.config_service.discard(prepared).await;
-                return Err(error);
-            }
-        };
-        let result = handle
-            .mutate_reserved(
-                Mutation::UpdateSpecAndApplyPreparedConfig {
-                    expected_spec: Box::new(update.expected_spec),
-                    next_spec: Box::new(update.next_spec),
-                    prepared,
-                    interactive,
-                },
-                mutation_guard,
-            )
-            .await?
-            .ok_or_else(|| CamelliaNexusError::new(ErrorCode::Internal, "Missing config hash"))?;
-        let _ = self.events.send(ManagerEvent::ProgramListChanged);
-        Ok(result)
     }
 
     pub async fn run_action(
@@ -1424,7 +1413,7 @@ mod tests {
     use super::*;
     use crate::{
         ExecutableSpec, ManagedConfigSpec, MihomoDashboardSpec, ProgramId, ProgramType,
-        RestartPolicy, SCHEMA_VERSION,
+        RestartPolicy,
     };
 
     #[tokio::test]
@@ -1480,12 +1469,10 @@ mod tests {
     #[test]
     fn mihomo_dashboard_participates_in_shared_port_ownership() {
         let spec = ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("mihomo-port-test").expect("id"),
             name: "Mihomo port test".into(),
             executable: ExecutableSpec::Managed {
                 path: "bin/mihomo".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Mihomo {

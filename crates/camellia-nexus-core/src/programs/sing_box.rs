@@ -3,10 +3,9 @@ use std::path::Path;
 use crate::{
     ActionContext, ActionDescriptor, ActionPlan, CamelliaNexusError, CommandOutput, CommandPlan,
     ConfigurationSchemaDescriptor, ConfigurationSchemaPlan, ConfigurationSchemaSource,
-    CoreCompatibilityProfile, CoreFeatureAvailability, DetectedBinary, EditorDescriptor,
-    EditorLanguage, ErrorCode, JsonSchemaDialect, LaunchPlan, MAX_CONFIGURATION_SCHEMA_BYTES,
-    PrivilegeAssessmentContext, PrivilegeConfigInput, PrivilegeReason, ProgramSpec, ProgramState,
-    ProgramType, Result,
+    DetectedBinary, EditorDescriptor, EditorLanguage, ErrorCode, JsonSchemaDialect, LaunchPlan,
+    MAX_CONFIGURATION_SCHEMA_BYTES, PrivilegeAssessmentContext, PrivilegeConfigInput,
+    PrivilegeReason, ProgramSpec, ProgramState, ProgramType, Result,
 };
 
 use super::{
@@ -46,8 +45,10 @@ impl ProgramAdapter for SingBoxAdapter {
         {
             return Err(unsupported("sing-box CLI capabilities are unsupported"));
         }
-        let mut probe =
-            crate::CoreProbeReport::from_reported_version(first_non_empty_line(&outputs[0]));
+        let mut probe = crate::CoreProbeReport::from_program_output(
+            crate::ProgramKind::SingBox,
+            &outputs[0].stdout,
+        );
         probe.cli_observations = vec![
             crate::CoreCliObservation {
                 id: "core.cli.nativeValidation".into(),
@@ -58,12 +59,8 @@ impl ProgramAdapter for SingBoxAdapter {
                 available: outputs[3].success,
             },
         ];
-        let core_target = crate::embedded_core_compatibility_catalog()?.resolve_target(
-            crate::ProgramKind::SingBox,
-            &probe,
-            &crate::CoreCompatibilityPreference::Automatic,
-            None,
-        )?;
+        let core_target =
+            crate::CoreTargetIdentity::from_probe(crate::ProgramKind::SingBox, &probe, None)?;
         Ok(DetectedBinary {
             probe: Some(probe),
             core_target: Some(core_target),
@@ -218,24 +215,12 @@ impl ProgramAdapter for SingBoxAdapter {
 }
 
 fn sing_box_schema_supported(spec: &ProgramSpec) -> bool {
-    let Some(metadata) = spec.executable.metadata() else {
-        return false;
-    };
-    if metadata
-        .probe
-        .as_ref()
+    spec.executable
+        .metadata()
+        .and_then(|metadata| metadata.probe.as_ref())
+        .filter(|probe| probe.revision == crate::CORE_BINARY_PROBE_REVISION)
         .and_then(|probe| probe.observes("core.cli.generatedSchema"))
         == Some(true)
-    {
-        return true;
-    }
-    metadata.core_target.as_ref().is_some_and(|target| {
-        CoreCompatibilityProfile::resolve(target).is_ok_and(|profile| {
-            profile
-                .decision("core.cli.generatedSchema")
-                .is_some_and(|decision| decision.availability == CoreFeatureAvailability::Supported)
-        })
-    })
 }
 
 fn sing_box_schema_descriptor(spec: &ProgramSpec) -> Option<ConfigurationSchemaDescriptor> {
@@ -306,13 +291,6 @@ fn select_arguments(args: &[String], flags: &[&str]) -> Vec<String> {
     selected
 }
 
-fn first_non_empty_line(output: &CommandOutput) -> Option<String> {
-    combined(output)
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim().to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -321,12 +299,10 @@ mod tests {
 
     fn spec(extra_args: Vec<String>) -> ProgramSpec {
         ProgramSpec {
-            schema_version: crate::SCHEMA_VERSION,
             id: crate::ProgramId::parse("sing-box-test").expect("id"),
             name: "sing-box".into(),
             executable: crate::ExecutableSpec::Managed {
                 path: "bin/sing-box".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::SingBox { extra_args },
@@ -339,20 +315,27 @@ mod tests {
         }
     }
 
-    fn spec_with_version(version: &str) -> ProgramSpec {
+    fn spec_with_schema_observation(available: Option<bool>) -> ProgramSpec {
         let mut spec = spec(Vec::new());
-        let probe = crate::CoreProbeReport::from_reported_version(Some(format!(
-            "sing-box version {version}"
-        )));
-        let target = crate::embedded_core_compatibility_catalog()
+        let knowledge = crate::embedded_core_knowledge().unwrap();
+        let version = &knowledge
+            .program(crate::ProgramKind::SingBox)
             .unwrap()
-            .resolve_target(
-                crate::ProgramKind::SingBox,
-                &probe,
-                &crate::CoreCompatibilityPreference::Automatic,
-                Some("a".repeat(64)),
-            )
-            .unwrap();
+            .releases
+            .last()
+            .unwrap()
+            .version;
+        let mut probe = crate::CoreProbeReport::from_program_output(
+            crate::ProgramKind::SingBox,
+            &format!("sing-box version {version}"),
+        );
+        probe.cli_observations = available
+            .into_iter()
+            .map(|available| crate::CoreCliObservation {
+                id: "core.cli.generatedSchema".into(),
+                available,
+            })
+            .collect();
         spec.executable.set_metadata(crate::ExecutableMetadata {
             fingerprint: crate::CoreBinaryFingerprint {
                 sha256: "a".repeat(64),
@@ -360,7 +343,7 @@ mod tests {
                 modified_unix_ms: 1,
             },
             probe: Some(probe),
-            core_target: Some(target),
+            core_target: None,
         });
         spec
     }
@@ -396,22 +379,24 @@ mod tests {
     }
 
     #[test]
-    fn schema_capability_starts_at_beta_two() {
+    fn schema_request_requires_current_binary_observation_not_a_version_threshold() {
         let workspace = Path::new("workspace");
+        for available in [None, Some(false)] {
+            assert!(
+                SingBoxAdapter
+                    .configuration_schema_plan(&spec_with_schema_observation(available), workspace)
+                    .is_none()
+            );
+        }
+        let observed = spec_with_schema_observation(Some(true));
         assert!(
             SingBoxAdapter
-                .configuration_schema_plan(&spec_with_version("1.14.0-beta.1"), workspace)
-                .is_none()
-        );
-        let beta = spec_with_version("1.14.0-beta.2");
-        assert!(
-            SingBoxAdapter
-                .editor(&beta)
+                .editor(&observed)
                 .and_then(|editor| editor.configuration_schema)
                 .is_some()
         );
         let plan = SingBoxAdapter
-            .configuration_schema_plan(&beta, workspace)
+            .configuration_schema_plan(&observed, workspace)
             .expect("schema plan");
         assert_eq!(plan.command.args, ["schema"]);
         assert_eq!(
@@ -425,15 +410,14 @@ mod tests {
                 dialect: JsonSchemaDialect::Draft202012,
             }
         );
+        let mut stale = observed;
+        let mut metadata = stale.executable.metadata().unwrap().clone();
+        metadata.probe.as_mut().unwrap().revision = "0".repeat(64);
+        stale.executable.set_metadata(metadata);
         assert!(
             SingBoxAdapter
-                .configuration_schema_plan(&spec_with_version("1.14.0-beta.14"), workspace)
-                .is_some()
-        );
-        assert!(
-            SingBoxAdapter
-                .configuration_schema_plan(&spec_with_version("1.14.0-rc.1"), workspace)
-                .is_some()
+                .configuration_schema_plan(&stale, workspace)
+                .is_none()
         );
     }
 
@@ -508,10 +492,7 @@ mod tests {
         };
         let ActionPlan::Format { command, .. } = SingBoxAdapter
             .action_plan("format-config", &context)
-            .expect("format plan")
-        else {
-            panic!("expected format plan");
-        };
+            .expect("format plan");
         assert!(
             command
                 .args
@@ -531,7 +512,6 @@ mod tests {
         let mut external = spec(vec!["run".into()]);
         external.executable = crate::ExecutableSpec::External {
             path: "/tools/sing-box/sing-box".into(),
-            compatibility: Default::default(),
             metadata: None,
         };
         external.working_directory = "/tools/sing-box".into();

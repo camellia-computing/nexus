@@ -1,7 +1,7 @@
-import type { ConfigurationLayer, RawDecisionStatus, SemanticPathSegment } from '../types';
+import type { SemanticPathSegment } from '../types';
 
 export type ConfigurationEditorMarkerKind = 'conflict' | 'validation' | 'warning' | 'source';
-export type ConfigurationEditorMarkerResolution = 'keepMine' | 'useUpdated' | 'combine';
+export type ConfigurationEditorMarkerResolution = 'keepMine' | 'acceptUpstream';
 
 export interface ConfigurationEditorMarker {
   id: string;
@@ -10,10 +10,10 @@ export interface ConfigurationEditorMarker {
   message: string;
   semanticPath: string;
   segments: SemanticPathSegment[];
+  documentPath?: string[];
   resolvable?: boolean;
   canCombine?: boolean;
-  layer?: ConfigurationLayer;
-  status?: RawDecisionStatus;
+  changeKind?: 'added' | 'modified' | 'deleted';
   messageKey?: string;
   sourceIds?: string[];
   issueIds?: string[];

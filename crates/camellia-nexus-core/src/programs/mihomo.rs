@@ -33,21 +33,16 @@ impl ProgramAdapter for MihomoAdapter {
         {
             return Err(unsupported("Mihomo CLI capabilities are unsupported"));
         }
-        let reported = version
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .map(|line| line.trim().to_owned());
-        let mut probe = crate::CoreProbeReport::from_reported_version(reported);
+        let mut probe = crate::CoreProbeReport::from_program_output(
+            crate::ProgramKind::Mihomo,
+            &outputs[0].stdout,
+        );
         probe.cli_observations = vec![crate::CoreCliObservation {
             id: "core.cli.nativeValidation".into(),
             available: help.contains("-t"),
         }];
-        let core_target = crate::embedded_core_compatibility_catalog()?.resolve_target(
-            crate::ProgramKind::Mihomo,
-            &probe,
-            &crate::CoreCompatibilityPreference::Automatic,
-            None,
-        )?;
+        let core_target =
+            crate::CoreTargetIdentity::from_probe(crate::ProgramKind::Mihomo, &probe, None)?;
         Ok(DetectedBinary {
             probe: Some(probe),
             core_target: Some(core_target),
@@ -187,12 +182,10 @@ mod tests {
 
     fn spec(extra_args: Vec<String>) -> ProgramSpec {
         ProgramSpec {
-            schema_version: crate::SCHEMA_VERSION,
             id: crate::ProgramId::parse("mihomo-test").expect("id"),
             name: "Mihomo".into(),
             executable: crate::ExecutableSpec::Managed {
                 path: "bin/mihomo".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Mihomo { extra_args },

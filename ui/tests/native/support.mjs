@@ -23,7 +23,6 @@ export function genericFixtureRequest(
   return {
     request: {
       spec: {
-        schemaVersion: 6,
         id,
         name,
         executable: {

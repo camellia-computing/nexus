@@ -143,7 +143,6 @@ pub struct ActionContext {
 
 #[derive(Debug, Clone)]
 pub enum ActionPlan {
-    Run(CommandPlan),
     Format {
         command: CommandPlan,
         validate_after: CommandPlan,
@@ -161,12 +160,6 @@ pub struct StagedConfig {
     pub path: PathBuf,
     pub target: PathBuf,
     pub backup: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProgramConfigTransaction {
-    pub program_id: ProgramId,
-    pub config_target: PathBuf,
 }
 
 #[derive(Debug, Clone)]

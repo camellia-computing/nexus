@@ -280,91 +280,89 @@ export const api = {
     initialConfig?: string;
   }) => invoke<void>('create_program', { request }),
   listInvalidPrograms: () => invoke<InvalidProgram[]>('list_invalid_programs'),
-  updateProgram: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = false) =>
-    invoke<void>('update_program', { spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyAfterCommit }),
-  updateProgramAndRestart: (spec: ProgramSpec, expectedConfigurationGeneration?: number, replaceOverlappingRaw = false, applyAfterCommit = false) =>
-    invoke<void>('update_program_and_restart', { spec, expectedConfigurationGeneration, replaceOverlappingRaw, applyAfterCommit }),
+  updateProgram: (spec: ProgramSpec, expectedConfigurationGeneration?: number, claimedManagedSettings: string[] = []) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot | null>('update_program', {
+      spec,
+      expectedConfigurationGeneration,
+      claimedManagedSettings,
+    }),
+  updateProgramAndRestart: (spec: ProgramSpec, expectedConfigurationGeneration?: number, claimedManagedSettings: string[] = []) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot | null>('update_program_and_restart', {
+      spec,
+      expectedConfigurationGeneration,
+      claimedManagedSettings,
+    }),
   removeProgram: (programId: string) => invoke<void>('remove_program', { programId }),
   startProgram: (programId: string) => invoke<void>('start_program', { programId }),
   stopProgram: (programId: string) => invoke<void>('stop_program', { programId }),
   restartProgram: (programId: string) => invoke<void>('restart_program', { programId }),
-  replacePackage: (programId: string, packageSource: string) =>
-    invoke<void>('replace_package', { programId, packageSource }),
+  replacePackage: (programId: string, packageSource: string, expectedStateRevision?: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot | null>('replace_package', {
+      programId, packageSource, expectedStateRevision,
+    }),
   listActions: (programId: string) =>
     invoke<ActionDescriptor[]>('list_actions', { programId }),
   loadConfig: (programId: string) => invoke<ConfigDocument>('load_config', { programId }),
   loadConfigurationSchema: (programId: string) =>
     invoke<ConfigurationSchemaDocument | null>('load_configuration_schema', { programId }),
-  getConfigurationState: (programId: string) =>
-    invoke<import('./types').ConfigurationStateView>('get_configuration_state', { programId }),
   getConfigurationWorkspace: (programId: string) =>
-    invoke<import('./types').ConfigurationStateView>('get_configuration_workspace', { programId }),
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_workspace', { programId }),
   setGuidedIntent: (
     programId: string,
-    request: { settingId: string; value?: unknown; expectedGeneration: number; replaceRawOverride?: boolean },
-  ) => invoke<import('./types').ConfigurationStateView>('set_guided_intent', { programId, request }),
+    request: { settingId: string; value?: unknown; expectedGeneration: number },
+  ) => invoke<import('./types').ConfigurationWorkspaceSnapshot>('set_guided_intent', { programId, request }),
   previewConfigurationImport: (programId: string, content: string) =>
     invoke<import('./types').ShareImportPreview>('preview_configuration_import', {
       programId,
       request: { content },
     }),
-  getConfigurationEditorSession: (programId: string) =>
-    invoke<import('./types').RawDraftSession>('get_configuration_editor_session', { programId }),
-  saveConfigurationDraft: (programId: string, draft: import('./types').RawDraftSession, expectedRevision: number) =>
-    invoke<import('./types').RawDraftSession>('save_configuration_draft', {
+  saveConfigurationDraft: (programId: string, draft: import('./types').FinalEditorSession, expectedRevision: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('update_final_configuration_draft', {
       programId,
       request: { draft, expectedRevision },
     }),
-  rebaseConfigurationDraft: (programId: string) =>
-    invoke<import('./types').RawDraftSession>('rebase_configuration_draft', { programId }),
-  resolveConfigurationConflict: (programId: string, conflictId: string, resolution: import('./types').RawConflictResolution) =>
-    invoke<import('./types').RawDraftSession>('resolve_configuration_conflict', {
+  rebaseConfigurationDraft: (programId: string, expectedRevision: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('rebase_final_configuration_draft', { programId, expectedRevision }),
+  resolveConfigurationConflict: (programId: string, conflictId: string, resolution: import('./types').FinalConflictResolution, expectedRevision: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('resolve_final_draft_conflict', {
       programId,
-      request: { conflictId, resolution },
+      request: { conflictId, resolution, expectedRevision },
     }),
-  resolveRawDecision: (
+  resolveFinalConflict: (
     programId: string,
-    decisionId: string,
-    resolution: import('./types').RawDecisionResolution,
+    conflictId: string,
+    resolution: import('./types').FinalConflictResolution,
     expectedGeneration: number,
-  ) => invoke<import('./types').ConfigurationStateView>('resolve_raw_decision', {
+  ) => invoke<import('./types').ConfigurationWorkspaceSnapshot>('resolve_final_configuration_conflict', {
     programId,
-    request: { decisionId, resolution, expectedGeneration },
+    request: { conflictId, resolution, expectedGeneration },
   }),
-  discardConfigurationDraft: (programId: string) =>
-    invoke<void>('discard_configuration_draft', { programId }),
-  commitConfigurationDraft: (programId: string) =>
-    invoke<import('./types').ConfigurationStateView>('commit_configuration_draft', { programId }),
-  validateConfigurationCandidate: (programId: string, expectedGeneration: number) =>
-    invoke<import('./types').ConfigurationStateView>('validate_configuration_candidate', {
+  discardConfigurationDraft: (programId: string, expectedRevision: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('discard_final_configuration_draft', {
       programId,
-      expectedGeneration,
+      expectedRevision,
     }),
-  applyConfigurationCandidate: (programId: string, expectedGeneration: number) =>
-    invoke<import('./types').ConfigurationStateView>('apply_configuration_candidate', {
+  commitConfigurationDraft: (programId: string, request: import('./types').ConfigurationMutationContext) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('save_configuration_candidate', { programId, request }),
+  getConfigurationOperation: (programId: string, request: import('./types').ConfigurationMutationContext) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_operation', { programId, request }),
+  activateConfigurationCandidate: (programId: string, request: import('./types').ConfigurationMutationContext) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('activate_configuration_candidate', {
       programId,
-      expectedGeneration,
+      request,
     }),
   refreshConfigurationSources: (programId: string) =>
-    invoke<import('./types').ConfigurationStateView>('refresh_configuration_sources', { programId }),
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('refresh_configuration_sources', { programId }),
   updateConfigurationSources: (
     programId: string,
     sources: import('./types').ConfigSource[],
     remoteUpdate: import('./types').RemoteUpdate | undefined,
     expectedGeneration: number,
   ) =>
-    invoke<import('./types').ConfigurationStateView>('update_configuration_sources', {
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('update_configuration_sources', {
       programId,
       request: { sources, remoteUpdate, expectedGeneration },
     }),
-  updateConfigurationCompatibility: (
-    programId: string,
-    preference: import('./types').CoreCompatibilityPreference,
-    expectedGeneration: number,
-  ) => invoke<import('./types').ConfigurationStateView>('update_configuration_compatibility', {
-    programId,
-    request: { preference, expectedGeneration },
-  }),
   runAction: (programId: string, actionId: string, content: string, baseHash: string) =>
     invoke<ActionResult>('run_action', { programId, actionId, content, baseHash }),
   readLogs: (programId: string, stream: 'stdout' | 'stderr', maxBytes = 262144) =>

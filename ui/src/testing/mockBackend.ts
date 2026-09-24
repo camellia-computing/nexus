@@ -1,9 +1,9 @@
 import type { InvokeArgs } from '@tauri-apps/api/core';
+import { parse as parseYaml } from 'yaml';
 import { emit } from '@tauri-apps/api/event';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { installPreviewInvokeTransport } from '../api';
 import { canUseProgramLifecycleAction, deriveLicenseAccess } from '../licenseAccess';
-import { PROGRAM_SPEC_SCHEMA_VERSION } from '../types';
 import { semanticPathSegments } from '../editor/configurationMarkerModel';
 import type {
   AppSettings,
@@ -34,14 +34,16 @@ import type {
   XrayBalancerInfo,
   XrayDashboardSnapshot,
   ConfigurationStateView,
+  ConfigurationMutationContext,
+  ConfigurationOperationResult,
   CoreCompatibilityProfile,
-  CoreCompatibilityPreference,
+  CoreAdmissionReport,
   CoreTargetIdentity,
   GuidedProjection,
   GuidedSettingDescriptor,
-  RawDraftSession,
-  RawDecisionProjection,
-  IntentOperation,
+  FinalEditorSession,
+  FinalConflictProjection,
+  FinalChangeProjection,
   ConfigurationConflict,
   ShareImportPreview,
   ProgramKind,
@@ -114,7 +116,8 @@ const removedLicensePreview = previewParameters.has('__ui_removed_license');
 const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
 const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
 const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
-const rawAllOverridePreview = previewParameters.has('__ui_raw_all_override');
+const finalMergeConflictPreview = previewParameters.has('__ui_final_merge_conflict');
+const guidedFinalEditPreview = previewParameters.has('__ui_guided_final_edit');
 const requestedTeamRole = previewParameters.get('__ui_team_role');
 const previewWorkspaceRole: WorkspaceRole = teamMemberPreview
   ? 'operator'
@@ -351,7 +354,14 @@ const controlledProgramSelection = previewParameters.has('__ui_controlled_progra
 const failExternalActions = previewParameters.has('__ui_fail_external');
 const failedExternalActions = new Set<string>();
 let sourceSaveFailurePending = previewParameters.has('__ui_source_save_error');
-let compatibilitySaveFailurePending = previewParameters.has('__ui_compatibility_save_error');
+let finalDraftDiscardRacePending = previewParameters.has('__ui_final_draft_discard_race');
+let configurationResponseLostPending = previewParameters.has('__ui_configuration_response_lost');
+let configurationSaveResponseLostPending = previewParameters.has('__ui_configuration_save_response_lost');
+let configurationResponseHeldPending = previewParameters.has('__ui_configuration_hold_response');
+let finalDraftWriteFailurePending = previewParameters.has('__ui_final_draft_write_failure');
+let finalDraftResponseHeldPending = previewParameters.has('__ui_final_draft_hold_response');
+let configurationNativeRejectionPending = previewParameters.has('__ui_configuration_native_rejection');
+let finalDraftDiscardRaceSeeded = false;
 
 function mockTeamResult<T>(value: T): T | Promise<T> {
   if (!slowTeamOperations) return value;
@@ -572,7 +582,7 @@ function unclassifiedCoreTarget(
       commitSha,
     },
     basis: 'binaryReported' as const,
-    catalogRevision: 'core-history-v1-20260811',
+    knowledgeHash: 'preview-knowledge-digest',
     reportedVersion: report,
     fingerprintSha256,
   });
@@ -602,10 +612,10 @@ function unclassifiedCoreTarget(
   }
   if (coreTargetPreview === 'release-singbox-new' && program === 'singBox') {
     return releaseTarget(
-      'v1.14.0-beta.2',
-      '1.14.0-beta.2',
-      '03c3bf4c01e7b1fd165d0c46ff376828fa878aab',
-      'sing-box version 1.14.0-beta.2',
+      'v1.14.0',
+      '1.14.0',
+      '0b8995879f29a9b98ee027bc17b75e101445b238',
+      'sing-box version 1.14.0',
     );
   }
   if (coreTargetPreview === 'future') {
@@ -616,13 +626,9 @@ function unclassifiedCoreTarget(
         : 'Mihomo';
     return {
       program,
-      coordinate: {
-        kind: 'uncatalogued' as const,
-        normalizedVersion: '99.0.0',
-        reason: 'futureVersion' as const,
-      },
+      coordinate: { kind: 'unknown' as const },
       basis: 'binaryReported' as const,
-      catalogRevision: 'core-history-v1-20260811',
+      knowledgeHash: 'preview-knowledge-digest',
       reportedVersion: `${displayName} version 99.0.0`,
       fingerprintSha256,
     };
@@ -632,21 +638,40 @@ function unclassifiedCoreTarget(
       program,
       coordinate: { kind: 'unknown' as const },
       basis: 'unknown' as const,
-      catalogRevision: 'core-history-v1-20260811',
+      knowledgeHash: 'preview-knowledge-digest',
       fingerprintSha256,
     };
   }
+  const baseline = program === 'xray'
+    ? { version: '26.3.27', commit: 'd2758a023cd7f4174a5a5fa4ff66e487d4342ba0' }
+    : program === 'mihomo'
+      ? { version: '1.19.30', commit: 'ac017cdd246ce8bd547653d927e7bf77d7ee73d5' }
+      : { version: '1.14.0', commit: '0b8995879f29a9b98ee027bc17b75e101445b238' };
+  return releaseTarget(`v${baseline.version}`, baseline.version, baseline.commit, reportedVersion ?? baseline.version);
+}
+
+function mockCoreAdmission(program: ProgramKind, target?: CoreTargetIdentity): CoreAdmissionReport | null {
+  if (program === 'generic') return null;
+  const release = target?.coordinate.kind === 'release' ? target.coordinate : null;
+  const status = release ? 'admitted' : coreTargetPreview === 'future' ? 'notMaintained' : 'unrecognized';
   return {
     program,
-    coordinate: {
-      kind: 'uncatalogued' as const,
-      ...(reportedVersion ? { normalizedVersion: reportedVersion.replace(/^.*?([0-9]+\.[0-9]+\.[0-9]+.*)$/, '$1') } : {}),
-      reason: 'notFound' as const,
-    },
-    basis: 'binaryReported' as const,
-    catalogRevision: 'core-history-v1-20260811',
-    ...(reportedVersion ? { reportedVersion } : {}),
-    fingerprintSha256,
+    status,
+    messageKey: status === 'admitted' ? 'CORE_ADMISSION_ACCEPTED'
+      : status === 'notMaintained' ? 'CORE_VERSION_NOT_MAINTAINED' : 'CORE_VERSION_UNRECOGNIZED',
+    maintainedFamilies: program === 'xray' ? ['26.3', '26.2']
+      : program === 'mihomo' ? ['1.19', '1.18'] : ['1.14', '1.13'],
+    baseline: release ? {
+      tag: release.tag,
+      version: release.normalizedVersion,
+      commitSha: release.commitSha,
+      modulePath: `example.test/fixture/${program}`,
+      dependencies: [],
+      publishedAt: 'preview-fixture',
+      sourceTimestamp: 'preview-fixture',
+      sourceUrl: 'https://example.test/release',
+    } : null,
+    knowledgeHash: 'preview-knowledge-digest',
   };
 }
 
@@ -655,10 +680,10 @@ function managedExecutable(
   program?: Exclude<ProgramKind, 'generic'>,
   version?: string,
 ) {
+  const target = program ? unclassifiedCoreTarget(program, version) : undefined;
   return {
     mode: 'managed' as const,
     path,
-    compatibility: { mode: 'automatic' as const },
     metadata: {
       fingerprint: {
         sha256: 'a'.repeat(64),
@@ -667,12 +692,14 @@ function managedExecutable(
       },
       ...(program ? {
         probe: {
-          revision: 'core-binary-probe-v2-20260811',
-          ...(version ? { reportedVersion: version } : {}),
-          ...(version ? { normalizedVersion: version } : {}),
+          revision: 'preview-probe-digest',
+          prerelease: false,
+          hasBuildMetadata: false,
+          ...(target?.reportedVersion ? { reportedVersion: target.reportedVersion } : {}),
+          ...(target?.coordinate.kind === 'release' ? { normalizedVersion: target.coordinate.normalizedVersion } : {}),
           cliObservations: [],
         },
-        coreTarget: unclassifiedCoreTarget(program, version),
+        coreTarget: target,
       } : {}),
     },
   };
@@ -685,41 +712,30 @@ function mockCompatibilityProfile(
   const targetProgram = program === 'generic' ? 'xray' : program;
   const target = targetOverride ?? unclassifiedCoreTarget(targetProgram);
   const featureIds = [
-    'core.cli.nativeValidation',
-    'core.cli.generatedSchema',
     'proxy.outbound.vless',
     'proxy.outbound.shadowsocks',
     'proxy.outbound.hysteria2',
     'proxy.outbound.tuicV5',
   ];
   const releaseKnown = target.coordinate.kind === 'release';
-  const generatedSchemaKnown = releaseKnown
-    && target.program === 'singBox'
-    && target.coordinate.kind === 'release'
-    && target.coordinate.normalizedVersion.startsWith('1.14.');
   return {
     target,
     profileHash: 'preview-core-profile-hash',
     decisions: featureIds.map((featureId) => ({
       featureId,
       availability: !releaseKnown
-        ? 'unknown' as const
+        ? 'unconfirmed' as const
         : featureId === 'proxy.outbound.tuicV5' && target.program === 'xray'
-          ? 'unsupported' as const
-          : featureId === 'core.cli.generatedSchema' && !generatedSchemaKnown
-            ? 'unknown' as const
-            : 'supported' as const,
-      lifecycle: !releaseKnown ? 'unreviewed' as const : 'active' as const,
-      evidence: releaseKnown ? 'catalogConfirmed' as const : 'binaryReported' as const,
-      attemptAllowed: true,
+          ? 'sourceUnavailable' as const
+          : 'sourceDeclared' as const,
+      buildConditions: [],
+      evidence: [],
     })),
   };
 }
 
 const specs: Record<string, ProgramSpec> = {
   'local-agent': {
-    // ProgramSpec has its own storage schema; this is unrelated to entitlement schema v3.
-    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'local-agent',
     name: 'Local telemetry agent',
     executable: managedExecutable('bin/local-agent'),
@@ -731,7 +747,6 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'sing-box-edge': {
-    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'sing-box-edge',
     name: 'Singapore edge gateway',
     executable: managedExecutable('bin/sing-box/sing-box', 'singBox', 'sing-box version 1.14.0'),
@@ -752,7 +767,6 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'xray-primary': {
-    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'xray-primary',
     name: 'Primary Xray routing fabric',
     executable: managedExecutable('bin/xray/xray', 'xray', 'Xray 25.6.8'),
@@ -768,7 +782,6 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'mihomo-alpha': {
-    schemaVersion: PROGRAM_SPEC_SCHEMA_VERSION,
     id: 'mihomo-alpha',
     name: 'Mihomo Alpha gateway',
     executable: managedExecutable('bin/mihomo/mihomo', 'mihomo', 'Mihomo Meta alpha'),
@@ -957,8 +970,26 @@ const previewConfigurationDocuments = new Map<string, {
   baseHash: string;
 }>();
 const previewConfigurationStates = new Map<string, ConfigurationStateView>();
+let identityReadReady = false;
+window.addEventListener('camellia-ui-preview:identity-ready', () => { identityReadReady = true; });
 const previewUpstreamDocuments = new Map<string, string>();
-const previewRawDrafts = new Map<string, RawDraftSession>();
+const previewUpstreamContributions = new Map<string, {
+  source: string;
+  writes: Array<{ owner: string; change: FinalChangeProjection }>;
+}>();
+const previewFinalDrafts = new Map<string, FinalEditorSession>();
+const previewConfigurationOperations = new Map<string, {
+  request: ConfigurationMutationContext;
+  result: ConfigurationOperationResult;
+}>();
+
+function previewOperationResult(programId: string, request: ConfigurationMutationContext) {
+  const receipt = previewConfigurationOperations.get(`${programId}:${request.operationId}`);
+  if (receipt && JSON.stringify(receipt.request) !== JSON.stringify(request)) {
+    throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH', message: 'Request changed' };
+  }
+  return receipt?.result;
+}
 
 function previewGuidedSettings(kind: ProgramSpec['type']['kind']): {
   descriptors: GuidedSettingDescriptor[];
@@ -1029,7 +1060,7 @@ function configurationState(programId: string): ConfigurationStateView {
   const sourceBlocked = configurationSourcePreview === 'invalid'
     || configurationSourcePreview === 'unavailable';
   const candidateNeedsAttention = evidenceStale || evidenceMismatch || sourceBlocked;
-  const desiredHash = candidateNeedsAttention
+  let desiredHash = candidateNeedsAttention
     ? 'preview-pending-desired-hash'
     : 'preview-desired-hash';
   const generation = candidateNeedsAttention ? 2 : 1;
@@ -1056,46 +1087,72 @@ function configurationState(programId: string): ConfigurationStateView {
             scope: { surface: 'sources' as const, ownerId: 'preview-source' },
           }]
         : [];
-  const rawPreviewPath = kind === 'xray'
+  const finalPreviewPath = kind === 'xray'
     ? [{ kind: 'key' as const, key: 'log' }, { kind: 'key' as const, key: 'loglevel' }]
     : kind === 'singBox'
       ? [{ kind: 'key' as const, key: 'log' }, { kind: 'key' as const, key: 'level' }]
       : [{ kind: 'key' as const, key: 'log-level' }];
-  const rawPreviewOperation: IntentOperation = {
-    operation: 'set',
-    path: rawPreviewPath,
-    value: 'debug',
-  };
-  const rawPreviewDecision = {
-    decisionId: `preview-raw-${programId}`,
+  const finalPreviewConflict: FinalConflictProjection = {
+    conflictId: `preview-final-conflict-${programId}`,
     semanticPath: kind === 'xray' ? '/log/loglevel' : kind === 'singBox' ? '/log/level' : '/log-level',
-    operation: rawPreviewOperation,
-    status: 'superseded' as const,
-    origin: 'migrated' as const,
-    basis: {
-      upstreamGeneration: 1,
-      upstreamContentHash: 'preview-upstream-hash',
-      upstreamPathHash: 'preview-upstream-path-hash',
-    },
-    upstreamValue: 'info',
-    rawValue: 'debug',
+    segments: finalPreviewPath,
+    kind: 'modifyVsModify',
+    baseValue: { state: 'present', value: 'warn' },
+    upstreamValue: { state: 'present', value: 'info' },
+    userValue: { state: 'present', value: 'debug' },
+    canMerge: false,
   };
-  const rawPreviewConflict: ConfigurationConflict = {
-    semanticPath: rawPreviewDecision.semanticPath,
-    reason: 'The upstream configuration changed after this Raw decision was made',
+  const finalCandidateConflict: ConfigurationConflict = {
+    semanticPath: finalPreviewConflict.semanticPath,
+    reason: 'The upstream configuration and final editor changed the same path',
     severity: 'error',
-    messageKey: 'RAW_DECISION_SUPERSEDED',
-    scope: { surface: 'configuration', ownerId: rawPreviewDecision.decisionId },
-    sourceValue: rawPreviewDecision.upstreamValue,
-    rawValue: rawPreviewDecision.rawValue,
-    effectiveValue: rawPreviewDecision.upstreamValue,
+    messageKey: 'FINAL_EDIT_CONFLICT',
+    scope: { surface: 'configuration', ownerId: finalPreviewConflict.conflictId },
+    sourceValue: 'info',
+    userValue: 'debug',
+    effectiveValue: 'info',
   };
+  let upstreamContent = document.content;
+  let effectiveContent = document.content;
+  if (guidedFinalEditPreview && kind === 'singBox' && format === 'jsonc') {
+    const upstreamDocument = JSON.parse(document.content) as unknown;
+    setPreviewGuidedPath(upstreamDocument, ['log', 'level'], 'fatal');
+    upstreamContent = `${JSON.stringify(upstreamDocument, null, 2)}\n`;
+    const finalDocument = structuredClone(upstreamDocument);
+    setPreviewGuidedPath(finalDocument, ['log', 'level'], 'error');
+    effectiveContent = `${JSON.stringify(finalDocument, null, 2)}\n`;
+    desiredHash = previewContentHash(effectiveContent);
+    const logging = guided.projection.find(
+      (projection) => projection.settingId === 'logging.level',
+    );
+    if (logging) {
+      logging.status = 'finalEdit';
+      logging.value = 'fatal';
+      logging.intentValue = 'fatal';
+    }
+  }
+  if (finalMergeConflictPreview && format === 'jsonc') {
+    const effectiveDocument = JSON.parse(document.content) as unknown;
+    updatePreviewConflictPath(effectiveDocument, finalPreviewPath, {
+      present: true,
+      value: 'info',
+    });
+    effectiveContent = `${JSON.stringify(effectiveDocument, null, 2)}\n`;
+    upstreamContent = effectiveContent;
+    desiredHash = previewContentHash(effectiveContent);
+  }
+  if (previewParameters.has('__ui_final_draft_conflict') && programId === 'xray-primary') {
+    effectiveContent = effectiveContent.replace('proxy-sg', 'source-route');
+    upstreamContent = effectiveContent;
+    desiredHash = previewContentHash(effectiveContent);
+  }
   const state: ConfigurationStateView = {
-    schemaVersion: 5,
     kind,
     format,
+    stateRevision: generation,
     generation,
     compatibilityProfile,
+    coreAdmission: mockCoreAdmission(kind, metadataTarget),
     sourceStatuses: (spec?.managedConfig?.sources ?? []).map((source) => ({
       sourceId: source.id,
       sourceName: source.name,
@@ -1112,34 +1169,35 @@ function configurationState(programId: string): ConfigurationStateView {
         ? 'preview-source-hash'
         : undefined,
       ...(configurationSourcePreview === 'stale'
-        ? { message: 'Latest read failed; using the last parsed snapshot.' }
+        ? { messageKey: 'SOURCE_DOWNLOAD_FAILED' }
         : configurationSourcePreview === 'invalid'
-          ? { message: 'Configuration is not valid JSON' }
+          ? { messageKey: 'SOURCE_INVALID' }
           : configurationSourcePreview === 'unavailable'
-            ? { message: 'No usable observation or snapshot is available.' }
+            ? { messageKey: 'SOURCE_FILE_NOT_FOUND' }
             : {}),
     })),
     sourceParseSummaries: {},
     provenance: [],
     desired: {
       revision: { generation, contentHash: desiredHash, createdUnixMs: Date.now() },
-      content: document.content,
+      content: effectiveContent,
       compatibilityProfileHash: evidenceMismatch
         ? 'preview-previous-profile-hash'
         : compatibilityProfile.profileHash,
-      validation: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || rawAllOverridePreview ? 'invalid' : 'valid',
+      validation: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || finalMergeConflictPreview ? 'invalid' : 'valid',
       ...(!candidateNeedsAttention ? {
         validationEvidence: {
           binarySha256: 'a'.repeat(64),
           profileHash: compatibilityProfile.profileHash,
           configHash: desiredHash,
-          validatorContractRevision: 'preview-validator-v1',
+          candidateGeneration: generation,
+          validatorContractRevision: 'preview-validator-test',
           nativeAccepted: true,
           validatedUnixMs: Date.now(),
         },
       } : {}),
       diagnostics,
-      conflicts: rawAllOverridePreview ? [rawPreviewConflict] : [],
+      conflicts: finalMergeConflictPreview ? [finalCandidateConflict] : [],
     },
     appliedRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
     lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
@@ -1149,95 +1207,94 @@ function configurationState(programId: string): ConfigurationStateView {
       ? [
           {
             integrationId: 'dashboard.singBoxApi',
+            settings: [],
             status: spec?.managedConfig?.singBoxDashboard ? 'explicit' : 'inactive',
             effectiveEnabled: !!spec?.managedConfig?.singBoxDashboard,
-            rawPaths: [],
+            finalPaths: [],
             issueIds: [],
           },
           {
             integrationId: 'dashboard.singBoxClash',
+            settings: [],
             status: spec?.managedConfig?.singBoxClashDashboard ? 'explicit' : 'inactive',
             effectiveEnabled: !!spec?.managedConfig?.singBoxClashDashboard,
-            rawPaths: [],
+            finalPaths: [],
             issueIds: [],
           },
         ]
       : kind === 'xray'
-        ? [{ integrationId: 'dashboard.xray', status: spec?.managedConfig?.xrayDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.xrayDashboard, rawPaths: [], issueIds: [] }]
+        ? [{ integrationId: 'dashboard.xray', settings: [], status: spec?.managedConfig?.xrayDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.xrayDashboard, finalPaths: [], issueIds: [] }]
         : kind === 'mihomo'
-          ? [{ integrationId: 'dashboard.mihomo', status: spec?.managedConfig?.mihomoDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.mihomoDashboard, rawPaths: [], issueIds: [] }]
+          ? [{ integrationId: 'dashboard.mihomo', settings: [], status: spec?.managedConfig?.mihomoDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.mihomoDashboard, finalPaths: [], issueIds: [] }]
           : [],
-    compatibilityReferences: [
-      { kind: 'release', tag: kind === 'xray' ? 'v26.3.27' : kind === 'singBox' ? 'v1.13.18' : 'v1.19.29' },
-      { kind: 'commit', commitSha: 'a'.repeat(40) },
-    ],
     workspace: {
       editor: {
-        content: document.content,
-        revision: { generation, contentHash: desiredHash, createdUnixMs: Date.now() },
-        paths: [{
-          semanticPath: rawPreviewDecision.semanticPath,
-          segments: rawPreviewPath,
-          sourceIds: ['preview-source'],
-          sourceValue: rawPreviewDecision.upstreamValue,
-          intentValue: rawPreviewDecision.upstreamValue,
-          detailsValue: rawPreviewDecision.upstreamValue,
-          ...(rawAllOverridePreview ? { rawValue: rawPreviewDecision.rawValue, rawDecision: rawPreviewDecision } : {}),
-          effectiveValue: rawPreviewDecision.upstreamValue,
-          winnerLayer: 'source',
-          issues: rawAllOverridePreview ? [{
-            id: `RAW_DECISION_SUPERSEDED:${rawPreviewDecision.semanticPath}`,
-            code: 'RAW_DECISION_SUPERSEDED',
-            messageKey: 'RAW_DECISION_SUPERSEDED',
-            semanticPath: rawPreviewDecision.semanticPath,
-            severity: 'error' as const,
-            blocking: true,
-          }] : [],
-        }],
-        decisionCounts: {
-          active: 0,
-          resolved: 0,
-          superseded: rawAllOverridePreview ? 1 : 0,
-          dormant: 0,
+        document: {
+          content: effectiveContent,
+          revision: { generation, contentHash: desiredHash, createdUnixMs: Date.now() },
         },
+        editStatus: finalMergeConflictPreview ? 'conflict' : 'clean',
+        candidateStatus: finalMergeConflictPreview ? 'unsaved' : candidateNeedsAttention ? 'invalid' : 'applied',
+        changes: [],
+        conflicts: finalMergeConflictPreview ? [finalPreviewConflict] : [],
         blockers: [],
-        validationStatus: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || rawAllOverridePreview ? 'invalid' : 'valid',
-        canSave: !rawAllOverridePreview,
-        canValidate: !rawAllOverridePreview,
-        canApply: !candidateNeedsAttention && !rawAllOverridePreview,
+        canSave: !finalMergeConflictPreview,
+        canValidate: !finalMergeConflictPreview,
+        canApply: !candidateNeedsAttention && !finalMergeConflictPreview,
       },
     },
   };
-  if (rawAllOverridePreview && kind !== 'generic') {
-    const rawPath = rawPreviewPath;
-    state.guidedProjection = state.guidedProjection.map((projection) => {
-      const path = previewGuidedPath(kind, projection.settingId);
-      const overlaps = path && (path.every((segment, index) => rawPath[index]?.key === segment)
-        || rawPath.every((segment, index) => segment.key === path[index]));
-      return overlaps ? { ...projection, status: 'rawDecision', value: undefined } : projection;
-    });
-  }
-  previewUpstreamDocuments.set(programId, document.content);
+  previewUpstreamDocuments.set(programId, upstreamContent);
+  previewUpstreamContributions.set(programId, { source: upstreamContent, writes: [] });
   refreshPreviewWorkspaceGates(state);
   syncPreviewEditor(state);
   previewConfigurationStates.set(programId, state);
   return structuredClone(state);
 }
 
-function rawDraftSession(programId: string): RawDraftSession {
-  const existing = previewRawDrafts.get(programId);
-  if (existing) return structuredClone(existing);
+let previewEditorSessionSequence = 0;
+
+function finalEditorSession(programId: string): FinalEditorSession {
+  const existing = previewFinalDrafts.get(programId);
+  if (existing) {
+    const state = configurationState(programId);
+    const rebased = rebasePreviewFinalEditorSession(existing, state);
+    previewFinalDrafts.set(programId, structuredClone(rebased));
+    return rebased;
+  }
   const state = configurationState(programId);
-  if (previewParameters.has('__ui_raw_conflict') && programId === 'xray-primary') {
-    const conflictId = 'preview-route-conflict';
-    const userContent = state.desired.content.replace('proxy-sg', 'mine-route');
-    const draft: RawDraftSession = {
+  if (
+    previewParameters.has('__ui_final_draft_discard_race')
+    && programId === 'xray-primary'
+    && !finalDraftDiscardRaceSeeded
+  ) {
+    finalDraftDiscardRaceSeeded = true;
+    const draft: FinalEditorSession = {
       sessionId: `preview-draft-${programId}`,
       draftRevision: 1,
-      basedOnGeneration: state.generation,
-      baseContent: previewUpstreamDocuments.get(programId) ?? state.workspace.editor.content,
-      userContent,
-      workingContent: userContent,
+      basedOnStateRevision: state.stateRevision,
+      basedOnCandidateGeneration: state.generation,
+      baseContent: state.desired.content,
+      workingContent: state.desired.content,
+      conflicts: [],
+      resolutions: {},
+      unresolvedConflictIds: [],
+      rebaseRequired: false,
+      updatedUnixMs: Date.now(),
+    };
+    previewFinalDrafts.set(programId, structuredClone(draft));
+    return draft;
+  }
+  if (previewParameters.has('__ui_final_draft_conflict') && programId === 'xray-primary') {
+    const conflictId = 'preview-route-conflict';
+    const workingContent = state.desired.content;
+    const draft: FinalEditorSession = {
+      sessionId: `preview-draft-${programId}`,
+      draftRevision: 1,
+      basedOnStateRevision: state.stateRevision,
+      basedOnCandidateGeneration: state.generation,
+      baseContent: previewUpstreamDocuments.get(programId) ?? state.workspace.editor.document.content,
+      workingContent,
       conflicts: [{
         conflictId,
         segments: [
@@ -1245,38 +1302,200 @@ function rawDraftSession(programId: string): RawDraftSession {
           { kind: 'key', key: 'final' },
         ],
         semanticPath: '/route/final',
-        displayPath: '/route/final',
-        conflictType: 'value',
-        severity: 'error',
-        originalBase: 'proxy-sg',
-        updatedBase: 'source-route',
-        userValue: 'mine-route',
-        suggestedActions: ['keepMine', 'useUpdated', 'manualEdit'],
-        canCombine: false,
+        kind: 'modifyVsModify',
+        baseValue: { state: 'present', value: 'proxy-sg' },
+        upstreamValue: { state: 'present', value: 'source-route' },
+        userValue: { state: 'present', value: 'mine-route' },
+        canMerge: false,
       }],
       resolutions: {},
       unresolvedConflictIds: [conflictId],
+      rebaseRequired: false,
       updatedUnixMs: Date.now(),
     };
-    previewRawDrafts.set(programId, structuredClone(draft));
+    previewFinalDrafts.set(programId, structuredClone(draft));
     return draft;
   }
-  const draft: RawDraftSession = {
-    sessionId: `preview-draft-${programId}`,
+  const draft: FinalEditorSession = {
+    sessionId: `preview-draft-${programId}-${++previewEditorSessionSequence}`,
     draftRevision: 0,
-    basedOnGeneration: state.generation,
-    baseContent: previewUpstreamDocuments.get(programId) ?? state.workspace.editor.content,
-    userContent: state.workspace.editor.content,
-    workingContent: state.workspace.editor.content,
+    basedOnStateRevision: state.stateRevision,
+    basedOnCandidateGeneration: state.generation,
+    baseContent: state.workspace.editor.document.content,
+    workingContent: state.workspace.editor.document.content,
     conflicts: [],
     resolutions: {},
     unresolvedConflictIds: [],
+    rebaseRequired: false,
     updatedUnixMs: Date.now(),
   };
   return draft;
 }
 
-function refreshPreviewUnresolvedConflicts(draft: RawDraftSession): void {
+function previewSemanticEqual(left: unknown, right: unknown): boolean {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => [key, normalize(child)]));
+    }
+    return value;
+  };
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
+function rebasePreviewFinalEditorSession(
+  current: FinalEditorSession,
+  state: ConfigurationStateView,
+): FinalEditorSession {
+  const draft = structuredClone(current);
+  if (draft.baseContent === state.desired.content) {
+    draft.rebaseRequired = false;
+    draft.basedOnStateRevision = state.stateRevision;
+    draft.basedOnCandidateGeneration = state.generation;
+    return draft;
+  }
+  let base: unknown;
+  let mine: unknown;
+  let updated: unknown;
+  try {
+    const parse = (content: string): unknown => state.format === 'yaml' ? parseYaml(content) : JSON.parse(content);
+    base = parse(draft.baseContent);
+    updated = parse(state.desired.content);
+    if (previewSemanticEqual(base, updated)) {
+      draft.baseContent = state.desired.content;
+      draft.basedOnStateRevision = state.stateRevision;
+      draft.basedOnCandidateGeneration = state.generation;
+      draft.rebaseRequired = false;
+      return draft;
+    }
+    mine = parse(draft.workingContent);
+  } catch {
+    draft.rebaseRequired = true;
+    return draft;
+  }
+
+  for (const conflict of draft.conflicts) {
+    if (!draft.unresolvedConflictIds.includes(conflict.conflictId)) continue;
+    const original = conflict.baseValue.state === 'present'
+      ? { present: true, value: conflict.baseValue.value } : { present: false };
+    const user = conflict.userValue.state === 'present'
+      ? { present: true, value: conflict.userValue.value } : { present: false };
+    if (conflict.segments.length === 0) {
+      base = original.value;
+      mine = user.value;
+    } else {
+      updatePreviewConflictPath(base, conflict.segments, original);
+      updatePreviewConflictPath(mine, conflict.segments, user);
+    }
+  }
+
+  const conflicts: FinalEditorSession['conflicts'] = [];
+  const merge = (
+    baseValue: { present: boolean; value?: unknown },
+    mineValue: { present: boolean; value?: unknown },
+    updatedValue: { present: boolean; value?: unknown },
+    segments: FinalEditorSession['conflicts'][number]['segments'],
+  ): { present: boolean; value?: unknown } => {
+    const equal = (
+      left: { present: boolean; value?: unknown },
+      right: { present: boolean; value?: unknown },
+    ) => left.present === right.present
+      && (!left.present || previewSemanticEqual(left.value, right.value));
+    if (equal(mineValue, baseValue)) return structuredClone(updatedValue);
+    if (equal(updatedValue, baseValue)) return structuredClone(mineValue);
+    if (equal(mineValue, updatedValue)) return structuredClone(updatedValue);
+
+    const baseObject = baseValue.present && baseValue.value && typeof baseValue.value === 'object'
+      && !Array.isArray(baseValue.value) ? baseValue.value as Record<string, unknown> : null;
+    const mineObject = mineValue.present && mineValue.value && typeof mineValue.value === 'object'
+      && !Array.isArray(mineValue.value) ? mineValue.value as Record<string, unknown> : null;
+    const updatedObject = updatedValue.present && updatedValue.value && typeof updatedValue.value === 'object'
+      && !Array.isArray(updatedValue.value) ? updatedValue.value as Record<string, unknown> : null;
+    if (baseObject && mineObject && updatedObject) {
+      const result: Record<string, unknown> = {};
+      const keys = new Set([
+        ...Object.keys(baseObject),
+        ...Object.keys(mineObject),
+        ...Object.keys(updatedObject),
+      ]);
+      for (const key of keys) {
+        const child = merge(
+          { present: Object.hasOwn(baseObject, key), value: baseObject[key] },
+          { present: Object.hasOwn(mineObject, key), value: mineObject[key] },
+          { present: Object.hasOwn(updatedObject, key), value: updatedObject[key] },
+          [...segments, { kind: 'key', key }],
+        );
+        if (child.present) result[key] = child.value;
+      }
+      return { present: true, value: result };
+    }
+
+    const semanticPath = segments.length
+      ? `/${segments.map((segment) => segment.kind === 'key'
+          ? segment.key.replaceAll('~', '~0').replaceAll('/', '~1')
+          : `${segment.field}=${segment.value}`
+        ).join('/')}`
+      : '/';
+    conflicts.push({
+      conflictId: `preview-draft-conflict:${semanticPath}`,
+      segments: structuredClone(segments),
+      semanticPath,
+      kind: !baseValue.present ? 'addVsAdd' : !mineValue.present ? 'deleteVsModify' : !updatedValue.present ? 'modifyVsDelete' : 'modifyVsModify',
+      baseValue: baseValue.present ? { state: 'present', value: structuredClone(baseValue.value) } : { state: 'missing' },
+      upstreamValue: updatedValue.present ? { state: 'present', value: structuredClone(updatedValue.value) } : { state: 'missing' },
+      userValue: mineValue.present ? { state: 'present', value: structuredClone(mineValue.value) } : { state: 'missing' },
+      canMerge: false,
+    });
+    return structuredClone(updatedValue);
+  };
+
+  const merged = merge(
+    { present: true, value: base },
+    { present: true, value: mine },
+    { present: true, value: updated },
+    [],
+  );
+  draft.baseContent = state.desired.content;
+  draft.workingContent = `${JSON.stringify(merged.value, null, 2)}\n`;
+  draft.basedOnStateRevision = state.stateRevision;
+  draft.basedOnCandidateGeneration = state.generation;
+  draft.conflicts = conflicts;
+  draft.resolutions = {};
+  draft.unresolvedConflictIds = conflicts.map((conflict) => conflict.conflictId);
+  draft.rebaseRequired = false;
+  draft.draftRevision += 1;
+  draft.updatedUnixMs = Date.now();
+  return draft;
+}
+
+function configurationWorkspaceSnapshot(programId: string): {
+  state: ConfigurationStateView;
+  editorSession: FinalEditorSession;
+} {
+  const state = configurationState(programId);
+  state.managedIntegrations = state.managedIntegrations?.map((integration) => {
+    const settings = previewManagedSettingPaths(specs[programId]).filter((setting) => setting.settingId.startsWith(`${integration.integrationId}.`)).map((setting) => {
+      let effectiveValue: import('../types').SemanticValue = { state: 'missing' };
+      try {
+        const content = previewUpstreamDocuments.get(programId) ?? state.desired.content;
+        const document: unknown = state.format === 'yaml' ? parseYaml(content) : JSON.parse(content);
+        const found = previewConflictPathValue(document, setting.segments);
+        if (found.present) {
+          const value = setting.settingId.endsWith('Port') && typeof found.value === 'string'
+            ? Number(found.value.split(':').at(-1)) : found.value;
+          effectiveValue = { state: 'present', value };
+        }
+      } catch { effectiveValue = { state: 'missing' }; }
+      const savedValue: import('../types').SemanticValue = setting.value === undefined ? { state: 'missing' } : { state: 'present', value: setting.value };
+      return { settingId: setting.settingId, savedValue, effectiveValue, canUseSavedValue: savedValue.state === 'present' && !previewSemanticEqual(savedValue, effectiveValue) };
+    });
+    return { ...integration, settings, status: settings.some((setting) => setting.canUseSavedValue) ? 'latestSettings' : integration.status };
+  });
+  return { state, editorSession: finalEditorSession(programId) };
+}
+
+function refreshPreviewUnresolvedConflicts(draft: FinalEditorSession): void {
   let document: unknown;
   try {
     document = JSON.parse(draft.workingContent);
@@ -1298,46 +1517,18 @@ function refreshPreviewUnresolvedConflicts(draft: RawDraftSession): void {
 }
 
 function previewConflictResolutionValue(
-  conflict: RawDraftSession['conflicts'][number],
-  resolution: RawDraftSession['resolutions'][string],
+  conflict: FinalEditorSession['conflicts'][number],
+  resolution: FinalEditorSession['resolutions'][string],
 ): { present: boolean; value?: unknown } {
-  if (resolution === 'keepMine') {
-    return conflict.conflictType === 'delete-vs-modify'
-      ? { present: false }
-      : { present: true, value: conflict.userValue };
-  }
-  if (resolution === 'useUpdated') {
-    return conflict.conflictType === 'modify-vs-delete'
-      ? { present: false }
-      : { present: true, value: conflict.updatedBase };
-  }
-  if (resolution === 'combine') {
-    return {
-      present: true,
-      value: previewCombineValues(conflict.updatedBase, conflict.userValue),
-    };
-  }
-  return { present: true, value: resolution.manualEdit.value };
-}
-
-function previewCombineValues(updated: unknown, user: unknown): unknown {
-  if (
-    updated && user
-    && typeof updated === 'object' && !Array.isArray(updated)
-    && typeof user === 'object' && !Array.isArray(user)
-  ) {
-    const merged = structuredClone(updated) as Record<string, unknown>;
-    for (const [key, value] of Object.entries(user)) {
-      merged[key] = previewCombineValues(merged[key], value);
-    }
-    return merged;
-  }
-  return structuredClone(user);
+  const selected = resolution === 'keepMine' ? conflict.userValue
+    : resolution === 'acceptUpstream' ? conflict.upstreamValue
+    : resolution.manualEdit.value;
+  return selected.state === 'missing' ? { present: false } : { present: true, value: selected.value };
 }
 
 function previewConflictPathValue(
   root: unknown,
-  segments: RawDraftSession['conflicts'][number]['segments'],
+  segments: FinalEditorSession['conflicts'][number]['segments'],
 ): { present: boolean; value?: unknown } {
   let current = root;
   for (const segment of segments) {
@@ -1363,15 +1554,19 @@ function previewConflictPathValue(
 
 function updatePreviewConflictPath(
   root: unknown,
-  segments: RawDraftSession['conflicts'][number]['segments'],
+  segments: FinalEditorSession['conflicts'][number]['segments'],
   selected: { present: boolean; value?: unknown },
 ): void {
   if (!root || typeof root !== 'object' || segments.length === 0) return;
   let current: unknown = root;
-  for (const segment of segments.slice(0, -1)) {
+  for (const [index, segment] of segments.slice(0, -1).entries()) {
     const next = previewConflictPathValue(current, [segment]);
-    if (!next.present) return;
-    current = next.value;
+    if (!next.present || !next.value || typeof next.value !== 'object') {
+      if (!selected.present) return;
+      const container = segments[index + 1].kind === 'identity' ? [] : {};
+      updatePreviewConflictPath(current, [segment], { present: true, value: container });
+    }
+    current = previewConflictPathValue(current, [segment]).value;
   }
   const last = segments[segments.length - 1];
   if (last.kind === 'key' && current && typeof current === 'object' && !Array.isArray(current)) {
@@ -1439,50 +1634,287 @@ function setPreviewGuidedPath(
   else current[leaf] = structuredClone(value);
 }
 
-function previewPathSegments(path: import('../types').SemanticPathSegment[]): string[] {
-  return path
-    .filter((segment): segment is { kind: 'key'; key: string } => segment.kind === 'key')
-    .map((segment) => segment.key);
-}
-
-function previewPathsOverlap(left: string[], right: string[]): boolean {
-  const shared = Math.min(left.length, right.length);
-  return left.slice(0, shared).every((segment, index) => segment === right[index]);
-}
-
-function previewReadPath(root: unknown, path: string[]): unknown {
-  let current: unknown = root;
-  for (const segment of path) {
-    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined;
-    current = (current as Record<string, unknown>)[segment];
+function previewManagedIntegrationContent(
+  spec: ProgramSpec,
+  fallback: string,
+): string {
+  if (spec.type.kind === 'generic') return fallback;
+  let document: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(fallback) as unknown;
+    document = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return fallback;
   }
-  return current;
-}
-
-function previewWritePath(root: unknown, path: string[], value: unknown): void {
-  if (!root || typeof root !== 'object' || Array.isArray(root) || path.length === 0) return;
-  let current = root as Record<string, unknown>;
-  for (const segment of path.slice(0, -1)) {
-    if (!current[segment] || typeof current[segment] !== 'object' || Array.isArray(current[segment])) {
-      current[segment] = {};
+  if (spec.type.kind === 'singBox') {
+    const services = Array.isArray(document.services)
+      ? document.services.filter((service) => !(
+          service && typeof service === 'object' && !Array.isArray(service)
+          && (service as Record<string, unknown>).tag === 'camellia-nexus-api'
+        ))
+      : [];
+    const apiDashboard = spec.managedConfig?.singBoxDashboard;
+    if (apiDashboard) {
+      services.push({
+        type: 'api',
+        tag: 'camellia-nexus-api',
+        listen: '127.0.0.1',
+        listen_port: apiDashboard.listenPort,
+        dashboard: {
+          enabled: true,
+          update_interval: apiDashboard.updateInterval,
+        },
+      });
     }
-    current = current[segment] as Record<string, unknown>;
+    if (services.length > 0) document.services = services;
+    else delete document.services;
+    const experimental = document.experimental && typeof document.experimental === 'object'
+      && !Array.isArray(document.experimental)
+      ? document.experimental as Record<string, unknown>
+      : {};
+    const clashApi = experimental.clash_api && typeof experimental.clash_api === 'object'
+      && !Array.isArray(experimental.clash_api)
+      ? experimental.clash_api as Record<string, unknown>
+      : {};
+    const clashDashboard = spec.managedConfig?.singBoxClashDashboard;
+    if (clashDashboard) {
+      clashApi.external_controller = `127.0.0.1:${clashDashboard.listenPort}`;
+      clashApi.external_ui = 'clash-dashboard';
+      if (clashDashboard.downloadUrl) {
+        clashApi.external_ui_download_url = clashDashboard.downloadUrl;
+      } else {
+        delete clashApi.external_ui_download_url;
+      }
+      experimental.clash_api = clashApi;
+      document.experimental = experimental;
+    } else {
+      delete clashApi.external_controller;
+      delete clashApi.external_ui;
+      delete clashApi.external_ui_download_url;
+      if (Object.keys(clashApi).length > 0) experimental.clash_api = clashApi;
+      else delete experimental.clash_api;
+      if (Object.keys(experimental).length > 0) document.experimental = experimental;
+      else delete document.experimental;
+    }
+  } else if (spec.type.kind === 'xray') {
+    const dashboard = spec.managedConfig?.xrayDashboard;
+    if (dashboard) {
+      document.api = {
+        ...(
+          document.api && typeof document.api === 'object' && !Array.isArray(document.api)
+            ? document.api as Record<string, unknown>
+            : {}
+        ),
+        tag: 'camellia-nexus-api',
+        listen: `127.0.0.1:${dashboard.apiPort}`,
+        services: [
+          'HandlerService',
+          'LoggerService',
+          'StatsService',
+          'RoutingService',
+          'ReflectionService',
+        ],
+      };
+      document.metrics = {
+        ...(
+          document.metrics && typeof document.metrics === 'object' && !Array.isArray(document.metrics)
+            ? document.metrics as Record<string, unknown>
+            : {}
+        ),
+        tag: 'camellia-nexus-metrics',
+        listen: `127.0.0.1:${dashboard.metricsPort}`,
+      };
+      if (!document.stats || typeof document.stats !== 'object' || Array.isArray(document.stats)) {
+        document.stats = {};
+      }
+    } else {
+      if (
+        document.api && typeof document.api === 'object' && !Array.isArray(document.api)
+        && (document.api as Record<string, unknown>).tag === 'camellia-nexus-api'
+      ) delete document.api;
+      if (
+        document.metrics && typeof document.metrics === 'object' && !Array.isArray(document.metrics)
+        && (document.metrics as Record<string, unknown>).tag === 'camellia-nexus-metrics'
+      ) delete document.metrics;
+    }
+  } else if (spec.type.kind === 'mihomo') {
+    const dashboard = spec.managedConfig?.mihomoDashboard;
+    if (dashboard) {
+      document['external-controller'] = `127.0.0.1:${dashboard.listenPort}`;
+      document['external-ui'] = 'camellia-nexus-mihomo-dashboard';
+      if (dashboard.downloadUrl) document['external-ui-url'] = dashboard.downloadUrl;
+      else delete document['external-ui-url'];
+    } else {
+      delete document['external-controller'];
+      delete document['external-ui'];
+      delete document['external-ui-url'];
+    }
   }
-  current[path[path.length - 1]] = structuredClone(value);
+  return `${JSON.stringify(document, null, 2)}\n`;
 }
 
-function previewDeletePath(root: unknown, path: string[]): void {
-  if (!root || typeof root !== 'object' || Array.isArray(root) || path.length === 0) return;
-  let current = root as Record<string, unknown>;
-  for (const segment of path.slice(0, -1)) {
-    if (!current[segment] || typeof current[segment] !== 'object' || Array.isArray(current[segment])) return;
-    current = current[segment] as Record<string, unknown>;
-  }
-  delete current[path[path.length - 1]];
+function previewInlineSourceContent(spec: ProgramSpec): string | null {
+  const inline = spec.managedConfig?.sources.filter(
+    (source): source is Extract<ConfigSource, { mode: 'inline' }> => (
+      source.mode === 'inline' && source.enabled
+    ),
+  ) ?? [];
+  if (inline.length === 0) return null;
+  let merged: unknown = {};
+  const merge = (current: unknown, next: unknown): unknown => {
+    if (
+      current && next
+      && typeof current === 'object' && !Array.isArray(current)
+      && typeof next === 'object' && !Array.isArray(next)
+    ) {
+      const result = structuredClone(current) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(next)) {
+        result[key] = key in result ? merge(result[key], value) : structuredClone(value);
+      }
+      return result;
+    }
+    return structuredClone(next);
+  };
+  for (const source of inline) merged = merge(merged, JSON.parse(source.content));
+  return `${JSON.stringify(merged, null, 2)}\n`;
 }
 
-function previewRawDecisions(state: ConfigurationStateView): RawDecisionProjection[] {
-  return state.workspace.editor.paths.flatMap((path) => path.rawDecision ? [path.rawDecision] : []);
+function recordPreviewContributions(programId: string, owner: string, changes: FinalChangeProjection[]): string {
+  const contributions = previewUpstreamContributions.get(programId)!;
+  for (const change of changes) {
+    contributions.writes = contributions.writes.filter((write) =>
+      write.owner !== owner || write.change.segments.length < change.segments.length
+      || !change.segments.every((segment, index) => previewSemanticEqual(segment, write.change.segments[index])));
+    contributions.writes.push({ owner, change: structuredClone(change) });
+  }
+  let document: unknown = JSON.parse(contributions.source);
+  const source: unknown = structuredClone(document);
+  for (const { owner, change } of contributions.writes) {
+    const value = owner === 'sources'
+      ? previewConflictPathValue(source, change.segments)
+      : change.finalValue.state === 'present'
+        ? { present: true, value: change.finalValue.value } : { present: false };
+    if (change.segments.length === 0) document = value.present ? structuredClone(value.value) : {};
+    else updatePreviewConflictPath(document, change.segments, value);
+  }
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+
+function previewSourceUpdate(programId: string, sourceContent: string, explicit: boolean): string {
+  const contributions = previewUpstreamContributions.get(programId)!;
+  const changes = explicit ? previewFinalChanges(contributions.source, sourceContent) : [];
+  contributions.source = sourceContent;
+  const expand = (change: FinalChangeProjection): FinalChangeProjection[] => {
+    const value = change.finalValue.state === 'present' ? change.finalValue.value : undefined;
+    if (change.kind !== 'added' || !value || typeof value !== 'object' || Array.isArray(value)) return [change];
+    return Object.entries(value).flatMap(([key, child]) => expand({
+      ...change, semanticPath: `${change.semanticPath}/${key}`,
+      segments: [...change.segments, { kind: 'key', key }], finalValue: { state: 'present', value: child },
+    }));
+  };
+  return recordPreviewContributions(programId, 'sources', changes.flatMap(expand));
+}
+
+function previewManagedSettingPaths(spec: ProgramSpec) {
+  const managed = spec.managedConfig;
+  const values: [string, string, unknown][] = spec.type.kind === 'singBox' ? [
+    ['dashboard.singBoxApi.listenPort', '/services[tag=camellia-nexus-api]/listen_port', managed?.singBoxDashboard?.listenPort],
+    ['dashboard.singBoxApi.updateInterval', '/services[tag=camellia-nexus-api]/dashboard/update_interval', managed?.singBoxDashboard?.updateInterval],
+    ['dashboard.singBoxClash.listenPort', '/experimental/clash_api/external_controller', managed?.singBoxClashDashboard?.listenPort],
+    ['dashboard.singBoxClash.downloadUrl', '/experimental/clash_api/external_ui_download_url', managed?.singBoxClashDashboard?.downloadUrl],
+  ] : spec.type.kind === 'xray' ? [
+    ['dashboard.xray.apiPort', '/api/listen', managed?.xrayDashboard?.apiPort],
+    ['dashboard.xray.metricsPort', '/metrics/listen', managed?.xrayDashboard?.metricsPort],
+  ] : spec.type.kind === 'mihomo' ? [
+    ['dashboard.mihomo.listenPort', '/external-controller', managed?.mihomoDashboard?.listenPort],
+    ['dashboard.mihomo.downloadUrl', '/external-ui-url', managed?.mihomoDashboard?.downloadUrl],
+  ] : [];
+  return values.map(([settingId, path, value]) => ({ settingId, path, segments: semanticPathSegments(path), value }));
+}
+
+function previewManagedUpdate(previous: ProgramSpec, next: ProgramSpec, current: string, claimedSettings: string[] = []): string {
+  const before = previewManagedIntegrationContent(previous, current);
+  const after = previewManagedIntegrationContent(next, current);
+  const changes = previewFinalChanges(before, after);
+  for (const setting of previewManagedSettingPaths(next).filter((setting) => claimedSettings.includes(setting.settingId))) {
+    const upstream = previewConflictPathValue(JSON.parse(current), setting.segments);
+    const final = previewConflictPathValue(JSON.parse(after), setting.segments);
+    if (!final.present || previewSemanticEqual(upstream, final)) continue;
+    changes.push({ editId: `preview-details:${setting.settingId}`, semanticPath: setting.path, segments: setting.segments,
+      kind: 'modified', upstreamValue: upstream.present ? { state: 'present', value: upstream.value } : { state: 'missing' },
+      finalValue: { state: 'present', value: final.value }, issues: [] });
+  }
+  return recordPreviewContributions(next.id, 'details', changes);
+}
+
+function previewFinalChanges(
+  upstreamContent: string,
+  finalContent: string,
+): FinalChangeProjection[] {
+  let upstream: unknown;
+  let finalValue: unknown;
+  try {
+    upstream = JSON.parse(upstreamContent);
+    finalValue = JSON.parse(finalContent);
+  } catch {
+    return [];
+  }
+  const changes: FinalChangeProjection[] = [];
+  const walk = (
+    upstreamEntry: { present: boolean; value?: unknown },
+    finalEntry: { present: boolean; value?: unknown },
+    segments: FinalChangeProjection['segments'],
+  ) => {
+    if (
+      upstreamEntry.present === finalEntry.present
+      && (!upstreamEntry.present || previewSemanticEqual(upstreamEntry.value, finalEntry.value))
+    ) return;
+    const upstreamObject = upstreamEntry.present && upstreamEntry.value
+      && typeof upstreamEntry.value === 'object' && !Array.isArray(upstreamEntry.value)
+      ? upstreamEntry.value as Record<string, unknown>
+      : null;
+    const finalObject = finalEntry.present && finalEntry.value
+      && typeof finalEntry.value === 'object' && !Array.isArray(finalEntry.value)
+      ? finalEntry.value as Record<string, unknown>
+      : null;
+    if (upstreamObject && finalObject) {
+      for (const key of new Set([...Object.keys(upstreamObject), ...Object.keys(finalObject)])) {
+        walk(
+          { present: Object.hasOwn(upstreamObject, key), value: upstreamObject[key] },
+          { present: Object.hasOwn(finalObject, key), value: finalObject[key] },
+          [...segments, { kind: 'key', key }],
+        );
+      }
+      return;
+    }
+    const semanticPath = segments.length
+      ? `/${segments.map((segment) => segment.kind === 'key'
+          ? segment.key.replaceAll('~', '~0').replaceAll('/', '~1')
+          : `${segment.field}=${segment.value}`
+        ).join('/')}`
+      : '/';
+    changes.push({
+      editId: `preview-final-edit:${semanticPath}`,
+      semanticPath,
+      segments: structuredClone(segments),
+      kind: !finalEntry.present ? 'deleted' : !upstreamEntry.present ? 'added' : 'modified',
+      upstreamValue: upstreamEntry.present
+        ? { state: 'present', value: structuredClone(upstreamEntry.value) }
+        : { state: 'missing' },
+      finalValue: finalEntry.present
+        ? { state: 'present', value: structuredClone(finalEntry.value) }
+        : { state: 'missing' },
+      issues: [],
+    });
+  };
+  walk(
+    { present: true, value: upstream },
+    { present: true, value: finalValue },
+    [],
+  );
+  return changes;
 }
 
 function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
@@ -1500,20 +1932,43 @@ function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
           ? 'resolveLayerConflict' as const
           : 'openFinalConfiguration' as const,
     }));
-  const diagnosticBlockers = state.desired.diagnostics.map((diagnostic) => ({
-    code: diagnostic.messageKey ?? diagnostic.code,
-    messageKey: diagnostic.messageKey ?? diagnostic.code,
-    scope: diagnostic.scope ?? { surface: 'configuration' as const },
-    blocks: ['apply'] as const,
-    recoveryAction: 'reviewCandidate' as const,
-  }));
+  const diagnosticBlockers = state.desired.diagnostics.map((diagnostic) => {
+    const sourceOwned = diagnostic.scope?.surface === 'sources';
+    return {
+      code: diagnostic.messageKey ?? diagnostic.code,
+      messageKey: diagnostic.messageKey ?? diagnostic.code,
+      scope: diagnostic.scope ?? { surface: 'configuration' as const },
+      details: !diagnostic.scope || diagnostic.scope.surface === 'configuration'
+        ? diagnostic.details
+        : undefined,
+      blocks: sourceOwned
+        ? ['save' as const, 'validate' as const, 'apply' as const]
+        : ['apply' as const],
+      recoveryAction: sourceOwned ? 'resolveSourceConflict' as const : 'reviewCandidate' as const,
+    };
+  });
   const needsValidation = state.desired.validation !== 'valid'
     && conflictBlockers.length === 0
     && diagnosticBlockers.length === 0;
+  const candidateUnsaved = state.workspace.editor.candidateStatus === 'unsaved';
   state.workspace.editor.blockers = [
+    ...(state.coreAdmission && state.coreAdmission.status !== 'admitted' ? [{
+      code: state.coreAdmission.messageKey,
+      messageKey: state.coreAdmission.messageKey,
+      scope: { surface: 'compatibility' as const },
+      blocks: ['validate' as const, 'apply' as const],
+      recoveryAction: 'openCompatibility' as const,
+    }] : []),
     ...conflictBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
     ...diagnosticBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
-    ...(needsValidation ? [{
+    ...(candidateUnsaved && ![...conflictBlockers, ...diagnosticBlockers].some((blocker) => blocker.blocks.includes('save')) ? [{
+      code: 'CONFIGURATION_CANDIDATE_UNSAVED',
+      messageKey: 'CONFIGURATION_CANDIDATE_UNSAVED',
+      scope: { surface: 'configuration' as const },
+      blocks: ['validate' as const, 'apply' as const],
+      recoveryAction: 'openFinalConfiguration' as const,
+    }] : []),
+    ...(needsValidation && !candidateUnsaved ? [{
       code: 'CORE_VALIDATION_REQUIRED',
       messageKey: 'CORE_VALIDATION_REQUIRED',
       scope: { surface: 'configuration' as const },
@@ -1521,86 +1976,6 @@ function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
       recoveryAction: 'validateCandidate' as const,
     }] : []),
   ];
-}
-
-function recomputePreviewCandidate(programId: string, state: ConfigurationStateView): void {
-  let document: unknown;
-  try {
-    document = JSON.parse(previewUpstreamDocuments.get(programId) ?? state.desired.content);
-  } catch {
-    return;
-  }
-  const decisions = previewRawDecisions(state);
-  for (const decision of decisions) {
-    if (decision.status !== 'active' && decision.status !== 'resolved') continue;
-    const path = previewPathSegments(decision.operation.path);
-    if (decision.operation.operation === 'set') previewWritePath(document, path, decision.rawValue);
-    else if (decision.operation.operation === 'delete') previewDeletePath(document, path);
-  }
-  const content = `${JSON.stringify(document, null, 2)}\n`;
-  state.desired.content = content;
-  state.desired.revision.contentHash = previewContentHash(content);
-  const preservedConflicts = state.desired.conflicts.filter(
-    (conflict) => conflict.messageKey !== 'RAW_DECISION_SUPERSEDED',
-  );
-  const rawConflicts = decisions
-    .filter((decision) => decision.status === 'superseded')
-    .map((decision) => ({
-      semanticPath: decision.semanticPath,
-      reason: 'The upstream configuration changed after this Raw decision was made',
-      severity: 'error' as const,
-      messageKey: 'RAW_DECISION_SUPERSEDED',
-      scope: { surface: 'configuration' as const, ownerId: decision.decisionId },
-      sourceValue: decision.upstreamValue,
-      rawValue: decision.rawValue,
-      effectiveValue: decision.upstreamValue,
-    }));
-  state.desired.conflicts = [...preservedConflicts, ...rawConflicts];
-  state.desired.validation = state.desired.conflicts.some((conflict) => conflict.severity === 'error')
-    ? 'invalid'
-    : 'pending';
-  state.desired.validationEvidence = undefined;
-  state.workspace.editor.paths = state.workspace.editor.paths.map((path) => {
-    const decision = path.rawDecision;
-    if (!decision) return path;
-    const participates = decision.status === 'active' || decision.status === 'resolved';
-    return {
-      ...path,
-      rawValue: decision.rawValue,
-      effectiveValue: participates ? decision.rawValue : decision.upstreamValue,
-      winnerLayer: participates ? 'rawDecision' : 'source',
-      rawDecision: decision,
-    };
-  });
-  refreshPreviewWorkspaceGates(state);
-  syncPreviewEditor(state);
-}
-
-function syncPreviewEditor(state: ConfigurationStateView): void {
-  const decisions = previewRawDecisions(state);
-  const conflicts = state.desired.conflicts;
-  state.workspace.editor.content = state.desired.content;
-  state.workspace.editor.revision = structuredClone(state.desired.revision);
-  state.workspace.editor.paths = state.workspace.editor.paths.map((path) => ({
-    ...path,
-    issues: conflicts
-      .filter((conflict) => conflict.semanticPath === path.semanticPath)
-      .map((conflict) => ({
-        id: `${conflict.messageKey ?? 'CONFIGURATION_CONFLICT'}:${conflict.semanticPath}`,
-        code: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
-        messageKey: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
-        semanticPath: conflict.semanticPath,
-        severity: conflict.severity,
-        blocking: conflict.severity === 'error',
-      })),
-  }));
-  state.workspace.editor.decisionCounts = {
-    active: decisions.filter((decision) => decision.status === 'active').length,
-    resolved: decisions.filter((decision) => decision.status === 'resolved').length,
-    superseded: decisions.filter((decision) => decision.status === 'superseded').length,
-    dormant: decisions.filter((decision) => decision.status === 'dormant').length,
-  };
-  state.workspace.editor.validationStatus = state.desired.validation;
   state.workspace.editor.canSave = state.workspace.editor.blockers.every(
     (blocker) => !blocker.blocks.includes('save'),
   );
@@ -1612,13 +1987,30 @@ function syncPreviewEditor(state: ConfigurationStateView): void {
   );
 }
 
+function syncPreviewEditor(state: ConfigurationStateView): void {
+  state.workspace.editor.document = {
+    content: state.desired.content,
+    revision: structuredClone(state.desired.revision),
+  };
+  if (state.workspace.editor.conflicts.length > 0) {
+    state.workspace.editor.editStatus = 'conflict';
+  } else if (state.workspace.editor.changes.length > 0) {
+    state.workspace.editor.editStatus = 'modified';
+  } else {
+    state.workspace.editor.editStatus = 'clean';
+  }
+  refreshPreviewWorkspaceGates(state);
+}
+
 function updateConfigurationState(
   programId: string,
   update: (state: ConfigurationStateView) => void,
   advanceGeneration = true,
 ): ConfigurationStateView {
   const state = configurationState(programId);
+  const before = JSON.stringify(state);
   const previousContent = state.desired.content;
+  const previousProfile = state.compatibilityProfile.profileHash;
   update(state);
   if (state.desired.content !== previousContent) {
     state.desired.revision.contentHash = previewContentHash(state.desired.content);
@@ -1627,6 +2019,7 @@ function updateConfigurationState(
     // validation command creates fresh evidence.
     state.desired.validationEvidence = undefined;
     if (state.desired.validation === 'valid') state.desired.validation = 'pending';
+    state.workspace.editor.candidateStatus = 'unsaved';
     const savedDocument = previewConfigurationDocuments.get(programId);
     previewConfigurationDocuments.set(programId, {
       ...savedDocument,
@@ -1634,7 +2027,8 @@ function updateConfigurationState(
       baseHash: state.desired.revision.contentHash,
     });
   }
-  if (advanceGeneration) {
+  if (advanceGeneration && (state.desired.content !== previousContent
+    || state.compatibilityProfile.profileHash !== previousProfile)) {
     state.generation += 1;
     state.desired.revision = {
       ...state.desired.revision,
@@ -1644,7 +2038,76 @@ function updateConfigurationState(
   }
   refreshPreviewWorkspaceGates(state);
   syncPreviewEditor(state);
+  if (JSON.stringify(state) !== before) state.stateRevision += 1;
   previewConfigurationStates.set(programId, structuredClone(state));
+  return state;
+}
+
+function updatePreviewUpstream(
+  programId: string,
+  content: string,
+  update: (state: ConfigurationStateView) => void = () => undefined,
+): ConfigurationStateView {
+  const current = configurationState(programId);
+  const previousUpstream = previewUpstreamDocuments.get(programId) ?? current.desired.content;
+  const existingDraft = previewFinalDrafts.get(programId);
+  const existingConflicts = structuredClone(current.workspace.editor.conflicts);
+  const existingDesiredConflicts = structuredClone(current.desired.conflicts);
+  let nextContent = content;
+  let rebasedCommitted: FinalEditorSession | null = null;
+
+  if (!existingDraft && (current.workspace.editor.changes.length > 0 || existingConflicts.length > 0)) {
+    const committedSession: FinalEditorSession = {
+      sessionId: `preview-rebase-${programId}`,
+      draftRevision: 0,
+      basedOnStateRevision: current.stateRevision,
+      basedOnCandidateGeneration: current.generation,
+      baseContent: previousUpstream,
+      workingContent: current.desired.content,
+      conflicts: existingConflicts,
+      resolutions: {},
+      unresolvedConflictIds: existingConflicts.map((conflict) => conflict.conflictId),
+      rebaseRequired: false,
+      updatedUnixMs: Date.now(),
+    };
+    const target = structuredClone(current);
+    target.stateRevision += 1;
+    target.generation += 1;
+    target.desired.content = content;
+    rebasedCommitted = rebasePreviewFinalEditorSession(committedSession, target);
+    nextContent = rebasedCommitted.workingContent;
+  }
+
+  previewUpstreamDocuments.set(programId, content);
+  const state = updateConfigurationState(programId, (next) => {
+    next.desired.content = nextContent;
+    if (previousUpstream !== content) {
+      next.desired.validation = 'pending';
+      next.desired.validationEvidence = undefined;
+      next.desired.diagnostics = [];
+    }
+    next.desired.conflicts = existingConflicts.length > 0 ? existingDesiredConflicts : [];
+    next.workspace.editor.conflicts = existingConflicts;
+    next.workspace.editor.changes = previewFinalChanges(content, nextContent);
+    if (next.format === 'jsonc') {
+      const upstream = JSON.parse(content);
+      next.guidedProjection = next.guidedProjection.map((projection) => {
+        const path = previewGuidedPath(next.kind, projection.settingId);
+        if (!path) return projection;
+        const value = previewConflictPathValue(upstream, path.map((key) => ({ kind: 'key', key })));
+        return { ...projection, value: value.value };
+      });
+    }
+    update(next);
+  });
+
+  if (rebasedCommitted?.unresolvedConflictIds.length) {
+    rebasedCommitted.basedOnStateRevision = state.stateRevision;
+    rebasedCommitted.basedOnCandidateGeneration = state.generation;
+    rebasedCommitted.baseContent = content;
+    rebasedCommitted.draftRevision = Math.max(1, rebasedCommitted.draftRevision);
+    previewFinalDrafts.set(programId, structuredClone(rebasedCommitted));
+  }
   return state;
 }
 
@@ -1675,29 +2138,6 @@ function detail(programId: string): ProgramDetail {
   return { spec: structuredClone(spec), state: structuredClone(states[programId]), workingDirectory: spec.workingDirectory };
 }
 
-function validatePreviewCompatibility(spec: ProgramSpec): void {
-  const preference = spec.executable.compatibility;
-  if (spec.type.kind === 'generic' && preference.mode !== 'automatic') {
-    throw { code: 'INVALID_SPEC', message: 'Generic programs only support automatic compatibility.' };
-  }
-  if (preference.mode === 'release' && !preference.tag.trim()) {
-    throw { code: 'INVALID_SPEC', message: 'Select an exact catalogued release before saving.' };
-  }
-  if (
-    preference.mode === 'commit'
-    && !/^[0-9a-f]{40}$/.test(preference.commitSha)
-  ) {
-    throw { code: 'INVALID_SPEC', message: 'Enter a lowercase 40-character catalogued commit SHA.' };
-  }
-  if (preference.mode === 'unknown' && preference.reference) {
-    if (preference.reference.kind === 'release' && !preference.reference.tag.trim()) {
-      throw { code: 'INVALID_SPEC', message: 'Enter a catalogued release tag or commit SHA.' };
-    }
-    if (preference.reference.kind === 'commit' && !/^[0-9a-f]{40}$/.test(preference.reference.commitSha)) {
-      throw { code: 'INVALID_SPEC', message: 'Enter a catalogued release tag or commit SHA.' };
-    }
-  }
-}
 
 function configDocument(programId: string) {
   const saved = previewConfigurationDocuments.get(programId);
@@ -2430,6 +2870,15 @@ export function installMockBackend() {
         return summaries();
       }
       case 'list_invalid_programs': return [];
+      case 'create_program':
+        if (previewParameters.has('__ui_create_prerelease')) {
+          throw {
+            code: 'UNSUPPORTED_BINARY',
+            messageKey: 'CORE_PRERELEASE_NOT_SUPPORTED',
+            message: 'Unsupported program',
+          };
+        }
+        throw { code: 'MOCK_COMMAND_UNIMPLEMENTED', message: `No UI preview response for ${command}` };
       case 'get_program': {
         const programId = stringArg(args, 'programId');
         return mockProgramSelectionResult(command, programId, detail(programId));
@@ -2447,8 +2896,11 @@ export function installMockBackend() {
       case 'restart_program': requireLifecycleAccess('restart'); setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() }); return null;
       case 'update_program': {
         const next = objectArgs(args).spec;
+        const claimedSettings = (objectArgs(args).claimedManagedSettings ?? []) as string[];
+        let programId = '';
         if (next && typeof next === 'object') {
           const nextSpec = next as ProgramSpec;
+          programId = nextSpec.id;
           const previous = specs[nextSpec.id];
           const managedChanged = JSON.stringify({
             singBoxDashboard: previous?.managedConfig?.singBoxDashboard,
@@ -2461,118 +2913,83 @@ export function installMockBackend() {
             xrayDashboard: nextSpec.managedConfig?.xrayDashboard,
             mihomoDashboard: nextSpec.managedConfig?.mihomoDashboard,
           });
-          validatePreviewCompatibility(next as ProgramSpec);
           specs[nextSpec.id] = structuredClone(nextSpec);
-          previewConfigurationStates.delete(nextSpec.id);
-          previewUpstreamDocuments.delete(nextSpec.id);
+          if ((managedChanged || claimedSettings.length > 0) && nextSpec.type.kind !== 'generic') {
+            const state = configurationState(nextSpec.id);
+            const upstream = previewManagedUpdate(
+              previous, nextSpec,
+              previewUpstreamDocuments.get(nextSpec.id) ?? state.desired.content,
+              claimedSettings,
+            );
+            updatePreviewUpstream(nextSpec.id, upstream, (nextState) => {
+              nextState.managedIntegrations = (nextState.managedIntegrations ?? []).map((integration) => {
+                const enabled = integration.integrationId === 'dashboard.singBoxApi'
+                  ? !!nextSpec.managedConfig?.singBoxDashboard
+                  : integration.integrationId === 'dashboard.singBoxClash'
+                    ? !!nextSpec.managedConfig?.singBoxClashDashboard
+                    : integration.integrationId === 'dashboard.xray'
+                      ? !!nextSpec.managedConfig?.xrayDashboard
+                      : !!nextSpec.managedConfig?.mihomoDashboard;
+                return { ...integration, status: enabled ? 'explicit' : 'inactive', effectiveEnabled: enabled };
+              });
+            });
+          }
         }
-        return null;
+        return programId && specs[programId]?.type.kind !== 'generic'
+          ? configurationWorkspaceSnapshot(programId)
+          : null;
       }
       case 'update_program_and_restart': {
         requireLifecycleAccess('restart');
         const next = objectArgs(args).spec;
+        const claimedSettings = (objectArgs(args).claimedManagedSettings ?? []) as string[];
+        let programId = '';
         if (next && typeof next === 'object') {
           const nextSpec = next as ProgramSpec;
-          validatePreviewCompatibility(next as ProgramSpec);
+          programId = nextSpec.id;
+          const previous = specs[nextSpec.id];
+          const managedChanged = JSON.stringify({
+            singBoxDashboard: previous?.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: previous?.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: previous?.managedConfig?.xrayDashboard,
+            mihomoDashboard: previous?.managedConfig?.mihomoDashboard,
+          }) !== JSON.stringify({
+            singBoxDashboard: nextSpec.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: nextSpec.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: nextSpec.managedConfig?.xrayDashboard,
+            mihomoDashboard: nextSpec.managedConfig?.mihomoDashboard,
+          });
           specs[nextSpec.id] = structuredClone(nextSpec);
-          previewConfigurationStates.delete(nextSpec.id);
-          previewUpstreamDocuments.delete(nextSpec.id);
+          if ((managedChanged || claimedSettings.length > 0) && nextSpec.type.kind !== 'generic') {
+            const state = configurationState(nextSpec.id);
+            const upstream = previewManagedUpdate(
+              previous, nextSpec,
+              previewUpstreamDocuments.get(nextSpec.id) ?? state.desired.content,
+              claimedSettings,
+            );
+            updatePreviewUpstream(nextSpec.id, upstream, (nextState) => {
+              nextState.managedIntegrations = (nextState.managedIntegrations ?? []).map((integration) => {
+                const enabled = integration.integrationId === 'dashboard.singBoxApi'
+                  ? !!nextSpec.managedConfig?.singBoxDashboard
+                  : integration.integrationId === 'dashboard.singBoxClash'
+                    ? !!nextSpec.managedConfig?.singBoxClashDashboard
+                    : integration.integrationId === 'dashboard.xray'
+                      ? !!nextSpec.managedConfig?.xrayDashboard
+                      : !!nextSpec.managedConfig?.mihomoDashboard;
+                return { ...integration, status: enabled ? 'explicit' : 'inactive', effectiveEnabled: enabled };
+              });
+            });
+          }
         }
         setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() });
-        return null;
-      }
-      case 'update_configuration_compatibility': {
-        const programId = stringArg(args, 'programId');
-        const request = objectArgs(args).request as {
-          preference?: CoreCompatibilityPreference;
-          expectedGeneration?: number;
-        } | undefined;
-        const spec = specs[programId];
-        if (!spec || !request?.preference) {
-          throw { code: 'INVALID_SPEC', message: 'Compatibility update request is incomplete.' };
-        }
-        const preference = request.preference;
-        if (compatibilitySaveFailurePending) {
-          compatibilitySaveFailurePending = false;
-          throw new Error(JSON.stringify({
-            code: 'INVALID_SPEC',
-            messageKey: 'CORE_COMPATIBILITY_INVALID',
-            message: 'Selected Core reference is not catalogued for this program',
-          }));
-        }
-        if (states[programId]?.status === 'running') {
-          throw {
-            code: 'INVALID_STATE',
-            messageKey: 'CORE_COMPATIBILITY_PROGRAM_ACTIVE',
-            message: 'Stop the program before changing its Core compatibility baseline',
-          };
-        }
-        const current = configurationState(programId);
-        if (request.expectedGeneration !== current.generation) {
-          throw {
-            code: 'CONFIG_CONFLICT',
-            messageKey: 'CONFIGURATION_GENERATION_STALE',
-            message: 'Configuration changed since the compatibility target was loaded',
-          };
-        }
-        const candidate = structuredClone(spec) as ProgramSpec;
-        candidate.executable.compatibility = structuredClone(preference);
-        validatePreviewCompatibility(candidate);
-        specs[programId] = candidate;
-        return updateConfigurationState(programId, (state) => {
-          if (candidate.type.kind === 'generic') return;
-          const previousTarget = candidate.executable.metadata?.coreTarget;
-          const reference = preference.mode === 'unknown'
-            ? preference.reference
-            : preference.mode === 'release'
-              ? { kind: 'release' as const, tag: preference.tag }
-              : preference.mode === 'commit'
-                ? { kind: 'commit' as const, commitSha: preference.commitSha }
-                : undefined;
-          const automaticTarget = unclassifiedCoreTarget(
-            candidate.type.kind,
-            candidate.executable.metadata?.probe?.reportedVersion,
-          );
-          const target: CoreTargetIdentity = {
-            program: candidate.type.kind,
-            coordinate: preference.mode === 'automatic'
-              ? automaticTarget.coordinate
-              : reference?.kind === 'release'
-              ? {
-                  kind: 'release',
-                  tag: reference.tag,
-                  normalizedVersion: reference.tag.replace(/^v/, ''),
-                  commitSha: 'a'.repeat(40),
-                }
-              : reference?.kind === 'commit'
-                ? { kind: 'commit', commitSha: reference.commitSha }
-                : { kind: 'unknown' },
-            basis: preference.mode === 'unknown'
-              ? 'unknown'
-              : preference.mode === 'automatic'
-                ? automaticTarget.basis
-                : 'userDeclared',
-            catalogRevision: previousTarget?.catalogRevision ?? 'core-history-v1-20260811',
-            reportedVersion: previousTarget?.reportedVersion,
-            fingerprintSha256: candidate.executable.metadata?.fingerprint.sha256,
-          };
-          if (candidate.executable.metadata) candidate.executable.metadata.coreTarget = target;
-          state.compatibilityProfile = mockCompatibilityProfile(candidate.type.kind, target);
-          state.desired.compatibilityProfileHash = state.compatibilityProfile.profileHash;
-          state.desired.validation = 'pending';
-          state.desired.validationEvidence = undefined;
-          state.desired.diagnostics = [];
-        });
+        return programId && specs[programId]?.type.kind !== 'generic'
+          ? configurationWorkspaceSnapshot(programId)
+          : null;
       }
       case 'remove_program': delete specs[stringArg(args, 'programId')]; return null;
       case 'list_actions': {
         const programId = stringArg(args, 'programId');
         const kind = specs[programId]?.type.kind;
-        if (kind === 'xray') {
-          return mockProgramSelectionResult(command, programId, [
-            { id: 'dump-config', label: 'Dump parsed configuration', allowedStates: ['stopped', 'running'], confirmation: false },
-          ]);
-        }
         if (kind === 'singBox') {
           return mockProgramSelectionResult(command, programId, [
             { id: 'format-config', label: 'Format with sing-box', allowedStates: ['stopped', 'running'], confirmation: false },
@@ -2581,11 +2998,16 @@ export function installMockBackend() {
         return mockProgramSelectionResult(command, programId, []);
       }
       case 'load_config': return configDocument(stringArg(args, 'programId'));
-      case 'get_configuration_state':
-      case 'get_configuration_workspace':
-        return configurationState(stringArg(args, 'programId'));
-      case 'get_configuration_editor_session':
-        return rawDraftSession(stringArg(args, 'programId'));
+      case 'get_configuration_workspace': {
+        if (new URLSearchParams(window.location.search).has('__ui_identity_read_error') && !identityReadReady) {
+          throw new Error(JSON.stringify({
+            code: 'TIMEOUT', message: 'Program identity probe exceeded its deadline',
+            details: 'bounded identity read timed out',
+          }));
+        }
+        const programId = stringArg(args, 'programId');
+        return configurationWorkspaceSnapshot(programId);
+      }
       case 'preview_configuration_import': {
         const programId = stringArg(args, 'programId');
         const targetCore = specs[programId]?.type.kind ?? 'xray';
@@ -2601,7 +3023,7 @@ export function installMockBackend() {
           summary: {
             envelope: 'plain',
             payload: 'singleShareLink',
-            parserRevision: 'share-v1-preview',
+            parserRevision: 'share-parser-preview',
             totalItems: 1,
             acceptedItems: 1,
             rejectedItems: 0,
@@ -2617,9 +3039,9 @@ export function installMockBackend() {
             fragment: { type: 'vless', server: 'example.com', server_port: 443 },
             summary: {
               target,
-              translatorRevision: 'translator-v2-preview',
+              translatorRevision: 'share-translator-preview',
               profileHash: 'preview-core-profile-hash',
-              catalogRevision: 'core-history-v1-20260811',
+              knowledgeHash: 'preview-knowledge-digest',
               featureDecisions: [],
               fidelity: 'equivalent',
               warnings: [],
@@ -2630,15 +3052,24 @@ export function installMockBackend() {
         };
         return preview;
       }
-      case 'save_configuration_draft': {
+      case 'update_final_configuration_draft': {
         const programId = stringArg(args, 'programId');
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:draft-write', { detail: programId }));
+        if (finalDraftWriteFailurePending) {
+          finalDraftWriteFailurePending = false;
+          return new Promise((_, reject) => {
+            window.addEventListener('camellia-ui-preview:reject-draft-write', () => reject({
+              code: 'STORAGE', message: 'Draft storage is temporarily unavailable.',
+            }), { once: true });
+          });
+        }
         const request = objectArgs(args).request as {
-          draft?: RawDraftSession;
+          draft?: FinalEditorSession;
           expectedRevision?: number;
         } | undefined;
         if (!request?.draft) throw { code: 'INVALID_SPEC', message: 'Draft is required' };
         const draft = structuredClone(request.draft);
-        const persisted = previewRawDrafts.get(programId);
+        const persisted = previewFinalDrafts.get(programId);
         if (
           request.expectedRevision !== draft.draftRevision
           || (persisted && (
@@ -2647,11 +3078,9 @@ export function installMockBackend() {
           ))
           || (!persisted && request.expectedRevision !== 0)
         ) {
-          throw { code: 'CONFIG_CONFLICT', message: 'Preview Raw draft revision is stale' };
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE', message: 'Preview Final editor draft revision is stale' };
         }
         if (persisted) {
-          draft.baseContent = persisted.baseContent;
-          draft.basedOnGeneration = persisted.basedOnGeneration;
           draft.conflicts = structuredClone(persisted.conflicts);
           draft.resolutions = structuredClone(persisted.resolutions);
           draft.unresolvedConflictIds = [...persisted.unresolvedConflictIds];
@@ -2659,27 +3088,37 @@ export function installMockBackend() {
         draft.draftRevision += 1;
         draft.updatedUnixMs = Date.now();
         refreshPreviewUnresolvedConflicts(draft);
-        previewRawDrafts.set(programId, structuredClone(draft));
-        return draft;
+        previewFinalDrafts.set(programId, structuredClone(draft));
+        if (finalDraftResponseHeldPending) {
+          finalDraftResponseHeldPending = false;
+          const snapshot = configurationWorkspaceSnapshot(programId);
+          return new Promise((resolve) => {
+            window.addEventListener('camellia-ui-preview:release-draft-response', () => resolve(snapshot), { once: true });
+          });
+        }
+        return configurationWorkspaceSnapshot(programId);
       }
-      case 'rebase_configuration_draft': {
+      case 'rebase_final_configuration_draft': {
         const programId = stringArg(args, 'programId');
-        const draft = rawDraftSession(programId);
-        draft.basedOnGeneration = configurationState(programId).generation;
+        const state = configurationState(programId);
+        const draft = finalEditorSession(programId);
+        draft.basedOnStateRevision = state.stateRevision;
+        draft.basedOnCandidateGeneration = state.generation;
         draft.resolutions = {};
         draft.unresolvedConflictIds = draft.conflicts.map((conflict) => conflict.conflictId);
+        draft.rebaseRequired = false;
         draft.draftRevision += 1;
         draft.updatedUnixMs = Date.now();
-        previewRawDrafts.set(programId, structuredClone(draft));
-        return draft;
+        previewFinalDrafts.set(programId, structuredClone(draft));
+        return configurationWorkspaceSnapshot(programId);
       }
-      case 'resolve_configuration_conflict': {
+      case 'resolve_final_draft_conflict': {
         const programId = stringArg(args, 'programId');
         const request = objectArgs(args).request as {
           conflictId?: string;
-          resolution?: RawDraftSession['resolutions'][string];
+          resolution?: FinalEditorSession['resolutions'][string];
         } | undefined;
-        const draft = rawDraftSession(programId);
+        const draft = finalEditorSession(programId);
         const conflict = draft.conflicts.find((item) => item.conflictId === request?.conflictId);
         if (!conflict || !request?.resolution) {
           throw { code: 'NOT_FOUND', message: 'Preview configuration conflict was not found' };
@@ -2695,187 +3134,343 @@ export function installMockBackend() {
         refreshPreviewUnresolvedConflicts(draft);
         draft.draftRevision += 1;
         draft.updatedUnixMs = Date.now();
-        previewRawDrafts.set(programId, structuredClone(draft));
-        return draft;
+        previewFinalDrafts.set(programId, structuredClone(draft));
+        return configurationWorkspaceSnapshot(programId);
       }
-      case 'resolve_raw_decision': {
+      case 'resolve_final_configuration_conflict': {
         const programId = stringArg(args, 'programId');
         const request = objectArgs(args).request as {
-          decisionId?: string;
-          resolution?: import('../types').RawDecisionResolution;
+          conflictId?: string;
+          resolution?: import('../types').FinalConflictResolution;
+          expectedGeneration?: number;
         } | undefined;
-        return updateConfigurationState(programId, (state) => {
-          const decision = previewRawDecisions(state).find(
-            (item) => item.decisionId === request?.decisionId,
-          );
-          if (!decision || !request?.resolution) {
-            throw { code: 'NOT_FOUND', message: 'Preview Raw decision was not found' };
-          }
-          if (request.resolution === 'acceptUpstream') {
-            decision.status = 'dormant';
-          } else if (request.resolution === 'keepRaw') {
-            decision.status = 'resolved';
-          } else {
-            decision.status = 'resolved';
-            decision.operation = {
-              operation: 'set',
-              path: decision.operation.path,
-              value: request.resolution.manualEdit.value,
-            };
-            decision.rawValue = request.resolution.manualEdit.value;
-          }
-          recomputePreviewCandidate(programId, state);
-          const decisionPath = previewPathSegments(decision.operation.path);
-          state.guidedProjection = state.guidedProjection.map((projection) => {
-            const guidedPath = previewGuidedPath(state.kind, projection.settingId);
-            if (!guidedPath || !previewPathsOverlap(guidedPath, decisionPath)) return projection;
-            if (decision.status === 'dormant') {
-              return {
-                ...projection,
-                status: projection.intentValue === undefined ? 'inherited' : 'explicit',
-              };
-            }
-            return { ...projection, status: 'rawDecision' };
-          });
-        });
-      }
-      case 'discard_configuration_draft':
-        previewRawDrafts.delete(stringArg(args, 'programId'));
-        return null;
-      case 'commit_configuration_draft': {
-        const programId = stringArg(args, 'programId');
-        const draft = rawDraftSession(programId);
-        refreshPreviewUnresolvedConflicts(draft);
-        if (draft.unresolvedConflictIds.length > 0) {
-          throw { code: 'CONFIG_CONFLICT', message: 'Resolve all preview conflicts before saving' };
+        const current = configurationState(programId);
+        if (request?.expectedGeneration !== current.generation) {
+          throw { code: 'CONFIG_CONFLICT', message: 'Preview candidate generation is stale' };
         }
+        const conflict = current.workspace.editor.conflicts.find(
+          (item) => item.conflictId === request?.conflictId,
+        );
+        if (!conflict || !request?.resolution) {
+          throw { code: 'NOT_FOUND', message: 'Preview final configuration conflict was not found' };
+        }
+        const resolution = request.resolution;
+        updateConfigurationState(programId, (state) => {
+          const selected = resolution === 'acceptUpstream'
+            ? conflict.upstreamValue
+            : resolution === 'keepMine'
+              ? conflict.userValue
+              : resolution.manualEdit.value;
+          const document = JSON.parse(state.desired.content) as unknown;
+          updatePreviewConflictPath(document, conflict.segments, {
+            present: selected.state === 'present',
+            ...(selected.state === 'present' ? { value: selected.value } : {}),
+          });
+          state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+          state.desired.conflicts = state.desired.conflicts.filter(
+            (item) => item.scope?.ownerId !== conflict.conflictId,
+          );
+          state.workspace.editor.conflicts = state.workspace.editor.conflicts.filter(
+            (item) => item.conflictId !== conflict.conflictId,
+          );
+          state.workspace.editor.changes = selected.state === conflict.upstreamValue.state
+            && (selected.state === 'missing'
+              || JSON.stringify(selected.value) === JSON.stringify(
+                conflict.upstreamValue.state === 'present' ? conflict.upstreamValue.value : undefined,
+              ))
+            ? []
+            : [{
+                editId: `preview-final-edit-${programId}`,
+                semanticPath: conflict.semanticPath,
+                segments: conflict.segments,
+                kind: selected.state === 'missing' ? 'deleted' : 'modified',
+                upstreamValue: structuredClone(conflict.upstreamValue),
+                finalValue: structuredClone(selected),
+                issues: [],
+              } satisfies FinalChangeProjection];
+          state.desired.validation = 'pending';
+          state.desired.validationEvidence = undefined;
+          state.workspace.editor.candidateStatus = 'unsaved';
+        });
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'discard_final_configuration_draft': {
+        const programId = stringArg(args, 'programId');
+        const expectedRevision = objectArgs(args).expectedRevision;
+        const currentDraft = previewFinalDrafts.get(programId);
+        const currentRevision = currentDraft?.draftRevision ?? 0;
+        if (finalDraftDiscardRacePending && currentDraft) {
+          finalDraftDiscardRacePending = false;
+          const conflictId = 'preview-discard-race-conflict';
+          previewFinalDrafts.set(programId, {
+            ...structuredClone(currentDraft),
+            draftRevision: currentDraft.draftRevision + 1,
+            conflicts: [{
+              conflictId,
+              segments: [
+                { kind: 'key', key: 'log' },
+                { kind: 'key', key: 'loglevel' },
+              ],
+              semanticPath: '/log/loglevel',
+              kind: 'modifyVsModify',
+              baseValue: { state: 'present', value: 'warning' },
+              upstreamValue: { state: 'present', value: 'error' },
+              userValue: { state: 'present', value: 'debug' },
+              canMerge: false,
+            }],
+            unresolvedConflictIds: [conflictId],
+            updatedUnixMs: Date.now(),
+          });
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'CONFIGURATION_DRAFT_STALE',
+            message: 'Final configuration draft changed before it could be discarded',
+          };
+        }
+        if (expectedRevision !== currentRevision) {
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'CONFIGURATION_DRAFT_STALE',
+            message: 'Final configuration draft changed before it could be discarded',
+          };
+        }
+        previewFinalDrafts.delete(programId);
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'save_configuration_candidate': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as ConfigurationMutationContext;
+        if (request.kind !== 'save') {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH', message: 'Action changed' };
+        }
+        const recorded = previewOperationResult(programId, request);
+        if (recorded) return { ...configurationWorkspaceSnapshot(programId), operationResult: recorded };
         const currentState = configurationState(programId);
+        if (request.expectedStateRevision !== currentState.stateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE', message: 'Configuration changed' };
+        }
+        const draft = finalEditorSession(programId);
+        if (draft.draftRevision > 0 && (request.editorSessionId !== draft.sessionId
+          || request.expectedDraftRevision !== draft.draftRevision)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE', message: 'Draft changed' };
+        }
+        refreshPreviewUnresolvedConflicts(draft);
+        if (draft.rebaseRequired || draft.unresolvedConflictIds.length > 0) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'FINAL_EDIT_CONFLICT', message: 'Resolve all preview conflicts before saving' };
+        }
         let committedContent = draft.workingContent;
         if (currentState.format === 'jsonc') {
           committedContent = `${JSON.stringify(JSON.parse(draft.workingContent), null, 2)}\n`;
         }
+        const contentChanged = committedContent !== currentState.desired.content;
+        const upstreamContent = previewUpstreamDocuments.get(programId)
+          ?? currentState.desired.content;
         const state = updateConfigurationState(programId, (current) => {
           current.desired.content = committedContent;
           current.desired.validation = 'pending';
           current.desired.validationEvidence = undefined;
           current.desired.diagnostics = [];
           current.desired.conflicts = [];
-        });
+          current.workspace.editor.conflicts = [];
+          current.workspace.editor.changes = previewFinalChanges(upstreamContent, committedContent);
+        }, contentChanged);
+        state.workspace.editor.candidateStatus = 'pendingValidation';
+        state.desired.validation = 'pending';
+        state.desired.validationEvidence = undefined;
+        syncPreviewEditor(state);
         previewConfigurationStates.set(programId, structuredClone(state));
-        previewRawDrafts.delete(programId);
-        return state;
+        previewFinalDrafts.delete(programId);
+        const result: ConfigurationOperationResult = {
+          operationId: request.operationId,
+          status: 'saved',
+          candidateGeneration: state.generation,
+          savedCandidate: structuredClone(state.desired.revision),
+        };
+        previewConfigurationOperations.set(`${programId}:${request.operationId}`, {
+          request: structuredClone(request), result,
+        });
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:configuration-save', { detail: request.operationId }));
+        if (configurationSaveResponseLostPending) {
+          configurationSaveResponseLostPending = false;
+          throw { code: 'TIMEOUT', message: 'The save response was not received.' };
+        }
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
       }
-      case 'validate_configuration_candidate': {
+      case 'set_guided_intent': {
         const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request;
+        const guided = request && typeof request === 'object'
+          ? request as { settingId?: string; value?: unknown }
+          : {};
+        const settingId = guided.settingId;
         const current = configurationState(programId);
-        if (current.desired.conflicts.some((conflict) => conflict.severity === 'error')) {
+        if (!settingId) throw { code: 'INVALID_SPEC', message: 'Preview Guided setting is required' };
+        const projection = current.guidedProjection.find((item) => item.settingId === settingId);
+        const descriptor = current.guidedDescriptors.find((item) => item.id === settingId);
+        if (!projection || !descriptor) {
+          throw { code: 'NOT_FOUND', message: `Preview Guided setting was not found: ${settingId}` };
+        }
+        let nextValue = guided.value;
+        if (nextValue !== undefined && descriptor.control === 'select'
+          && !descriptor.allowedValues.includes(String(nextValue))) {
+          throw { code: 'INVALID_SPEC', message: `Preview Guided value is not allowed: ${settingId}` };
+        }
+        if (nextValue === undefined) {
+          nextValue = previewGuidedSettings(current.kind).projection
+            .find((item) => item.settingId === settingId)?.value;
+        }
+        let upstreamDocument: unknown;
+        try {
+          upstreamDocument = JSON.parse(
+            previewUpstreamDocuments.get(programId) ?? current.workspace.editor.document.content,
+          );
+        } catch {
+          upstreamDocument = {};
+        }
+        setPreviewGuidedPath(
+          upstreamDocument,
+          previewGuidedPath(current.kind, settingId) ?? [],
+          nextValue,
+        );
+        const upstreamContent = previewUpstreamDocuments.get(programId) ?? current.desired.content;
+        const contributions = previewUpstreamContributions.get(programId)!;
+        const owner = `intent:${settingId}`;
+        if (guided.value === undefined) contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+        const changes = guided.value === undefined ? []
+          : previewFinalChanges(upstreamContent, JSON.stringify(upstreamDocument));
+        updatePreviewUpstream(
+          programId,
+          recordPreviewContributions(programId, owner, changes),
+          (state) => {
+            state.guidedProjection = state.guidedProjection.map((item) => item.settingId === settingId
+              ? {
+                  ...item,
+                  status: guided.value === undefined ? 'inherited' : 'explicit',
+                  value: nextValue,
+                  intentValue: guided.value,
+                }
+              : item);
+          },
+        );
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'get_configuration_operation': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as ConfigurationMutationContext;
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: previewOperationResult(programId, request) };
+      }
+      case 'activate_configuration_candidate': {
+        const programId = stringArg(args, 'programId');
+        const admission = configurationState(programId).coreAdmission;
+        if (admission && admission.status !== 'admitted') {
+          throw { code: 'UNSUPPORTED_BINARY', messageKey: admission.messageKey, message: 'Program admission rejected' };
+        }
+        const request = objectArgs(args).request as ConfigurationMutationContext;
+        if (request.kind !== 'apply') {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH', message: 'Action changed' };
+        }
+        const recorded = previewOperationResult(programId, request);
+        if (recorded) return { ...configurationWorkspaceSnapshot(programId), operationResult: recorded };
+        let current = configurationState(programId);
+        if (request.expectedStateRevision !== current.stateRevision) {
           throw {
             code: 'CONFIG_CONFLICT',
-            messageKey: 'CONFIGURATION_CONFLICT',
-            message: 'Resolve all blocking conflicts before validation.',
+            messageKey: 'CONFIGURATION_STATE_STALE',
+            message: 'Configuration changed since it was loaded',
           };
         }
-        return updateConfigurationState(programId, (state) => {
+        const draft = finalEditorSession(programId);
+        if (draft.draftRevision > 0 && (request.editorSessionId !== draft.sessionId
+          || request.expectedDraftRevision !== draft.draftRevision)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE', message: 'Draft changed' };
+        }
+        refreshPreviewUnresolvedConflicts(draft);
+        if (draft.rebaseRequired || draft.unresolvedConflictIds.length > 0) {
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'FINAL_EDIT_CONFLICT',
+            message: 'Resolve final configuration conflicts before applying',
+          };
+        }
+        if (draft.draftRevision > 0) {
+          const committedContent = `${JSON.stringify(JSON.parse(draft.workingContent), null, 2)}\n`;
+          const upstreamContent = previewUpstreamDocuments.get(programId)
+            ?? current.desired.content;
+          current = updateConfigurationState(programId, (state) => {
+            state.desired.content = committedContent;
+            state.desired.validation = 'pending';
+            state.desired.validationEvidence = undefined;
+            state.desired.diagnostics = [];
+            state.desired.conflicts = [];
+            state.workspace.editor.conflicts = [];
+            state.workspace.editor.changes = previewFinalChanges(upstreamContent, committedContent);
+            state.workspace.editor.candidateStatus = 'pendingValidation';
+          }, committedContent !== current.desired.content);
+        }
+        if (configurationNativeRejectionPending) {
+          configurationNativeRejectionPending = false;
+          current = updateConfigurationState(programId, (state) => {
+            state.desired.validation = 'invalid';
+            state.desired.validationEvidence = undefined;
+            state.desired.diagnostics = [{
+              code: 'CORE_INVALID',
+              message: 'The program reported a value with the wrong type.',
+              messageKey: 'CORE_NATIVE_TYPE_REJECTED',
+              scope: { surface: 'configuration' },
+              details: JSON.stringify({
+                messageKey: 'CORE_NATIVE_TYPE_REJECTED',
+                exitCode: 1,
+                stdoutBytes: 240,
+                stderrBytes: 240,
+              }),
+            }];
+            state.workspace.editor.candidateStatus = 'invalid';
+          }, false);
+          const result: ConfigurationOperationResult = {
+            operationId: request.operationId,
+            status: 'rejected',
+            messageKey: 'CORE_INVALID',
+            candidateGeneration: current.generation,
+            savedCandidate: structuredClone(current.desired.revision),
+          };
+          previewConfigurationOperations.set(`${programId}:${request.operationId}`, {
+            request: structuredClone(request), result,
+          });
+          return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
+        }
+        current = updateConfigurationState(programId, (state) => {
           state.desired.validation = 'valid';
           state.desired.validationEvidence = {
             binarySha256: 'a'.repeat(64),
             profileHash: state.compatibilityProfile.profileHash,
             configHash: state.desired.revision.contentHash,
-            validatorContractRevision: 'preview-validator-v1',
+            candidateGeneration: state.generation,
+            validatorContractRevision: 'preview-validator-test',
             nativeAccepted: true,
             validatedUnixMs: Date.now(),
           };
           state.desired.diagnostics = [];
+          state.workspace.editor.candidateStatus = 'validated';
         }, false);
-      }
-      case 'set_guided_intent': {
-        const programId = stringArg(args, 'programId');
-        const request = objectArgs(args).request;
-        const nextState = updateConfigurationState(programId, (state) => {
-          const guided = request && typeof request === 'object' ? request as { settingId?: string; value?: unknown; replaceRawOverride?: boolean } : {};
-          const settingId = guided.settingId;
-          if (!settingId) return;
-          const projection = state.guidedProjection.find((item) => item.settingId === settingId);
-          const descriptor = state.guidedDescriptors.find((item) => item.id === settingId);
-          if (!projection || !descriptor) {
-            throw { code: 'NOT_FOUND', message: `Preview Guided setting was not found: ${settingId}` };
-          }
-          let nextValue = guided.value;
-          if (nextValue !== undefined && descriptor.control === 'select'
-            && !descriptor.allowedValues.includes(String(nextValue))) {
-            throw { code: 'INVALID_SPEC', message: `Preview Guided value is not allowed: ${settingId}` };
-          }
-          if (nextValue === undefined) {
-            // Following source restores the fixture's source-owned value.  It
-            // is intentionally resolved from a fresh descriptor projection,
-            // not from the possibly overridden current projection.
-            nextValue = previewGuidedSettings(state.kind).projection
-              .find((item) => item.settingId === settingId)?.value;
-          }
-          let upstreamDocument: unknown;
-          try {
-            upstreamDocument = JSON.parse(
-              previewUpstreamDocuments.get(programId) ?? state.workspace.editor.content,
-            );
-          } catch {
-            upstreamDocument = {};
-          }
-          setPreviewGuidedPath(
-            upstreamDocument,
-            previewGuidedPath(state.kind, settingId) ?? [],
-            nextValue,
-          );
-          previewUpstreamDocuments.set(programId, `${JSON.stringify(upstreamDocument, null, 2)}\n`);
-          if (projection) {
-            projection.status = guided.value === undefined ? 'inherited' : 'explicit';
-            projection.value = nextValue;
-            projection.intentValue = guided.value;
-          }
-          for (const decision of previewRawDecisions(state)) {
-            const decisionPath = previewPathSegments(decision.operation.path);
-            const guidedPath = previewGuidedPath(state.kind, settingId) ?? [];
-            if ((decision.status === 'active' || decision.status === 'resolved')
-              && previewPathsOverlap(decisionPath, guidedPath)) {
-              decision.status = 'superseded';
-              decision.upstreamValue = previewReadPath(upstreamDocument, decisionPath);
-            }
-          }
-          recomputePreviewCandidate(programId, state);
-          const changedPath = previewGuidedPath(state.kind, settingId) ?? [];
-          const hasRawDecision = previewRawDecisions(state).some((decision) =>
-            decision.status !== 'dormant'
-            && previewPathsOverlap(previewPathSegments(decision.operation.path), changedPath),
-          );
-          state.guidedProjection = state.guidedProjection.map((item) => item.settingId === settingId
-            ? { ...item, status: hasRawDecision ? 'rawDecision' : guided.value === undefined ? 'inherited' : 'explicit', value: nextValue, intentValue: guided.value }
-            : item);
-        });
-        const existingDraft = previewRawDrafts.get(programId);
-        if (existingDraft && existingDraft.draftRevision === 0) {
-          existingDraft.baseContent = nextState.desired.content;
-          existingDraft.userContent = nextState.desired.content;
-          existingDraft.workingContent = nextState.desired.content;
-          existingDraft.basedOnGeneration = nextState.generation;
-          existingDraft.updatedUnixMs = Date.now();
-          previewRawDrafts.set(programId, structuredClone(existingDraft));
-        }
-        return nextState;
-      }
-      case 'apply_configuration_candidate': {
-        const programId = stringArg(args, 'programId');
-        const current = configurationState(programId);
-        if (current.desired.validation !== 'valid' || !current.desired.validationEvidence
-          || current.desired.conflicts.some((conflict) => conflict.severity === 'error')) {
-          throw {
-            code: 'CONFIG_INVALID',
-            messageKey: 'CORE_INVALID',
-            message: 'Save and validate the candidate before applying it.',
-          };
-        }
-        return updateConfigurationState(programId, (state) => {
+        updateConfigurationState(programId, (state) => {
           state.appliedRevision = { ...state.desired.revision };
           state.lastKnownGoodRevision = { ...state.desired.revision };
+          state.workspace.editor.candidateStatus = 'applied';
         }, false);
+        previewFinalDrafts.delete(programId);
+        const result: ConfigurationOperationResult = {
+          operationId: request.operationId,
+          status: 'applied',
+          candidateGeneration: configurationState(programId).generation,
+          savedCandidate: structuredClone(current.desired.revision),
+        };
+        previewConfigurationOperations.set(`${programId}:${request.operationId}`, { request: structuredClone(request), result });
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:configuration-activation', { detail: request.operationId }));
+        if (configurationResponseLostPending) {
+          configurationResponseLostPending = false;
+          throw { code: 'TIMEOUT', message: 'The apply response was not received.' };
+        }
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
       }
       case 'load_configuration_schema': {
         const programId = stringArg(args, 'programId');
@@ -2894,7 +3489,7 @@ export function installMockBackend() {
           contentHash: '0'.repeat(64),
         };
       }
-      case 'run_action': return { stdout: 'Diagnostic completed successfully.', stderr: '' };
+      case 'run_action': return { report: { messageKey: 'CORE_CHECK_COMPLETED', exitCode: 0, stdoutBytes: 0, stderrBytes: 0 } };
       case 'read_logs': {
         const programId = stringArg(args, 'programId');
         const stream = stringArg(args, 'stream') === 'stderr' ? 'stderr' : 'stdout';
@@ -2947,54 +3542,88 @@ export function installMockBackend() {
             spec.managedConfig.remoteUpdate = value.remoteUpdate as typeof spec.managedConfig.remoteUpdate;
           }
         }
-        return updateConfigurationState(programId, (state) => {
-          for (const source of state.sourceStatuses) {
-            if (source.freshness !== 'disabled') source.freshness = 'fresh';
-          }
-        });
+        const spec = specs[programId];
+        const current = configurationState(programId);
+        const sourceContent = spec ? previewInlineSourceContent(spec) : null;
+        const updateSources = (state: ConfigurationStateView) => {
+          state.sourceStatuses = (spec?.managedConfig?.sources ?? []).map((source) => ({
+            sourceId: source.id,
+            sourceName: source.name,
+            freshness: source.enabled ? 'fresh' : 'disabled',
+            ...(source.enabled ? { snapshotHash: previewContentHash(sourceContent ?? source.id) } : {}),
+          }));
+        };
+        if (spec && sourceContent) {
+          const upstream = previewSourceUpdate(programId, sourceContent, command === 'update_configuration_sources');
+          updatePreviewUpstream(programId, upstream, updateSources);
+        } else {
+          updateConfigurationState(programId, updateSources, false);
+        }
+        return configurationWorkspaceSnapshot(programId);
       }
-      case 'replace_package':
-        return null;
+      case 'replace_package': {
+        const request = objectArgs(args);
+        const programId = String(request.programId);
+        const spec = specs[programId];
+        if (!spec || spec.executable.mode !== 'managed') {
+          throw { code: 'INVALID_STATE', message: 'A managed program is required.' };
+        }
+        if (states[programId]?.status === 'running') {
+          throw { code: 'INVALID_STATE', message: 'Stop the program before replacement.' };
+        }
+        if (spec.type.kind !== 'generic' && request.expectedStateRevision !== configurationState(programId).stateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE', message: 'Workspace changed.' };
+        }
+        const metadata = spec.executable.metadata;
+        if (metadata) {
+          metadata.fingerprint.sha256 = previewContentHash(String(request.packageSource));
+          metadata.fingerprint.modifiedUnixMs = Date.now();
+          if (metadata.coreTarget) metadata.coreTarget.fingerprintSha256 = metadata.fingerprint.sha256;
+        }
+        if (spec.type.kind === 'generic') return null;
+        updateConfigurationState(programId, (state) => {
+          state.compatibilityProfile.profileHash = previewContentHash(JSON.stringify(metadata));
+          if (metadata?.coreTarget) state.compatibilityProfile.target = structuredClone(metadata.coreTarget);
+          state.desired.compatibilityProfileHash = state.compatibilityProfile.profileHash;
+          state.desired.validation = 'pending';
+          state.desired.validationEvidence = undefined;
+          state.desired.diagnostics = [];
+        });
+        return configurationWorkspaceSnapshot(programId);
+      }
       default:
         if (command.startsWith('plugin:')) return null;
         throw { code: 'MOCK_COMMAND_UNIMPLEMENTED', message: `No UI preview response for ${command}` };
     }
   };
+  const invokeWithResponseControl = (command: string, args?: InvokeArgs) => {
+    const result = handlePreviewInvoke(command, args);
+    if (configurationResponseHeldPending
+      && ['save_configuration_candidate', 'activate_configuration_candidate'].includes(command)) {
+      configurationResponseHeldPending = false;
+      window.dispatchEvent(new Event('camellia-ui-preview:configuration-response-held'));
+      return new Promise((resolve) => {
+        window.addEventListener('camellia-ui-preview:release-configuration-response', () => resolve(result), { once: true });
+      });
+    }
+    return result;
+  };
   if (nativeWindowAvailable) {
-    installPreviewInvokeTransport(handlePreviewInvoke);
+    installPreviewInvokeTransport(invokeWithResponseControl);
   } else {
     mockWindows('main');
-    mockIPC(handlePreviewInvoke, { shouldMockEvents: true });
+    mockIPC(invokeWithResponseControl, { shouldMockEvents: true });
   }
-
   window.addEventListener('camellia-ui-preview:automatic-config-update', (event) => {
     const detail = (event as CustomEvent<{ programId?: string }>).detail;
     const programId = detail?.programId ?? 'xray-primary';
     const content = '{\n  "log": { "loglevel": "debug" },\n  "automatic": true\n}\n';
-    const state = updateConfigurationState(programId, (current) => {
-      current.desired.content = content;
-      current.desired.validation = 'valid';
-      current.desired.diagnostics = [];
-      current.desired.conflicts = [];
-      const logging = current.guidedProjection.find(
-        (projection) => projection.settingId === 'logging.level',
-      );
-      if (logging) {
-        logging.status = 'inherited';
-        logging.value = 'debug';
-      }
+    configurationState(programId);
+    updatePreviewUpstream(programId, previewSourceUpdate(programId, content, false), (current) => {
       if (current.sourceStatuses[0]) {
         current.sourceStatuses[0].sourceName = 'Automatically refreshed source';
         current.sourceStatuses[0].freshness = 'fresh';
       }
-    });
-    state.desired.revision.contentHash = 'preview-automatic-hash';
-    state.appliedRevision = { ...state.desired.revision };
-    state.lastKnownGoodRevision = { ...state.desired.revision };
-    previewConfigurationStates.set(programId, structuredClone(state));
-    previewConfigurationDocuments.set(programId, {
-      content,
-      baseHash: state.desired.revision.contentHash,
     });
     void emit('automatic-config-update', { programId, succeeded: true }).catch(() => null);
   });

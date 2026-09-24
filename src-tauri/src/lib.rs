@@ -82,6 +82,15 @@ impl RuntimeAuthorizationCoordinator {
         self.gate.read().await
     }
 
+    pub(crate) async fn authorized_mutation_permit(
+        &self,
+        authorize: impl FnOnce() -> camellia_nexus_core::Result<()>,
+    ) -> camellia_nexus_core::Result<tokio::sync::RwLockReadGuard<'_, ()>> {
+        let guard = self.mutation_permit().await;
+        authorize()?;
+        Ok(guard)
+    }
+
     pub(crate) async fn transition_permit(&self) -> tokio::sync::RwLockWriteGuard<'_, ()> {
         self.gate.write().await
     }
@@ -285,9 +294,9 @@ pub fn run() {
             for invalid in &report.invalid {
                 tracing::warn!(path = %invalid.path.display(), error = %invalid.error, "ignored invalid program workspace");
             }
-            if let Err(error) = tauri::async_runtime::block_on(config_credentials.recover(&manager))
+            if let Err(error) = tauri::async_runtime::block_on(config_credentials.recover(&manager, &configuration_state))
             {
-                tracing::error!(%error, "configuration credential recovery is unavailable; credential-dependent updates remain disabled");
+                tracing::error!(code = ?error.code, "configuration credential recovery is unavailable; credential-dependent updates remain disabled");
             }
             let license_runtime_impact = commands::license_runtime_impact(
                 &authorization.state_at(licensing::unix_now()),
@@ -511,22 +520,19 @@ pub fn run() {
             commands::run_action,
             commands::load_config,
             commands::load_configuration_schema,
-            commands::get_configuration_state,
             commands::get_configuration_workspace,
             commands::set_guided_intent,
             commands::preview_configuration_import,
-            commands::get_configuration_editor_session,
-            commands::save_configuration_draft,
-            commands::rebase_configuration_draft,
-            commands::resolve_configuration_conflict,
-            commands::resolve_raw_decision,
-            commands::discard_configuration_draft,
-            commands::commit_configuration_draft,
-            commands::validate_configuration_candidate,
-            commands::apply_configuration_candidate,
+            commands::update_final_configuration_draft,
+            commands::rebase_final_configuration_draft,
+            commands::resolve_final_draft_conflict,
+            commands::resolve_final_configuration_conflict,
+            commands::discard_final_configuration_draft,
+            commands::save_configuration_candidate,
+            commands::activate_configuration_candidate,
+            commands::get_configuration_operation,
             commands::refresh_configuration_sources,
             commands::update_configuration_sources,
-            commands::update_configuration_compatibility,
             commands::read_logs,
             commands::clear_logs,
             commands::open_working_directory,
@@ -687,7 +693,7 @@ mod tests {
     use camellia_nexus_core::{
         CamelliaNexusError, CreateProgramRequest, ErrorCode, ExecutableSpec, LaunchPlan,
         ManagedProcess, ManagerEvent, PrivilegePolicy, ProcessDriver, ProcessExit, ProgramId,
-        ProgramManager, ProgramSpec, ProgramState, ProgramType, RestartPolicy, SCHEMA_VERSION,
+        ProgramManager, ProgramSpec, ProgramState, ProgramType, RestartPolicy,
     };
 
     #[cfg(feature = "desktop")]
@@ -700,6 +706,99 @@ mod tests {
         code: Some(143),
         success: false,
     };
+
+    fn write_admission_binary(path: &std::path::Path, version: &str) {
+        let script = format!(
+            "#!/bin/sh\ncase \"$1\" in\nversion) echo 'sing-box version {version}' ;;\ncheck) if [ \"$2\" = '--help' ]; then echo '-c --config -D --directory'; fi ;;\nformat) echo '-w' ;;\nschema) exit 1 ;;\n*) exit 1 ;;\nesac\n"
+        );
+        std::fs::write(path, script).expect("write admission fixture");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("fixture permissions");
+    }
+
+    #[tokio::test]
+    async fn rejected_core_registration_leaves_no_program_and_can_retry_with_a_stable_binary() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("sing-box");
+        let store = Arc::new(FileStore::new(directory.path().join("store")).unwrap());
+        let manager = ProgramManager::new(
+            Arc::new(NativeProcessDriver::default()),
+            store.clone(),
+            store.clone(),
+            Arc::new(NativeToolRunner::default()),
+        );
+        manager.initialize_without_auto_start().await.unwrap();
+        let id = ProgramId::parse("admission-fixture").unwrap();
+        let spec = ProgramSpec {
+            id: id.clone(),
+            name: "Admission fixture".into(),
+            executable: ExecutableSpec::External {
+                path: binary.clone(),
+                metadata: None,
+            },
+            program_type: ProgramType::SingBox {
+                extra_args: Vec::new(),
+            },
+            managed_config: None,
+            working_directory: directory.path().to_owned(),
+            environment: BTreeMap::new(),
+            auto_start: false,
+            restart_policy: RestartPolicy::Never,
+            privilege_policy: Default::default(),
+        };
+        for (version, key) in [
+            ("0.0.1", "CORE_VERSION_TOO_OLD"),
+            ("999.0.0", "CORE_VERSION_NOT_MAINTAINED"),
+            ("999.0.0-beta.1", "CORE_PRERELEASE_NOT_SUPPORTED"),
+            ("unknown with go1.14.0", "CORE_VERSION_UNRECOGNIZED"),
+        ] {
+            write_admission_binary(&binary, version);
+            let error = manager
+                .create(CreateProgramRequest {
+                    spec: spec.clone(),
+                    package_source: None,
+                    initial_config: Some("{}".into()),
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedBinary);
+            assert_eq!(error.message_key.as_deref(), Some(key));
+            assert!(manager.list().await.is_empty());
+            assert!(!directory.path().join("store").join(id.as_str()).exists());
+        }
+        let knowledge = camellia_nexus_core::embedded_core_knowledge().unwrap();
+        let release = knowledge
+            .program(camellia_nexus_core::ProgramKind::SingBox)
+            .unwrap()
+            .releases
+            .last()
+            .unwrap();
+        write_admission_binary(&binary, &release.version);
+        manager
+            .create(CreateProgramRequest {
+                spec,
+                package_source: None,
+                initial_config: Some("{}".into()),
+            })
+            .await
+            .unwrap();
+        let (registered, state) = manager.get(&id).await.unwrap();
+        assert_eq!(state, ProgramState::Stopped);
+        let original = manager.load_config(&id).await.unwrap();
+
+        write_admission_binary(&binary, "0.0.1");
+        let error = manager.refresh_binary_identity(&id).await.unwrap_err();
+        assert_eq!(error.message_key.as_deref(), Some("CORE_VERSION_TOO_OLD"));
+        assert_eq!(manager.get(&id).await.unwrap().0, registered);
+        assert_eq!(
+            manager.load_config(&id).await.unwrap().content,
+            original.content
+        );
+        let error = manager.restart(&id).await.unwrap_err();
+        assert_eq!(error.message_key.as_deref(), Some("CORE_VERSION_TOO_OLD"));
+        assert_eq!(manager.get(&id).await.unwrap().1, ProgramState::Stopped);
+        manager.stop(&id).await.unwrap();
+    }
 
     #[tokio::test]
     async fn sing_box_schema_loading_is_deduplicated_and_bound_to_the_binary() {
@@ -753,12 +852,10 @@ esac
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: "Schema cache fixture".into(),
                     executable: ExecutableSpec::External {
                         path: binary.clone(),
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::SingBox {
@@ -844,6 +941,49 @@ esac
         drop(mutation);
         task.await.expect("transition task");
         assert_eq!(completed.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn queued_mutation_rechecks_authorization_and_releases_a_rejected_permit() {
+        let coordinator = Arc::new(RuntimeAuthorizationCoordinator::new());
+        let allowed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let transition = coordinator.transition_permit().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let task = {
+            let coordinator = coordinator.clone();
+            let allowed = allowed.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                coordinator
+                    .authorized_mutation_permit(|| {
+                        if allowed.load(Ordering::Acquire) {
+                            Ok(())
+                        } else {
+                            Err(camellia_nexus_core::CamelliaNexusError::new(
+                                camellia_nexus_core::ErrorCode::InvalidState,
+                                "Fixture authorization denied",
+                            ))
+                        }
+                    })
+                    .await
+                    .is_err()
+            })
+        };
+        barrier.wait().await;
+        allowed.store(false, Ordering::Release);
+        drop(transition);
+        assert!(task.await.expect("queued authorization"));
+        let transition = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            coordinator.transition_permit(),
+        )
+        .await
+        .expect("rejected permit was released");
+        allowed.store(true, Ordering::Release);
+        drop(transition);
+        let permit = coordinator.authorized_mutation_permit(|| Ok(())).await;
+        assert!(permit.is_ok());
     }
 
     #[tokio::test]
@@ -1059,12 +1199,10 @@ esac
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: id.as_str().into(),
                     executable: ExecutableSpec::External {
                         path: executable,
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic { args: Vec::new() },
@@ -1092,12 +1230,10 @@ esac
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: id.as_str().into(),
                     executable: ExecutableSpec::External {
                         path: executable,
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1238,12 +1374,10 @@ esac
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: "Managed fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1288,12 +1422,10 @@ esac
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: "Stop retry fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1611,12 +1743,10 @@ esac
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: "Retry fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1689,12 +1819,10 @@ esac
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: "Exited fixture".into(),
                     executable: ExecutableSpec::External {
                         path: PathBuf::from("/bin/sh"),
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic {
@@ -1752,12 +1880,10 @@ esac
         );
         manager.initialize().await.expect("initialize");
         let spec = |id: &str, program_type: ProgramType| ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse(id).expect("id"),
             name: id.into(),
             executable: ExecutableSpec::External {
                 path: PathBuf::from("/bin/sh"),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type,
@@ -1807,12 +1933,10 @@ esac
         let directory = tempfile::tempdir().expect("tempdir");
         let programs = directory.path().join("programs");
         let make_spec = |id: &str, program_type: ProgramType| ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse(id).expect("id"),
             name: id.into(),
             executable: ExecutableSpec::External {
                 path: PathBuf::from("/bin/sh"),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type,
@@ -1876,12 +2000,10 @@ esac
             manager
                 .create(CreateProgramRequest {
                     spec: ProgramSpec {
-                        schema_version: SCHEMA_VERSION,
                         id: id.clone(),
                         name: format!("Parallel {index}"),
                         executable: ExecutableSpec::External {
                             path: executable,
-                            compatibility: Default::default(),
                             metadata: None,
                         },
                         program_type: ProgramType::Generic {
@@ -1935,10 +2057,17 @@ esac
     async fn failed_config_stabilization_restores_and_runs_the_backup() {
         let directory = tempfile::tempdir().expect("tempdir");
         let binary = directory.path().join("fake-xray");
+        let baseline = camellia_nexus_core::embedded_core_knowledge()
+            .unwrap()
+            .program(camellia_nexus_core::ProgramKind::Xray)
+            .unwrap()
+            .releases
+            .last()
+            .unwrap();
         std::fs::write(
             &binary,
             r#"#!/bin/sh
-if [ "$1" = "version" ]; then echo "Xray 1.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "Xray FIXTURE_VERSION"; exit 0; fi
 if [ "$1" = "help" ]; then echo "-c -format -test -dump"; exit 0; fi
 test_mode=0
 dump_mode=0
@@ -1957,7 +2086,8 @@ if [ "$test_mode" -eq 1 ]; then
 fi
 if grep -q 'runtimeFail' "$config"; then exit 1; fi
 sleep 30
-"#,
+"#
+            .replace("FIXTURE_VERSION", &baseline.version),
         )
         .expect("write fake xray");
         let mut permissions = std::fs::metadata(&binary).expect("metadata").permissions();
@@ -1977,12 +2107,10 @@ sleep 30
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: "Rollback fixture".into(),
                     executable: ExecutableSpec::External {
                         path: binary,
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Xray {
@@ -1996,7 +2124,7 @@ sleep 30
                     privilege_policy: Default::default(),
                 },
                 package_source: None,
-                initial_config: Some(r#"{"stable":true}"#.into()),
+                initial_config: Some(r#"{"log":{"loglevel":"info"}}"#.into()),
             })
             .await
             .expect("create");
@@ -2004,7 +2132,7 @@ sleep 30
             .initialize_created(&manager, &id, None)
             .await
             .expect("initialize configuration state");
-        manager.start(&id).await.expect("start old config");
+        manager.start(&id).await.expect("start initial config");
         let (expected_spec, _) = manager.get(&id).await.expect("get spec");
         let document = manager.load_config(&id).await.expect("load config");
         let mut renamed_spec = expected_spec.clone();
@@ -2014,7 +2142,7 @@ sleep 30
             .apply_config(
                 &id,
                 &expected_spec,
-                r#"{"stale":true}"#.into(),
+                r#"{"log":{"loglevel":"debug"}}"#.into(),
                 document.base_hash.clone(),
                 true,
             )
@@ -2029,7 +2157,7 @@ sleep 30
             .apply_config(
                 &id,
                 &expected_spec,
-                r#"{"runtimeFail":true}"#.into(),
+                r#"{"log":{"error":"runtimeFail"}}"#.into(),
                 document.base_hash,
                 true,
             )
@@ -2042,94 +2170,96 @@ sleep 30
                 .await
                 .expect("load restored config")
                 .content,
-            r#"{"stable":true}"#
+            r#"{"log":{"loglevel":"info"}}"#
         );
         assert!(matches!(
             manager.get(&id).await.expect("get").1,
             ProgramState::Running { .. }
         ));
 
-        let (before_transaction, _) = manager.get(&id).await.expect("transaction spec");
-        let transaction_document = manager.load_config(&id).await.expect("transaction config");
-        let mut rejected_spec = before_transaction.clone();
-        rejected_spec.name = "Rejected transaction".into();
-        let prepared_update = manager
-            .prepare_update(rejected_spec)
+        let (expected_spec, runtime) = manager.get(&id).await.expect("prepare settings CAS");
+        let document = manager
+            .load_config(&id)
             .await
-            .expect("prepare settings");
-        let prepared_config = manager
+            .expect("active configuration");
+        let prepared = manager
             .prepare_config(
                 &id,
-                prepared_update.expected_spec(),
-                prepared_update.next_spec(),
-                r#"{"runtimeFail":true}"#.into(),
-                transaction_document.base_hash,
+                &expected_spec,
+                r#"{"log":{"loglevel":"warning"}}"#.into(),
+                document.base_hash.clone(),
             )
             .await
-            .expect("prepare configuration");
-        let error = manager
-            .commit_update_and_apply_config(prepared_update, prepared_config, true)
-            .await
-            .expect_err("failed stabilization must roll back settings and configuration");
-        assert_eq!(error.code, ErrorCode::ConfigInvalid, "{error:?}");
-        assert_eq!(
-            manager.get(&id).await.expect("rolled back spec").0,
-            before_transaction
-        );
-        assert_eq!(
-            manager
-                .load_config(&id)
-                .await
-                .expect("rolled back config")
-                .content,
-            r#"{"stable":true}"#
-        );
-        assert!(matches!(
-            manager.get(&id).await.expect("running after rollback").1,
-            ProgramState::Running { .. }
-        ));
-
-        let (expected_spec, _) = manager.get(&id).await.expect("concurrency spec");
-        let document = manager.load_config(&id).await.expect("concurrency config");
-        let mut prepared_spec = expected_spec.clone();
-        prepared_spec.name = "Prepared transaction".into();
-        let prepared_update = manager
-            .prepare_update(prepared_spec)
-            .await
-            .expect("prepare competing settings");
-        let prepared_config = manager
-            .prepare_config(
-                &id,
-                prepared_update.expected_spec(),
-                prepared_update.next_spec(),
-                r#"{"prepared":true}"#.into(),
-                document.base_hash,
-            )
-            .await
-            .expect("prepare competing config");
-        let mut competing_spec = expected_spec;
-        competing_spec.name = "Competing committed settings".into();
+            .expect("prepare candidate");
+        let staged_path = prepared.staged.path.clone();
+        let mut renamed = expected_spec.clone();
+        renamed.name = "Renamed after validation".into();
         manager
-            .update(competing_spec.clone())
+            .update(renamed.clone())
             .await
-            .expect("commit competing settings");
-        let conflict = manager
-            .commit_update_and_apply_config(prepared_update, prepared_config, true)
+            .expect("update settings");
+        let error = manager
+            .apply_prepared_config(&id, &expected_spec, prepared, true)
             .await
-            .expect_err("stale compound transaction must not overwrite competing settings");
-        assert_eq!(conflict.code, ErrorCode::ConfigConflict);
+            .expect_err("prepared candidate must not cross a settings update");
+        assert_eq!(error.code, ErrorCode::ConfigConflict);
+        assert_eq!(manager.get(&id).await.unwrap(), (renamed, runtime));
         assert_eq!(
-            manager.get(&id).await.expect("competing spec remains").0,
-            competing_spec
+            manager.load_config(&id).await.unwrap().base_hash,
+            document.base_hash
         );
-        assert_eq!(
-            manager
-                .load_config(&id)
+        assert!(!staged_path.exists());
+
+        for tamper in ["staged candidate", "binary"] {
+            let (expected_spec, runtime) = manager.get(&id).await.expect("prepared identity");
+            let document = manager.load_config(&id).await.expect("active candidate");
+            let prepared = manager
+                .prepare_config(
+                    &id,
+                    &expected_spec,
+                    r#"{"log":{"loglevel":"warning"}}"#.into(),
+                    document.base_hash.clone(),
+                )
                 .await
-                .expect("unchanged config")
-                .content,
-            r#"{"stable":true}"#
-        );
+                .expect("prepare identity-bound candidate");
+            let staged_path = prepared.staged.path.clone();
+            let ExecutableSpec::External { path: binary, .. } = &expected_spec.executable else {
+                panic!("external fixture");
+            };
+            let original_binary = std::fs::read(binary).expect("fixture bytes");
+            let expected_key = if tamper == "staged candidate" {
+                std::fs::write(&staged_path, r#"{"log":{"loglevel":"error"}}"#)
+                    .expect("replace staged candidate");
+                "CORE_VALIDATION_EVIDENCE_STALE"
+            } else {
+                let mut changed = original_binary.clone();
+                changed.extend_from_slice(b"\n# replaced binary\n");
+                std::fs::write(binary, changed).expect("replace binary");
+                "CORE_TARGET_CHANGED"
+            };
+            let rejected = manager
+                .apply_prepared_config(&id, &expected_spec, prepared, true)
+                .await
+                .expect_err("changed validation inputs cannot commit");
+            assert_eq!(rejected.message_key.as_deref(), Some(expected_key));
+            assert!(!staged_path.exists(), "rejected candidate is discarded");
+            assert_eq!(
+                manager.get(&id).await.unwrap().1,
+                runtime,
+                "no process restart"
+            );
+            assert_eq!(
+                manager.load_config(&id).await.unwrap().base_hash,
+                document.base_hash
+            );
+            if tamper == "binary" {
+                std::fs::write(binary, original_binary).expect("restore fixture binary");
+                manager
+                    .refresh_binary_identity(&id)
+                    .await
+                    .expect("reidentify fixture");
+            }
+        }
 
         let expected_spec = manager.get(&id).await.expect("CAS spec").0;
         let document = manager.load_config(&id).await.expect("CAS config");
@@ -2137,8 +2267,7 @@ sleep 30
             .prepare_config(
                 &id,
                 &expected_spec,
-                &expected_spec,
-                r#"{"prepared":true}"#.into(),
+                r#"{"log":{"loglevel":"warning"}}"#.into(),
                 document.base_hash,
             )
             .await
@@ -2154,7 +2283,11 @@ sleep 30
             .apply_prepared_config(&id, &expected_spec, prepared, true)
             .await
             .expect_err("external edit must win the final CAS");
-        assert_eq!(conflict.code, ErrorCode::ConfigConflict);
+        assert_eq!(conflict.code, ErrorCode::Storage);
+        assert_eq!(
+            conflict.message_key.as_deref(),
+            Some("CONFIGURATION_RECOVERY_REQUIRED")
+        );
         assert_eq!(
             std::fs::read_to_string(&config_path).expect("external config remains"),
             r#"{"external":true}"#
@@ -2192,12 +2325,10 @@ sleep 30
         manager
             .create(CreateProgramRequest {
                 spec: ProgramSpec {
-                    schema_version: SCHEMA_VERSION,
                     id: id.clone(),
                     name: "Managed package".into(),
                     executable: ExecutableSpec::Managed {
                         path: PathBuf::from("bin/tool"),
-                        compatibility: Default::default(),
                         metadata: None,
                     },
                     program_type: ProgramType::Generic { args: Vec::new() },
@@ -2225,7 +2356,7 @@ sleep 30
             .await
             .expect("commit competing update");
         let conflict = manager
-            .commit_package(prepared)
+            .commit_package(prepared, None)
             .await
             .expect_err("stale package must not overwrite settings");
         assert_eq!(conflict.code, ErrorCode::ConfigConflict);
@@ -2242,7 +2373,7 @@ sleep 30
             .await
             .expect("prepare current package");
         manager
-            .commit_package(prepared)
+            .commit_package(prepared, None)
             .await
             .expect("commit package");
         assert_eq!(

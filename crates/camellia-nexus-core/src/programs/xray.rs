@@ -8,8 +8,7 @@ use crate::{
 };
 
 use super::{
-    ProgramAdapter, all_action_states, base_launch_plan, config_privilege_inputs, omit_leading_run,
-    tool_plan,
+    ProgramAdapter, base_launch_plan, config_privilege_inputs, omit_leading_run, tool_plan,
 };
 
 pub struct XrayAdapter;
@@ -38,11 +37,10 @@ impl ProgramAdapter for XrayAdapter {
         {
             return Err(unsupported("Xray CLI capabilities are unsupported"));
         }
-        let reported = version
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .map(|line| line.trim().to_owned());
-        let mut probe = crate::CoreProbeReport::from_reported_version(reported);
+        let mut probe = crate::CoreProbeReport::from_program_output(
+            crate::ProgramKind::Xray,
+            &outputs[0].stdout,
+        );
         probe.cli_observations = vec![
             crate::CoreCliObservation {
                 id: "core.cli.nativeValidation".into(),
@@ -53,12 +51,8 @@ impl ProgramAdapter for XrayAdapter {
                 available: help.contains("-dump"),
             },
         ];
-        let core_target = crate::embedded_core_compatibility_catalog()?.resolve_target(
-            crate::ProgramKind::Xray,
-            &probe,
-            &crate::CoreCompatibilityPreference::Automatic,
-            None,
-        )?;
+        let core_target =
+            crate::CoreTargetIdentity::from_probe(crate::ProgramKind::Xray, &probe, None)?;
         Ok(DetectedBinary {
             probe: Some(probe),
             core_target: Some(core_target),
@@ -120,39 +114,14 @@ impl ProgramAdapter for XrayAdapter {
     }
 
     fn actions(&self, _state: &ProgramState) -> Vec<ActionDescriptor> {
-        vec![ActionDescriptor {
-            id: "dump-config".into(),
-            label: "Dump parsed configuration".into(),
-            allowed_states: all_action_states(),
-            confirmation: false,
-        }]
+        Vec::new()
     }
 
-    fn action_plan(&self, action_id: &str, context: &ActionContext) -> Result<ActionPlan> {
-        if action_id != "dump-config" {
-            return Err(CamelliaNexusError::new(
-                ErrorCode::NotFound,
-                "Unknown Xray action",
-            ));
-        }
-        let staged = &context.staged_config;
-        let ProgramType::Xray { extra_args, .. } = &context.spec.program_type else {
-            return Err(CamelliaNexusError::invalid_spec(
-                "Xray action received a different program kind",
-            ));
-        };
-        let selected = config_arguments(omit_leading_run(extra_args));
-        let mut args = vec!["run".into(), "-test".into(), "-dump".into()];
-        if !contains_option(&selected, &["-format"]) {
-            args.push("-format=json".into());
-        }
-        args.extend(selected);
-        args.extend(["-c".into(), staged.to_string_lossy().into_owned()]);
-        Ok(ActionPlan::Run(tool_plan(
-            &context.spec,
-            &context.workspace,
-            args,
-        )))
+    fn action_plan(&self, _action_id: &str, _context: &ActionContext) -> Result<ActionPlan> {
+        Err(CamelliaNexusError::new(
+            ErrorCode::NotFound,
+            "Unknown Xray action",
+        ))
     }
 
     fn privilege_inputs(&self, args: &[String], cwd: &Path) -> Vec<PrivilegeConfigInput> {
@@ -216,12 +185,10 @@ mod tests {
 
     fn spec(extra_args: Vec<String>) -> ProgramSpec {
         ProgramSpec {
-            schema_version: crate::SCHEMA_VERSION,
             id: crate::ProgramId::parse("xray-test").expect("id"),
             name: "Xray".into(),
             executable: crate::ExecutableSpec::Managed {
                 path: "bin/xray".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Xray { extra_args },
@@ -274,7 +241,6 @@ mod tests {
         let mut external = spec(vec!["run".into()]);
         external.executable = crate::ExecutableSpec::External {
             path: "/tools/xray/xray".into(),
-            compatibility: Default::default(),
             metadata: None,
         };
         external.working_directory = "/tools/xray".into();

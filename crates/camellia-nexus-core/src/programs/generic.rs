@@ -73,12 +73,10 @@ mod tests {
     #[test]
     fn preserves_every_user_argument_for_external_programs() {
         let spec = ProgramSpec {
-            schema_version: crate::SCHEMA_VERSION,
             id: crate::ProgramId::parse("generic-test").expect("id"),
             name: "Generic".into(),
             executable: crate::ExecutableSpec::External {
                 path: "/tools/program/program".into(),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Generic {

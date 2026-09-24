@@ -60,7 +60,7 @@ pub(crate) fn initialize() -> Arc<AuthorizationService> {
     )
     .expect("embedded entitlement public keys must be valid ES256 keys");
     let secure_store = secure_store();
-    let service = Arc::new(AuthorizationService::initialize(
+    Arc::new(AuthorizationService::initialize(
         secure_store,
         LicensingAuthority {
             issuer: authority.issuer,
@@ -71,8 +71,7 @@ pub(crate) fn initialize() -> Arc<AuthorizationService> {
         ClientBuildIdentity::parse(env!("CARGO_PKG_VERSION"))
             .expect("Cargo package version must be canonical SemVer"),
         unix_now(),
-    ));
-    service
+    ))
 }
 
 fn embedded_authority() -> EmbeddedAuthority {

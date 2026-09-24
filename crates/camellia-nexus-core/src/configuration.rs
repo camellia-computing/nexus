@@ -3,20 +3,21 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+mod operations;
+mod upstream;
+pub use operations::*;
+pub use upstream::{SourceUpdateKind, UpstreamState};
+
 use crate::share_compatibility::{
     SourceItemProvenance, SourceParseSummary, TranslationFidelity, preview_share_import_for_version,
 };
 use crate::{
     CamelliaNexusError, CoreCompatibilityProfile, CoreTargetIdentity, CoreValidationEvidence,
     ErrorCode, ManagedConfigSpec, ProgramKind, Result, XrayDashboardSpec,
-    config_service::hash_bytes, embedded_core_compatibility_catalog,
-    embedded_core_upstream_manifest, normalize_dashboard_interval, normalize_jsonc,
+    config_service::hash_bytes, normalize_dashboard_interval, normalize_jsonc,
     parse_dashboard_interval_nanos,
 };
 
-pub const CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 5;
-pub const LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 4;
-const LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION: u32 = 3;
 const DASHBOARD_INTENT_PREFIX: &str = "dashboard.";
 const MANAGED_SING_BOX_API_TAG: &str = "camellia-nexus-api";
 const MANAGED_SING_BOX_CLASH_UI: &str = "clash-dashboard";
@@ -80,7 +81,7 @@ pub struct SourceStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
+    pub message_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_unix_ms: Option<u64>,
 }
@@ -163,7 +164,8 @@ impl SourceSnapshot {
             return Err(CamelliaNexusError::new(
                 ErrorCode::ConfigInvalid,
                 "Share source contains no translatable items",
-            ));
+            )
+            .with_message_key("SOURCE_NO_COMPATIBLE_ITEMS"));
         }
         let mut fragments = Vec::new();
         let mut provenance = Vec::new();
@@ -208,7 +210,8 @@ impl SourceSnapshot {
             return Err(CamelliaNexusError::new(
                 ErrorCode::ConfigInvalid,
                 "Share source contains no compatible items for this Core",
-            ));
+            )
+            .with_message_key("SOURCE_NO_COMPATIBLE_ITEMS"));
         }
         let value = match kind {
             ProgramKind::SingBox | ProgramKind::Xray => json!({ "outbounds": fragments }),
@@ -243,10 +246,8 @@ impl SourceSnapshot {
 pub struct ProvenanceEntry {
     pub semantic_path: String,
     pub source_ids: Vec<String>,
-    #[serde(default)]
-    pub guided: bool,
-    #[serde(default)]
-    pub raw: bool,
+    pub upstream: bool,
+    pub final_edit: bool,
 }
 
 pub type Provenance = Vec<ProvenanceEntry>;
@@ -268,14 +269,13 @@ pub struct ConfigurationConflict {
     /// while clients use this key for the localized explanation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_key: Option<String>,
-    #[serde(default)]
     pub scope: ConfigurationIssueScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guided_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_value: Option<Value>,
+    pub user_value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_value: Option<Value>,
 }
@@ -636,7 +636,7 @@ fn insert_source_value_conflict(
             scope: ConfigurationIssueScope::sources(right_source.to_owned()),
             source_value: Some(left.clone()),
             guided_value: None,
-            raw_value: Some(right.clone()),
+            user_value: Some(right.clone()),
             effective_value: Some(effective.clone()),
         }
     });
@@ -1156,8 +1156,8 @@ fn collect_provenance_paths(
                 prefix.to_owned()
             },
             source_ids: source_ids.clone(),
-            guided: false,
-            raw: false,
+            upstream: false,
+            final_edit: false,
         }),
         ProvenanceNode::Object { fields, source_ids } => {
             if fields.is_empty() {
@@ -1168,8 +1168,8 @@ fn collect_provenance_paths(
                         prefix.to_owned()
                     },
                     source_ids: source_ids.clone(),
-                    guided: false,
-                    raw: false,
+                    upstream: false,
+                    final_edit: false,
                 });
             } else {
                 for (key, child) in fields {
@@ -1187,8 +1187,8 @@ fn collect_provenance_paths(
                         prefix.to_owned()
                     },
                     source_ids: source_ids.clone(),
-                    guided: false,
-                    raw: false,
+                    upstream: false,
+                    final_edit: false,
                 });
             } else {
                 for (index, child) in items.iter().enumerate() {
@@ -1202,8 +1202,8 @@ fn collect_provenance_paths(
 
 #[derive(Debug, Clone, Copy)]
 enum ProvenanceLayer {
-    Guided,
-    Raw,
+    Upstream,
+    FinalEdit,
 }
 
 fn apply_provenance_layer(
@@ -1265,8 +1265,8 @@ fn reconcile_provenance(
                         ProvenanceEntry {
                             semantic_path: String::new(),
                             source_ids: Vec::new(),
-                            guided: false,
-                            raw: false,
+                            upstream: false,
+                            final_edit: false,
                         },
                         layer,
                         output,
@@ -1306,8 +1306,8 @@ fn reconcile_provenance(
                             ProvenanceEntry {
                                 semantic_path: String::new(),
                                 source_ids: Vec::new(),
-                                guided: false,
-                                raw: false,
+                                upstream: false,
+                                final_edit: false,
                             },
                             layer,
                             output,
@@ -1342,8 +1342,8 @@ fn reconcile_provenance(
                             ProvenanceEntry {
                                 semantic_path: String::new(),
                                 source_ids: Vec::new(),
-                                guided: false,
-                                raw: false,
+                                upstream: false,
+                                final_edit: false,
                             },
                             layer,
                             output,
@@ -1397,8 +1397,8 @@ fn aggregate_provenance(previous: &[ProvenanceEntry], path: &str) -> ProvenanceE
     let mut result = ProvenanceEntry {
         semantic_path: display_pointer_path(path),
         source_ids: Vec::new(),
-        guided: false,
-        raw: false,
+        upstream: false,
+        final_edit: false,
     };
     let displayed = display_pointer_path(path);
     for entry in previous.iter().filter(|entry| {
@@ -1410,16 +1410,16 @@ fn aggregate_provenance(previous: &[ProvenanceEntry], path: &str) -> ProvenanceE
                 .is_some_and(|suffix| suffix.starts_with('/'))
     }) {
         merge_source_ids(&mut result.source_ids, entry.source_ids.clone());
-        result.guided |= entry.guided;
-        result.raw |= entry.raw;
+        result.upstream |= entry.upstream;
+        result.final_edit |= entry.final_edit;
     }
     result
 }
 
 fn mark_provenance_layer(entry: &mut ProvenanceEntry, layer: ProvenanceLayer) {
     match layer {
-        ProvenanceLayer::Guided => entry.guided = true,
-        ProvenanceLayer::Raw => entry.raw = true,
+        ProvenanceLayer::Upstream => entry.upstream = true,
+        ProvenanceLayer::FinalEdit => entry.final_edit = true,
     }
 }
 
@@ -1481,127 +1481,121 @@ pub enum IntentOperation {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RawDecisionOrigin {
-    User,
-    Migrated,
-    System,
+/// A value at a semantic path.  `Missing` is distinct from JSON `null` and
+/// allows additions and deletions to participate in the same three-way merge
+/// as ordinary scalar edits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "camelCase")]
+pub enum SemanticValue {
+    Missing,
+    Present(Value),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpstreamBasis {
+    pub content_hash: String,
+    pub candidate_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FinalEditEntry {
+    pub edit_id: String,
+    pub path: SemanticPath,
+    pub original: SemanticValue,
+    pub edited: SemanticValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum RawDecisionStatus {
-    Active,
-    Superseded,
-    Dormant,
-    Resolved,
+pub enum FinalMergeConflictKind {
+    AddVsAdd,
+    ModifyVsModify,
+    DeleteVsModify,
+    ModifyVsDelete,
+    Sequence,
 }
 
-impl RawDecisionStatus {
-    fn participates_in_candidate(self) -> bool {
-        matches!(self, Self::Active | Self::Resolved)
-    }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FinalMergeConflict {
+    pub conflict_id: String,
+    pub semantic_path: String,
+    #[serde(rename = "segments")]
+    pub path: SemanticPath,
+    pub kind: FinalMergeConflictKind,
+    pub base_value: SemanticValue,
+    pub upstream_value: SemanticValue,
+    pub user_value: SemanticValue,
+    pub can_merge: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawDecisionBasis {
-    pub upstream_generation: u64,
-    pub upstream_content_hash: String,
-    pub upstream_path_hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawDecision {
-    pub decision_id: String,
-    pub operation: IntentOperation,
-    pub basis: RawDecisionBasis,
-    pub status: RawDecisionStatus,
-    pub origin: RawDecisionOrigin,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum RawDecisionResolution {
-    AcceptUpstream,
-    KeepRaw,
-    ManualEdit { value: Value },
+pub struct SavedCandidateMarker {
+    pub content_hash: String,
+    pub candidate_generation: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawManualIntent {
+pub struct FinalEditState {
+    pub basis: UpstreamBasis,
+    /// Canonical semantic documents used for deterministic three-way merge.
+    /// They are state-internal; the UI receives only the sparse `edits` and
+    /// `conflicts` projections below.
+    pub base_content: String,
+    pub edited_content: String,
+    pub edits: Vec<FinalEditEntry>,
+    pub conflicts: Vec<FinalMergeConflict>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub based_on_revision: Option<ConfigurationRevision>,
-    /// v4 compatibility input.  Schema v5 converts these operations into
-    /// basis-bound decisions before rebuilding a candidate and never writes
-    /// new entries here.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operations: Vec<IntentOperation>,
-    #[serde(default)]
-    pub decisions: Vec<RawDecision>,
+    pub saved_candidate: Option<SavedCandidateMarker>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawConflict {
-    pub conflict_id: String,
-    pub segments: SemanticPath,
-    pub semantic_path: String,
-    pub display_path: String,
-    pub conflict_type: String,
-    pub severity: ConflictSeverity,
-    pub original_base: Value,
-    pub updated_base: Value,
-    pub user_value: Value,
-    #[serde(default)]
-    pub suggested_actions: Vec<String>,
-    #[serde(default)]
-    pub can_combine: bool,
+pub enum FinalConflictResolution {
+    AcceptUpstream,
+    KeepMine,
+    ManualEdit { value: SemanticValue },
+}
+
+#[derive(Debug, Clone)]
+struct MergeLocation {
+    segments: SemanticPath,
+    conflict_type: String,
+    can_combine: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawRebaseResult {
+pub struct FinalRebaseResult {
     pub document: Value,
     #[serde(default)]
-    pub conflicts: Vec<RawConflict>,
+    pub conflicts: Vec<FinalMergeConflict>,
     pub deterministic_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub enum RawConflictResolution {
-    KeepMine,
-    UseUpdated,
-    Combine,
-    ManualEdit { value: Value },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawDraftSession {
+pub struct FinalEditorSession {
     pub session_id: String,
     pub draft_revision: u64,
-    pub based_on_generation: u64,
+    pub based_on_state_revision: u64,
+    pub based_on_candidate_generation: u64,
     pub base_content: String,
-    pub user_content: String,
     pub working_content: String,
-    #[serde(default)]
-    pub conflicts: Vec<RawConflict>,
-    #[serde(default)]
-    pub resolutions: BTreeMap<String, RawConflictResolution>,
-    #[serde(default)]
+    pub conflicts: Vec<FinalMergeConflict>,
+    pub resolutions: BTreeMap<String, FinalConflictResolution>,
     pub unresolved_conflict_ids: Vec<String>,
+    pub rebase_required: bool,
     pub updated_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GuidedIntent {
-    #[serde(default)]
     pub values: BTreeMap<String, Value>,
 }
 
@@ -1612,7 +1606,6 @@ pub struct GuidedIntent {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedIntegrationIntent {
-    #[serde(default)]
     pub values: BTreeMap<String, Value>,
 }
 
@@ -1687,8 +1680,18 @@ pub enum ManagedIntegrationStatus {
     Inactive,
     Explicit,
     Overridden,
-    RawOnly,
+    FinalOnly,
     NeedsAttention,
+    LatestSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedSettingProjection {
+    pub setting_id: String,
+    pub saved_value: SemanticValue,
+    pub effective_value: SemanticValue,
+    pub can_use_saved_value: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1697,10 +1700,11 @@ pub struct ManagedIntegrationProjection {
     pub integration_id: String,
     pub status: ManagedIntegrationStatus,
     pub effective_enabled: bool,
+    pub settings: Vec<ManagedSettingProjection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent_value: Option<Value>,
     #[serde(default)]
-    pub raw_paths: Vec<String>,
+    pub final_paths: Vec<String>,
     #[serde(default)]
     pub issue_ids: Vec<String>,
 }
@@ -1712,29 +1716,6 @@ impl GuidedIntent {
 
     pub fn reset(&mut self, setting_id: &str) {
         self.values.remove(setting_id);
-    }
-}
-
-pub trait IntentValueStore {
-    fn values(&self) -> &BTreeMap<String, Value>;
-    fn values_mut(&mut self) -> &mut BTreeMap<String, Value>;
-}
-
-impl IntentValueStore for GuidedIntent {
-    fn values(&self) -> &BTreeMap<String, Value> {
-        &self.values
-    }
-    fn values_mut(&mut self) -> &mut BTreeMap<String, Value> {
-        &mut self.values
-    }
-}
-
-impl IntentValueStore for ManagedIntegrationIntent {
-    fn values(&self) -> &BTreeMap<String, Value> {
-        &self.values
-    }
-    fn values_mut(&mut self) -> &mut BTreeMap<String, Value> {
-        &mut self.values
     }
 }
 
@@ -1768,7 +1749,7 @@ pub enum GuidedProjectionStatus {
     Explicit,
     Custom,
     Overridden,
-    RawDecision,
+    FinalEdit,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1944,9 +1925,6 @@ pub fn apply_guided_intent(
 ) -> Result<Value> {
     let mut effective = base.clone();
     for (setting, value) in &intent.values {
-        if setting.starts_with(DASHBOARD_INTENT_PREFIX) {
-            continue;
-        }
         validate_guided_value(kind, setting, value)?;
         let path: &[&str] = match (kind, setting.as_str()) {
             (ProgramKind::SingBox, "logging.level") => &["log", "level"],
@@ -1971,45 +1949,35 @@ pub fn apply_guided_intent(
         };
         set_object_path(&mut effective, path, value.clone())?;
     }
-    // Keep accepting legacy callers that still pass dashboard values, while
-    // the authoritative ConfigurationState stores them in managed_intent.
-    if intent
-        .values
-        .keys()
-        .any(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
-    {
-        apply_dashboard_intent(kind, &mut effective, intent)?;
-    }
     Ok(effective)
 }
 
 /// Synchronize the Dashboard form into its dedicated Managed Integration
-/// intent store.  The generic store bound remains only for deterministic v3
-/// migration tests; authoritative state always passes ManagedIntegrationIntent.
-pub fn sync_managed_dashboard_intent<T: IntentValueStore>(
-    intent: &mut T,
+/// intent store.
+pub fn sync_managed_dashboard_intent(
+    intent: &mut ManagedIntegrationIntent,
     managed: &ManagedConfigSpec,
 ) {
     intent
-        .values_mut()
+        .values
         .retain(|setting, _| !setting.starts_with(DASHBOARD_INTENT_PREFIX));
     if let Some(dashboard) = managed.sing_box_dashboard.as_ref() {
-        intent.values_mut().insert(
+        intent.values.insert(
             "dashboard.singBoxApi.listenPort".into(),
             Value::from(dashboard.listen_port),
         );
-        intent.values_mut().insert(
+        intent.values.insert(
             "dashboard.singBoxApi.updateInterval".into(),
             Value::String(dashboard.update_interval.clone()),
         );
     }
     if let Some(dashboard) = managed.sing_box_clash_dashboard.as_ref() {
-        intent.values_mut().insert(
+        intent.values.insert(
             "dashboard.singBoxClash.listenPort".into(),
             Value::from(dashboard.listen_port),
         );
         if let Some(url) = &dashboard.download_url {
-            intent.values_mut().insert(
+            intent.values.insert(
                 "dashboard.singBoxClash.downloadUrl".into(),
                 Value::String(url.clone()),
             );
@@ -2019,12 +1987,12 @@ pub fn sync_managed_dashboard_intent<T: IntentValueStore>(
         sync_xray_dashboard_intent(intent, dashboard);
     }
     if let Some(dashboard) = managed.mihomo_dashboard.as_ref() {
-        intent.values_mut().insert(
+        intent.values.insert(
             "dashboard.mihomo.listenPort".into(),
             Value::from(dashboard.listen_port),
         );
         if let Some(url) = &dashboard.download_url {
-            intent.values_mut().insert(
+            intent.values.insert(
                 "dashboard.mihomo.downloadUrl".into(),
                 Value::String(url.clone()),
             );
@@ -2032,21 +2000,24 @@ pub fn sync_managed_dashboard_intent<T: IntentValueStore>(
     }
 }
 
-fn sync_xray_dashboard_intent<T: IntentValueStore>(intent: &mut T, dashboard: &XrayDashboardSpec) {
-    intent.values_mut().insert(
+fn sync_xray_dashboard_intent(
+    intent: &mut ManagedIntegrationIntent,
+    dashboard: &XrayDashboardSpec,
+) {
+    intent.values.insert(
         "dashboard.xray.apiPort".into(),
         Value::from(dashboard.api_port),
     );
-    intent.values_mut().insert(
+    intent.values.insert(
         "dashboard.xray.metricsPort".into(),
         Value::from(dashboard.metrics_port),
     );
 }
 
-fn apply_dashboard_intent<T: IntentValueStore>(
+fn apply_dashboard_intent(
     kind: ProgramKind,
     root: &mut Value,
-    intent: &T,
+    intent: &ManagedIntegrationIntent,
 ) -> Result<()> {
     match kind {
         ProgramKind::SingBox => {
@@ -2060,8 +2031,8 @@ fn apply_dashboard_intent<T: IntentValueStore>(
     Ok(())
 }
 
-fn intent_port<T: IntentValueStore>(intent: &T, id: &str) -> Result<Option<u16>> {
-    let Some(value) = intent.values().get(id) else {
+fn intent_port(intent: &ManagedIntegrationIntent, id: &str) -> Result<Option<u16>> {
+    let Some(value) = intent.values.get(id) else {
         return Ok(None);
     };
     let port = value.as_u64().and_then(|port| u16::try_from(port).ok());
@@ -2073,8 +2044,8 @@ fn intent_port<T: IntentValueStore>(intent: &T, id: &str) -> Result<Option<u16>>
     Ok(port)
 }
 
-fn intent_text<T: IntentValueStore>(intent: &T, id: &str) -> Result<Option<String>> {
-    let Some(value) = intent.values().get(id) else {
+fn intent_text(intent: &ManagedIntegrationIntent, id: &str) -> Result<Option<String>> {
+    let Some(value) = intent.values.get(id) else {
         return Ok(None);
     };
     value
@@ -2086,9 +2057,9 @@ fn intent_text<T: IntentValueStore>(intent: &T, id: &str) -> Result<Option<Strin
         .map(Some)
 }
 
-fn apply_sing_box_dashboard_intent<T: IntentValueStore>(
+fn apply_sing_box_dashboard_intent(
     root: &mut Value,
-    intent: &T,
+    intent: &ManagedIntegrationIntent,
 ) -> Result<()> {
     let Some(port) = intent_port(intent, "dashboard.singBoxApi.listenPort")? else {
         return Ok(());
@@ -2117,9 +2088,9 @@ fn apply_sing_box_dashboard_intent<T: IntentValueStore>(
     Ok(())
 }
 
-fn apply_sing_box_clash_dashboard_intent<T: IntentValueStore>(
+fn apply_sing_box_clash_dashboard_intent(
     root: &mut Value,
-    intent: &T,
+    intent: &ManagedIntegrationIntent,
 ) -> Result<()> {
     let Some(port) = intent_port(intent, "dashboard.singBoxClash.listenPort")? else {
         return Ok(());
@@ -2159,7 +2130,7 @@ fn apply_sing_box_clash_dashboard_intent<T: IntentValueStore>(
     Ok(())
 }
 
-fn apply_xray_dashboard_intent<T: IntentValueStore>(root: &mut Value, intent: &T) -> Result<()> {
+fn apply_xray_dashboard_intent(root: &mut Value, intent: &ManagedIntegrationIntent) -> Result<()> {
     let Some(api_port) = intent_port(intent, "dashboard.xray.apiPort")? else {
         return Ok(());
     };
@@ -2228,7 +2199,10 @@ fn apply_xray_dashboard_intent<T: IntentValueStore>(root: &mut Value, intent: &T
     Ok(())
 }
 
-fn apply_mihomo_dashboard_intent<T: IntentValueStore>(root: &mut Value, intent: &T) -> Result<()> {
+fn apply_mihomo_dashboard_intent(
+    root: &mut Value,
+    intent: &ManagedIntegrationIntent,
+) -> Result<()> {
     let Some(port) = intent_port(intent, "dashboard.mihomo.listenPort")? else {
         return Ok(());
     };
@@ -2268,14 +2242,18 @@ pub fn project_guided_settings(
     kind: ProgramKind,
     effective: &Value,
     guided: &GuidedIntent,
-    raw: &RawManualIntent,
+    final_edit: &FinalEditState,
 ) -> Vec<GuidedProjection> {
-    // Superseded decisions remain visible to the owning surface so the user
-    // can reopen the Final configuration workspace.  Only dormant history is
-    // hidden from the projection; candidate application still filters through
-    // `candidate_raw_operations`.
-    let raw_paths = visible_raw_operations(raw)
-        .map(intent_operation_path)
+    let final_paths = final_edit
+        .edits
+        .iter()
+        .map(|entry| entry.path.clone())
+        .chain(
+            final_edit
+                .conflicts
+                .iter()
+                .map(|conflict| conflict.path.clone()),
+        )
         .collect::<Vec<_>>();
     guided_setting_descriptors(kind)
         .into_iter()
@@ -2286,14 +2264,14 @@ pub fn project_guided_settings(
                 .cloned();
             let overridden = path.is_some_and(|path| {
                 let semantic = key_path(path);
-                raw_paths
+                final_paths
                     .iter()
-                    .any(|raw_path| path_overlaps(&semantic, raw_path))
+                    .any(|final_path| path_overlaps(&semantic, final_path))
             });
             GuidedProjection {
                 setting_id: descriptor.id.clone(),
                 status: if overridden {
-                    GuidedProjectionStatus::RawDecision
+                    GuidedProjectionStatus::FinalEdit
                 } else if guided.values.contains_key(&descriptor.id) {
                     GuidedProjectionStatus::Explicit
                 } else if value
@@ -2309,15 +2287,6 @@ pub fn project_guided_settings(
             }
         })
         .collect()
-}
-
-fn visible_raw_operations(raw: &RawManualIntent) -> impl Iterator<Item = &IntentOperation> {
-    raw.operations.iter().chain(
-        raw.decisions
-            .iter()
-            .filter(|decision| decision.status != RawDecisionStatus::Dormant)
-            .map(|decision| &decision.operation),
-    )
 }
 
 fn guided_value_is_representable(descriptor: &GuidedSettingDescriptor, value: &Value) -> bool {
@@ -2396,74 +2365,10 @@ fn key_path(path: &[&str]) -> SemanticPath {
         .collect()
 }
 
-pub fn diff_raw_intent(base: &Value, edited: &Value) -> RawManualIntent {
+fn diff_intent_operations(base: &Value, edited: &Value) -> Vec<IntentOperation> {
     let mut operations = Vec::new();
     diff_value(base, edited, &mut Vec::new(), &mut operations);
-    RawManualIntent {
-        based_on_revision: None,
-        operations,
-        decisions: Vec::new(),
-    }
-}
-
-pub fn diff_raw_decisions(
-    upstream: &Value,
-    edited: &Value,
-    upstream_generation: u64,
-) -> RawManualIntent {
-    let legacy = diff_raw_intent(upstream, edited);
-    RawManualIntent {
-        based_on_revision: None,
-        operations: Vec::new(),
-        decisions: bind_raw_operations(
-            legacy.operations,
-            upstream,
-            upstream_generation,
-            RawDecisionOrigin::User,
-        ),
-    }
-}
-
-fn semantic_path_values_equal(
-    left_root: &Value,
-    right_root: &Value,
-    path: &[SemanticPathSegment],
-) -> bool {
-    let left = raw_conflict_path_value(left_root, path).ok().flatten();
-    let right = raw_conflict_path_value(right_root, path).ok().flatten();
-    match (left, right) {
-        (Some(left), Some(right)) => values_semantically_equal(left, right, path),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-fn bind_raw_operations(
-    operations: Vec<IntentOperation>,
-    upstream: &Value,
-    upstream_generation: u64,
-    origin: RawDecisionOrigin,
-) -> Vec<RawDecision> {
-    let upstream_content_hash = semantic_document_hash(upstream);
     operations
-        .into_iter()
-        .enumerate()
-        .map(|(index, operation)| {
-            let upstream_path_hash = semantic_operation_basis_hash(upstream, &operation);
-            let decision_id = raw_decision_id(&operation, &upstream_content_hash, index);
-            RawDecision {
-                decision_id,
-                operation,
-                basis: RawDecisionBasis {
-                    upstream_generation,
-                    upstream_content_hash: upstream_content_hash.clone(),
-                    upstream_path_hash,
-                },
-                status: RawDecisionStatus::Active,
-                origin,
-            }
-        })
-        .collect()
 }
 
 fn semantic_document_hash(value: &Value) -> String {
@@ -2474,94 +2379,236 @@ fn semantic_document_hash(value: &Value) -> String {
     )
 }
 
-fn semantic_operation_basis_hash(root: &Value, operation: &IntentOperation) -> String {
-    let path = intent_operation_path(operation);
-    let mut current = Some(root);
-    let mut anchors = Vec::with_capacity(path.len());
-    for segment in &path {
-        let (state, next) = match (current, segment) {
-            (Some(Value::Object(values)), SemanticPathSegment::Key { key }) => {
-                match values.get(key) {
-                    Some(value) => (format!("present:{}", value_shape(value)), Some(value)),
-                    None => ("missing".to_owned(), None),
-                }
-            }
-            (Some(Value::Array(values)), SemanticPathSegment::Identity { field, value }) => {
-                let matches = values
-                    .iter()
-                    .filter(|item| item.get(field).and_then(Value::as_str) == Some(value))
-                    .collect::<Vec<_>>();
-                match matches.as_slice() {
-                    [] => ("missing".to_owned(), None),
-                    [value] => (format!("present:{}", value_shape(value)), Some(*value)),
-                    _ => ("duplicate".to_owned(), None),
-                }
-            }
-            (Some(value), _) => (format!("typeMismatch:{}", value_shape(value)), None),
-            (None, _) => ("ancestorMissing".to_owned(), None),
-        };
-        anchors.push((segment.clone(), state));
-        current = next;
-    }
-    let value = current.cloned().map(|value| {
-        if is_sing_box_dashboard_interval_path(&path)
-            && let Some(nanos) = value.as_str().and_then(parse_dashboard_interval_nanos)
-        {
-            return json!({ "durationNanos": nanos.to_string() });
+fn semantic_value_at(
+    root: &Value,
+    path: &[SemanticPathSegment],
+) -> std::result::Result<SemanticValue, Box<ConfigurationConflict>> {
+    Ok(match semantic_path_value(root, path)? {
+        Some(value) => SemanticValue::Present(value.clone()),
+        None => SemanticValue::Missing,
+    })
+}
+
+fn semantic_values_equal_at(
+    left: &SemanticValue,
+    right: &SemanticValue,
+    path: &[SemanticPathSegment],
+) -> bool {
+    match (left, right) {
+        (SemanticValue::Missing, SemanticValue::Missing) => true,
+        (SemanticValue::Present(left), SemanticValue::Present(right)) => {
+            values_semantically_equal(left, right, path)
         }
-        value
-    });
-    hash_bytes(
-        serde_json::to_vec(&(anchors, value))
-            .expect("semantic operation basis values are serializable")
-            .as_slice(),
-    )
+        _ => false,
+    }
 }
 
-fn value_shape(value: &Value) -> &'static str {
+fn apply_semantic_value(
+    root: &mut Value,
+    path: &[SemanticPathSegment],
+    value: &SemanticValue,
+) -> std::result::Result<(), Box<ConfigurationConflict>> {
     match value {
-        Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        SemanticValue::Missing => delete_semantic_path(root, path),
+        SemanticValue::Present(value) => {
+            set_semantic_path_creating_anchors(root, path, value.clone())
+        }
     }
 }
 
-fn raw_decision_id(
-    operation: &IntentOperation,
-    upstream_content_hash: &str,
-    index: usize,
+fn final_edit_id(
+    path: &[SemanticPathSegment],
+    original: &SemanticValue,
+    edited: &SemanticValue,
 ) -> String {
-    let encoded = serde_json::to_string(&(operation, upstream_content_hash, index))
-        .expect("Raw decisions are serializable");
-    format!("raw-{}", hash_bytes(encoded.as_bytes()))
+    let encoded = serde_json::to_vec(&(path, original, edited))
+        .expect("Final editor values are serializable");
+    format!("edit-{}", &hash_bytes(&encoded)[..16])
 }
 
-fn reconcile_raw_decisions(
-    intent: &mut RawManualIntent,
-    upstream: &Value,
-    upstream_generation: u64,
-) {
-    if !intent.operations.is_empty() {
-        let legacy = std::mem::take(&mut intent.operations);
-        intent.decisions.extend(bind_raw_operations(
-            legacy,
-            upstream,
-            upstream_generation,
-            RawDecisionOrigin::Migrated,
-        ));
-    }
-    for decision in &mut intent.decisions {
-        if !decision.status.participates_in_candidate() {
+fn final_edit_entries(base: &Value, edited: &Value) -> Result<Vec<FinalEditEntry>> {
+    let operations = diff_intent_operations(base, edited);
+    let mut entries = BTreeMap::<String, FinalEditEntry>::new();
+    for operation in operations {
+        let path = intent_operation_path(&operation);
+        let original = semantic_value_at(base, &path).map_err(|conflict| {
+            CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason)
+        })?;
+        let value = semantic_value_at(edited, &path).map_err(|conflict| {
+            CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason)
+        })?;
+        if semantic_values_equal_at(&original, &value, &path) {
             continue;
         }
-        let current_path_hash = semantic_operation_basis_hash(upstream, &decision.operation);
-        if current_path_hash != decision.basis.upstream_path_hash {
-            decision.status = RawDecisionStatus::Superseded;
-        }
+        let key = display_semantic_path(&path);
+        entries.insert(
+            key,
+            FinalEditEntry {
+                edit_id: final_edit_id(&path, &original, &value),
+                path,
+                original,
+                edited: value,
+            },
+        );
     }
+    Ok(entries.into_values().collect())
+}
+
+fn final_conflict_kind(
+    base: &SemanticValue,
+    upstream: &SemanticValue,
+    user: &SemanticValue,
+    draft_kind: &str,
+) -> FinalMergeConflictKind {
+    if draft_kind == "order" || draft_kind == "ordered-sequence" {
+        return FinalMergeConflictKind::Sequence;
+    }
+    match (base, upstream, user) {
+        (SemanticValue::Missing, SemanticValue::Present(_), SemanticValue::Present(_)) => {
+            FinalMergeConflictKind::AddVsAdd
+        }
+        (_, SemanticValue::Missing, SemanticValue::Present(_)) => {
+            FinalMergeConflictKind::ModifyVsDelete
+        }
+        (_, SemanticValue::Present(_), SemanticValue::Missing) => {
+            FinalMergeConflictKind::DeleteVsModify
+        }
+        _ => FinalMergeConflictKind::ModifyVsModify,
+    }
+}
+
+fn final_merge_conflict(
+    draft_conflict: &MergeLocation,
+    original: &Value,
+    user: &Value,
+    updated: &Value,
+) -> Result<FinalMergeConflict> {
+    let base_value = semantic_value_at(original, &draft_conflict.segments)
+        .map_err(|conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason))?;
+    let upstream_value = semantic_value_at(updated, &draft_conflict.segments)
+        .map_err(|conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason))?;
+    let user_value = semantic_value_at(user, &draft_conflict.segments)
+        .map_err(|conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason))?;
+    Ok(FinalMergeConflict {
+        conflict_id: hash_bytes(
+            format!(
+                "{}|{:?}|{:?}",
+                display_semantic_path(&draft_conflict.segments),
+                base_value,
+                user_value
+            )
+            .as_bytes(),
+        )[..16]
+            .into(),
+        semantic_path: display_semantic_path(&draft_conflict.segments),
+        path: draft_conflict.segments.clone(),
+        kind: final_conflict_kind(
+            &base_value,
+            &upstream_value,
+            &user_value,
+            &draft_conflict.conflict_type,
+        ),
+        base_value,
+        upstream_value,
+        user_value,
+        can_merge: draft_conflict.can_combine,
+    })
+}
+
+fn aggregate_final_conflicts(mut conflicts: Vec<FinalMergeConflict>) -> Vec<FinalMergeConflict> {
+    conflicts.sort_by(|left, right| {
+        left.path.len().cmp(&right.path.len()).then_with(|| {
+            display_semantic_path(&left.path).cmp(&display_semantic_path(&right.path))
+        })
+    });
+    let mut result = Vec::<FinalMergeConflict>::new();
+    for conflict in conflicts {
+        if result
+            .iter()
+            .any(|parent| conflict.path.starts_with(&parent.path))
+        {
+            continue;
+        }
+        result.push(conflict);
+    }
+    result
+}
+
+fn initialize_final_edit_state(
+    state: &mut FinalEditState,
+    format: ConfigurationFormat,
+    upstream: &Value,
+    generation: u64,
+) -> Result<()> {
+    let content = serialize_semantic_document(format, upstream)?;
+    state.basis = UpstreamBasis {
+        content_hash: semantic_document_hash(upstream),
+        candidate_generation: generation,
+    };
+    state.base_content = content.clone();
+    state.edited_content = content;
+    state.edits.clear();
+    state.conflicts.clear();
+    state.saved_candidate = None;
+    Ok(())
+}
+
+fn reconcile_final_edits(
+    state: &mut FinalEditState,
+    format: ConfigurationFormat,
+    upstream: &Value,
+    generation: u64,
+) -> Result<Value> {
+    if state.base_content.is_empty() || state.edited_content.is_empty() {
+        initialize_final_edit_state(state, format, upstream, generation)?;
+        return Ok(upstream.clone());
+    }
+    let current_hash = semantic_document_hash(upstream);
+    let original = parse_semantic_document(format, state.base_content.as_bytes())?;
+    let user = parse_semantic_document(format, state.edited_content.as_bytes())?;
+    let (mut document, mut conflicts) = if state.basis.content_hash == current_hash {
+        (user.clone(), Vec::new())
+    } else {
+        let rebased = rebase_final_document(&original, &user, upstream);
+        (rebased.document, rebased.conflicts)
+    };
+
+    // Unresolved conflicts keep the user's value out of the effective
+    // candidate.  They survive further upstream refreshes until one side
+    // converges or the user explicitly resolves the semantic path.
+    for mut conflict in std::mem::take(&mut state.conflicts) {
+        let updated = semantic_value_at(upstream, &conflict.path)
+            .map_err(|value| CamelliaNexusError::new(ErrorCode::ConfigConflict, value.reason))?;
+        if semantic_values_equal_at(&updated, &conflict.user_value, &conflict.path) {
+            continue;
+        }
+        if semantic_values_equal_at(&updated, &conflict.base_value, &conflict.path) {
+            apply_semantic_value(&mut document, &conflict.path, &conflict.user_value).map_err(
+                |value| CamelliaNexusError::new(ErrorCode::ConfigConflict, value.reason),
+            )?;
+            continue;
+        }
+        conflict.upstream_value = updated;
+        // The safe preview always follows the current upstream at an
+        // unresolved path.
+        apply_semantic_value(&mut document, &conflict.path, &conflict.upstream_value)
+            .map_err(|value| CamelliaNexusError::new(ErrorCode::ConfigConflict, value.reason))?;
+        conflicts.push(conflict);
+    }
+    let conflicts = aggregate_final_conflicts(conflicts);
+    for conflict in &conflicts {
+        apply_semantic_value(&mut document, &conflict.path, &conflict.upstream_value)
+            .map_err(|value| CamelliaNexusError::new(ErrorCode::ConfigConflict, value.reason))?;
+    }
+    state.base_content = serialize_semantic_document(format, upstream)?;
+    state.edited_content = serialize_semantic_document(format, &document)?;
+    state.edits = final_edit_entries(upstream, &document)?;
+    state.conflicts = conflicts;
+    state.basis = UpstreamBasis {
+        content_hash: current_hash,
+        candidate_generation: generation,
+    };
+    Ok(document)
 }
 
 fn diff_value(
@@ -2688,9 +2735,6 @@ fn is_sing_box_dashboard_interval_path(path: &[SemanticPathSegment]) -> bool {
 }
 
 fn sequence_identities(values: &[Value]) -> Option<Vec<(String, String)>> {
-    if values.is_empty() {
-        return None;
-    }
     let mut identities = Vec::with_capacity(values.len());
     let mut unique = BTreeSet::new();
     for value in values {
@@ -2710,157 +2754,16 @@ fn sequence_identities(values: &[Value]) -> Option<Vec<(String, String)>> {
     Some(identities)
 }
 
-pub fn apply_raw_intent(
-    base: &Value,
-    intent: &RawManualIntent,
-) -> (Value, Vec<ConfigurationConflict>) {
-    let mut effective = base.clone();
-    let mut conflicts = Vec::new();
-    for operation in &intent.operations {
-        if let Err(conflict) = apply_intent_operation(&mut effective, operation) {
-            conflicts.push(*conflict);
-        }
-    }
-    for decision in intent
-        .decisions
-        .iter()
-        .filter(|decision| decision.status.participates_in_candidate())
-    {
-        if let Err(conflict) = apply_intent_operation(&mut effective, &decision.operation) {
-            let rebound_set = decision.status == RawDecisionStatus::Resolved
-                && decision.basis.upstream_path_hash
-                    == semantic_operation_basis_hash(base, &decision.operation)
-                && matches!(&decision.operation, IntentOperation::Set { .. });
-            if rebound_set {
-                let IntentOperation::Set { path, value } = &decision.operation else {
-                    unreachable!("rebound_set only matches Set operations");
-                };
-                if let Err(rebound_conflict) =
-                    set_semantic_path_creating_anchors(&mut effective, path, value.clone())
-                {
-                    conflicts.push(*rebound_conflict);
-                }
-            } else {
-                conflicts.push(*conflict);
-            }
-        }
-    }
-    (effective, conflicts)
-}
-
-fn raw_decision_conflicts(
-    upstream: &Value,
-    intent: &RawManualIntent,
-) -> Vec<ConfigurationConflict> {
-    intent
-        .decisions
-        .iter()
-        .filter(|decision| decision.status == RawDecisionStatus::Superseded)
-        .map(|decision| {
-            let path = intent_operation_path(&decision.operation);
-            let upstream_value = raw_conflict_path_value(upstream, &path)
-                .ok()
-                .flatten()
-                .cloned();
-            ConfigurationConflict {
-                semantic_path: display_semantic_path(&path),
-                reason: "The upstream configuration changed after this Raw decision was made"
-                    .into(),
-                severity: ConflictSeverity::Error,
-                message_key: Some("RAW_DECISION_SUPERSEDED".into()),
-                scope: ConfigurationIssueScope {
-                    surface: ConfigurationSurface::Configuration,
-                    owner_id: Some(decision.decision_id.clone()),
-                },
-                source_value: upstream_value.clone(),
-                guided_value: None,
-                raw_value: intent_operation_value(&decision.operation),
-                effective_value: upstream_value,
-            }
-        })
-        .collect()
-}
-
-fn intent_operation_value(operation: &IntentOperation) -> Option<Value> {
-    match operation {
-        IntentOperation::Set { value, .. } => Some(value.clone()),
-        IntentOperation::Delete { .. } => None,
-        IntentOperation::ReorderIdentities { order, .. } => Some(Value::Array(
-            order
-                .iter()
-                .map(|(field, value)| json!({ "field": field, "value": value }))
-                .collect(),
-        )),
-        IntentOperation::ReplaceSequence { value, .. } => Some(Value::Array(value.clone())),
-    }
-}
-
-pub fn resolve_raw_decision(
-    intent: &mut RawManualIntent,
-    upstream: &Value,
-    upstream_generation: u64,
-    decision_id: &str,
-    resolution: RawDecisionResolution,
-) -> Result<()> {
-    let upstream_content_hash = semantic_document_hash(upstream);
-    let decision = intent
-        .decisions
-        .iter_mut()
-        .find(|decision| decision.decision_id == decision_id)
-        .ok_or_else(|| {
-            CamelliaNexusError::new(ErrorCode::NotFound, "Raw decision was not found")
-        })?;
-    let path = intent_operation_path(&decision.operation);
-    match resolution {
-        RawDecisionResolution::AcceptUpstream => {
-            decision.status = RawDecisionStatus::Dormant;
-        }
-        RawDecisionResolution::KeepRaw => {
-            let mut preview = upstream.clone();
-            if apply_intent_operation(&mut preview, &decision.operation).is_err() {
-                let IntentOperation::Set { path, value } = &decision.operation else {
-                    return Err(CamelliaNexusError::new(
-                        ErrorCode::ConfigConflict,
-                        "This final decision cannot be kept because its upstream sequence no longer exists. Accept upstream or provide a complete manual value.",
-                    ));
-                };
-                set_semantic_path_creating_anchors(&mut preview, path, value.clone()).map_err(
-                    |conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason),
-                )?;
-            }
-            decision.basis = RawDecisionBasis {
-                upstream_generation,
-                upstream_content_hash,
-                upstream_path_hash: semantic_operation_basis_hash(upstream, &decision.operation),
-            };
-            decision.status = RawDecisionStatus::Resolved;
-        }
-        RawDecisionResolution::ManualEdit { value } => {
-            decision.operation = IntentOperation::Set {
-                path: path.clone(),
-                value,
-            };
-            decision.basis = RawDecisionBasis {
-                upstream_generation,
-                upstream_content_hash,
-                upstream_path_hash: semantic_operation_basis_hash(upstream, &decision.operation),
-            };
-            decision.status = RawDecisionStatus::Resolved;
-        }
-    }
-    Ok(())
-}
-
-/// Performs a semantic three-way rebase of a Raw document.  The original
+/// Performs a semantic three-way rebase of a Final editor document. The original
 /// source snapshot, the user's working document and the newest source
 /// snapshot are compared independently; formatting/key-order changes are
 /// naturally ignored by the `Value` representation.  A conflict is emitted
 /// only when both sides changed the same semantic unit differently.
-pub fn rebase_raw_document(
+pub fn rebase_final_document(
     original_base: &Value,
     user_document: &Value,
     updated_base: &Value,
-) -> RawRebaseResult {
+) -> FinalRebaseResult {
     let mut conflicts = Vec::new();
     let document = rebase_value(
         original_base,
@@ -2874,18 +2777,28 @@ pub fn rebase_raw_document(
             .expect("semantic JSON values are serializable")
             .as_bytes(),
     );
-    RawRebaseResult {
+    FinalRebaseResult {
         document,
-        conflicts,
+        conflicts: aggregate_final_conflicts(
+            conflicts
+                .iter()
+                .map(|conflict| {
+                    final_merge_conflict(conflict, original_base, user_document, updated_base)
+                        .expect(
+                            "Merge locations refer to unambiguous paths in their input documents",
+                        )
+                })
+                .collect(),
+        ),
         deterministic_hash,
     }
 }
 
-pub fn resolve_raw_draft_conflict(
-    draft: &mut RawDraftSession,
+pub fn resolve_final_editor_conflict(
+    draft: &mut FinalEditorSession,
     format: ConfigurationFormat,
     conflict_id: &str,
-    resolution: RawConflictResolution,
+    resolution: FinalConflictResolution,
 ) -> Result<()> {
     let conflict = draft
         .conflicts
@@ -2896,20 +2809,21 @@ pub fn resolve_raw_draft_conflict(
             CamelliaNexusError::new(ErrorCode::NotFound, "Configuration conflict was not found")
         })?;
     let mut document = parse_semantic_document(format, draft.working_content.as_bytes())?;
-    match raw_conflict_resolution_value(&conflict, &resolution)? {
-        Some(value) => set_semantic_path(&mut document, &conflict.segments, value),
-        None => delete_semantic_path(&mut document, &conflict.segments),
-    }
+    apply_semantic_value(
+        &mut document,
+        &conflict.path,
+        &conflict_resolution_value(&conflict, &resolution),
+    )
     .map_err(|conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason))?;
     draft.working_content = serialize_semantic_document(format, &document)?;
     draft
         .resolutions
         .insert(conflict.conflict_id.clone(), resolution);
-    refresh_raw_draft_conflicts(draft, format);
+    refresh_final_editor_conflicts(draft, format);
     Ok(())
 }
 
-pub fn refresh_raw_draft_conflicts(draft: &mut RawDraftSession, format: ConfigurationFormat) {
+pub fn refresh_final_editor_conflicts(draft: &mut FinalEditorSession, format: ConfigurationFormat) {
     let document = parse_semantic_document(format, draft.working_content.as_bytes()).ok();
     draft.unresolved_conflict_ids = draft
         .conflicts
@@ -2919,56 +2833,101 @@ pub fn refresh_raw_draft_conflicts(draft: &mut RawDraftSession, format: Configur
                 return true;
             };
             document.as_ref().is_none_or(|document| {
-                !raw_conflict_resolution_matches(document, conflict, resolution).unwrap_or(false)
+                !draft_conflict_resolution_matches(document, conflict, resolution).unwrap_or(false)
             })
         })
         .map(|conflict| conflict.conflict_id.clone())
         .collect();
 }
 
-fn raw_conflict_resolution_value(
-    conflict: &RawConflict,
-    resolution: &RawConflictResolution,
-) -> Result<Option<Value>> {
+fn conflict_resolution_value(
+    conflict: &FinalMergeConflict,
+    resolution: &FinalConflictResolution,
+) -> SemanticValue {
     match resolution {
-        RawConflictResolution::KeepMine if conflict.conflict_type == "delete-vs-modify" => Ok(None),
-        RawConflictResolution::UseUpdated if conflict.conflict_type == "modify-vs-delete" => {
-            Ok(None)
-        }
-        RawConflictResolution::KeepMine => Ok(Some(conflict.user_value.clone())),
-        RawConflictResolution::UseUpdated => Ok(Some(conflict.updated_base.clone())),
-        RawConflictResolution::Combine if conflict.can_combine => Ok(Some(
-            combine_raw_conflict_values(&conflict.updated_base, &conflict.user_value),
-        )),
-        RawConflictResolution::Combine => Err(CamelliaNexusError::new(
-            ErrorCode::ConfigConflict,
-            "This configuration conflict cannot be combined safely",
-        )),
-        RawConflictResolution::ManualEdit { value } => Ok(Some(value.clone())),
+        FinalConflictResolution::KeepMine => conflict.user_value.clone(),
+        FinalConflictResolution::AcceptUpstream => conflict.upstream_value.clone(),
+        FinalConflictResolution::ManualEdit { value } => value.clone(),
     }
 }
 
-fn raw_conflict_resolution_matches(
+fn draft_conflict_resolution_matches(
     document: &Value,
-    conflict: &RawConflict,
-    resolution: &RawConflictResolution,
+    conflict: &FinalMergeConflict,
+    resolution: &FinalConflictResolution,
 ) -> Result<bool> {
-    let expected = raw_conflict_resolution_value(conflict, resolution)?;
-    if conflict.segments.is_empty() {
-        return Ok(match expected {
-            Some(expected) => document == &expected,
-            None => document.as_object().is_some_and(|object| object.is_empty()),
-        });
-    }
-    let observed = raw_conflict_path_value(document, &conflict.segments)
+    let expected = conflict_resolution_value(conflict, resolution);
+    let observed = semantic_value_at(document, &conflict.path)
         .map_err(|conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason))?;
-    Ok(match expected {
-        Some(expected) => observed == Some(&expected),
-        None => observed.is_none(),
-    })
+    Ok(semantic_values_equal_at(
+        &observed,
+        &expected,
+        &conflict.path,
+    ))
 }
 
-fn raw_conflict_path_value<'a>(
+/// Rebase editable text and unresolved choices using the same merge state as
+/// saved Final edits. Invalid text remains recoverable without entering Desired.
+pub fn rebase_final_editor_session(
+    draft: &mut FinalEditorSession,
+    format: ConfigurationFormat,
+    updated_content: &str,
+    state_revision: u64,
+    generation: u64,
+) -> Result<()> {
+    refresh_final_editor_conflicts(draft, format);
+    if draft.base_content == updated_content {
+        draft.rebase_required = false;
+        draft.based_on_state_revision = state_revision;
+        draft.based_on_candidate_generation = generation;
+        return Ok(());
+    }
+    let original = parse_semantic_document(format, draft.base_content.as_bytes())?;
+    let upstream = parse_semantic_document(format, updated_content.as_bytes())?;
+    if parse_semantic_document(format, draft.working_content.as_bytes()).is_err() {
+        let mut changes = Vec::new();
+        diff_value(&original, &upstream, &mut Vec::new(), &mut changes);
+        draft.rebase_required = !changes.is_empty();
+        if !draft.rebase_required {
+            draft.base_content = updated_content.into();
+            draft.based_on_state_revision = state_revision;
+            draft.based_on_candidate_generation = generation;
+        }
+        return Ok(());
+    }
+    let mut edits = FinalEditState {
+        basis: UpstreamBasis {
+            content_hash: semantic_document_hash(&original),
+            candidate_generation: draft.based_on_candidate_generation,
+        },
+        base_content: draft.base_content.clone(),
+        edited_content: draft.working_content.clone(),
+        edits: Vec::new(),
+        conflicts: draft
+            .conflicts
+            .iter()
+            .filter(|conflict| {
+                draft
+                    .unresolved_conflict_ids
+                    .contains(&conflict.conflict_id)
+            })
+            .cloned()
+            .collect(),
+        saved_candidate: None,
+    };
+    reconcile_final_edits(&mut edits, format, &upstream, generation)?;
+    draft.base_content = updated_content.into();
+    draft.working_content = edits.edited_content;
+    draft.conflicts = edits.conflicts;
+    draft.resolutions.clear();
+    draft.based_on_state_revision = state_revision;
+    draft.based_on_candidate_generation = generation;
+    draft.rebase_required = false;
+    refresh_final_editor_conflicts(draft, format);
+    Ok(())
+}
+
+fn semantic_path_value<'a>(
     root: &'a Value,
     path: &[SemanticPathSegment],
 ) -> std::result::Result<Option<&'a Value>, Box<ConfigurationConflict>> {
@@ -2995,31 +2954,19 @@ fn raw_conflict_path_value<'a>(
     Ok(Some(current))
 }
 
-fn combine_raw_conflict_values(updated: &Value, user: &Value) -> Value {
-    match (updated, user) {
-        (Value::Object(updated), Value::Object(user)) => {
-            let mut merged = updated.clone();
-            for (key, value) in user {
-                let existing = merged.get(key).cloned().unwrap_or(Value::Null);
-                merged.insert(key.clone(), combine_raw_conflict_values(&existing, value));
-            }
-            Value::Object(merged)
-        }
-        (_, user) => user.clone(),
-    }
-}
-
 fn rebase_value(
     original: &Value,
     user: &Value,
     updated: &Value,
     path: &mut SemanticPath,
-    conflicts: &mut Vec<RawConflict>,
+    conflicts: &mut Vec<MergeLocation>,
 ) -> Value {
-    if user == original {
+    if values_semantically_equal(user, original, path) {
         return updated.clone();
     }
-    if updated == original || user == updated {
+    if values_semantically_equal(updated, original, path)
+        || values_semantically_equal(user, updated, path)
+    {
         return user.clone();
     }
     match (original, user, updated) {
@@ -3043,7 +2990,7 @@ fn rebase_value(
                     (None, Some(user), Some(updated)) => {
                         result.insert(
                             key.clone(),
-                            rebase_value(&Value::Null, user, updated, path, conflicts),
+                            rebase_added_value(user, updated, path, conflicts),
                         );
                     }
                     (Some(original), Some(user), Some(updated)) => {
@@ -3052,8 +2999,12 @@ fn rebase_value(
                             rebase_value(original, user, updated, path, conflicts),
                         );
                     }
+                    (Some(original), Some(user), None)
+                        if values_semantically_equal(original, user, path) => {}
+                    (Some(original), None, Some(updated))
+                        if values_semantically_equal(original, updated, path) => {}
                     (Some(original), Some(user), None) => {
-                        add_raw_conflict(
+                        add_draft_conflict(
                             original,
                             &Value::Null,
                             user,
@@ -3061,10 +3012,12 @@ fn rebase_value(
                             "modify-vs-delete",
                             conflicts,
                         );
-                        result.insert(key.clone(), user.clone());
+                        // The unresolved preview follows the new upstream,
+                        // which deleted this key. The user's value remains in
+                        // the conflict projection for an explicit Keep mine.
                     }
                     (Some(original), None, Some(updated)) => {
-                        add_raw_conflict(
+                        add_draft_conflict(
                             original,
                             updated,
                             &Value::Null,
@@ -3102,11 +3055,24 @@ fn rebase_value(
                     .cloned()
                     .zip(updated.iter())
                     .collect::<HashMap<_, _>>();
-                if user_ids != original_ids
-                    && updated_ids != original_ids
-                    && user_ids != updated_ids
+                let common_order = |ids: &Vec<(String, String)>| {
+                    ids.iter()
+                        .filter(|id| {
+                            original_ids.contains(id)
+                                && user_ids.contains(id)
+                                && updated_ids.contains(id)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                let base_order = common_order(&original_ids);
+                let user_order = common_order(&user_ids);
+                let updated_order = common_order(&updated_ids);
+                if user_order != base_order
+                    && updated_order != base_order
+                    && user_order != updated_order
                 {
-                    add_raw_conflict(
+                    add_draft_conflict(
                         &Value::Array(original.to_vec()),
                         &Value::Array(updated.to_vec()),
                         &Value::Array(user.to_vec()),
@@ -3115,8 +3081,12 @@ fn rebase_value(
                         conflicts,
                     );
                 }
-                let mut identities = user_ids.clone();
-                for identity in &updated_ids {
+                let mut identities = if user_order != base_order {
+                    user_ids.clone()
+                } else {
+                    updated_ids.clone()
+                };
+                for identity in user_ids.iter().chain(updated_ids.iter()) {
                     if !identities.contains(identity) {
                         identities.push(identity.clone());
                     }
@@ -3135,13 +3105,17 @@ fn rebase_value(
                         (None, Some(user), None) => result.push((*user).clone()),
                         (None, None, Some(updated)) => result.push((*updated).clone()),
                         (None, Some(user), Some(updated)) => {
-                            result.push(rebase_value(&Value::Null, user, updated, path, conflicts))
+                            result.push(rebase_added_value(user, updated, path, conflicts))
                         }
                         (Some(original), Some(user), Some(updated)) => {
                             result.push(rebase_value(original, user, updated, path, conflicts))
                         }
+                        (Some(original), Some(user), None)
+                            if values_semantically_equal(original, user, path) => {}
+                        (Some(original), None, Some(updated))
+                            if values_semantically_equal(original, updated, path) => {}
                         (Some(original), Some(user), None) => {
-                            add_raw_conflict(
+                            add_draft_conflict(
                                 original,
                                 &Value::Null,
                                 user,
@@ -3149,10 +3123,11 @@ fn rebase_value(
                                 "modify-vs-delete",
                                 conflicts,
                             );
-                            result.push((*user).clone());
+                            // Updated upstream removed the identity. Keep the
+                            // user's element only in conflict metadata.
                         }
                         (Some(original), None, Some(updated)) => {
-                            add_raw_conflict(
+                            add_draft_conflict(
                                 original,
                                 updated,
                                 &Value::Null,
@@ -3169,7 +3144,7 @@ fn rebase_value(
                 }
                 Value::Array(result)
             } else {
-                add_raw_conflict(
+                add_draft_conflict(
                     &Value::Array(original.to_vec()),
                     &Value::Array(updated.to_vec()),
                     &Value::Array(user.to_vec()),
@@ -3177,103 +3152,60 @@ fn rebase_value(
                     "ordered-sequence",
                     conflicts,
                 );
-                Value::Array(user.clone())
+                Value::Array(updated.clone())
             }
         }
         _ => {
-            add_raw_conflict(original, updated, user, path, "value", conflicts);
-            user.clone()
+            add_draft_conflict(original, updated, user, path, "value", conflicts);
+            updated.clone()
         }
     }
 }
 
-fn add_raw_conflict(
+fn rebase_added_value(
+    user: &Value,
+    updated: &Value,
+    path: &mut SemanticPath,
+    conflicts: &mut Vec<MergeLocation>,
+) -> Value {
+    if values_semantically_equal(user, updated, path) {
+        return updated.clone();
+    }
+    if user.is_object() && updated.is_object() {
+        return rebase_value(&json!({}), user, updated, path, conflicts);
+    }
+    if let (Some(user), Some(updated)) = (user.as_array(), updated.as_array())
+        && sequence_identities(user).is_some()
+        && sequence_identities(updated).is_some()
+    {
+        return rebase_value(
+            &json!([]),
+            &Value::Array(user.clone()),
+            &Value::Array(updated.clone()),
+            path,
+            conflicts,
+        );
+    }
+    add_draft_conflict(&Value::Null, updated, user, path, "value", conflicts);
+    updated.clone()
+}
+
+fn add_draft_conflict(
     original: &Value,
     updated: &Value,
     user: &Value,
     path: &[SemanticPathSegment],
     conflict_type: &str,
-    conflicts: &mut Vec<RawConflict>,
+    conflicts: &mut Vec<MergeLocation>,
 ) {
-    let semantic_path = display_semantic_path(path);
-    let conflict_id =
-        hash_bytes(format!("{semantic_path}|{conflict_type}").as_bytes())[..16].to_owned();
-    conflicts.push(RawConflict {
-        conflict_id,
+    conflicts.push(MergeLocation {
         segments: path.to_vec(),
-        semantic_path: semantic_path.clone(),
-        display_path: semantic_path,
         conflict_type: conflict_type.to_owned(),
-        severity: ConflictSeverity::Error,
-        original_base: original.clone(),
-        updated_base: updated.clone(),
-        user_value: user.clone(),
-        suggested_actions: vec!["keepMine".into(), "useUpdated".into(), "manualEdit".into()],
         can_combine: conflict_type == "value"
             && original.is_object()
             && updated.is_object()
             && user.is_object(),
     });
-}
-
-fn apply_intent_operation(
-    root: &mut Value,
-    operation: &IntentOperation,
-) -> std::result::Result<(), Box<ConfigurationConflict>> {
-    match operation {
-        IntentOperation::Set { path, value } => set_semantic_path(root, path, value.clone()),
-        IntentOperation::Delete { path } => delete_semantic_path(root, path),
-        IntentOperation::ReorderIdentities { path, order } => {
-            let target = resolve_semantic_path_mut(root, path)?;
-            let values = target.as_array_mut().ok_or_else(|| {
-                intent_conflict(path, "Raw reorder target is no longer an array", None)
-            })?;
-            let mut indexed = BTreeMap::new();
-            let mut extras = Vec::new();
-            for value in std::mem::take(values) {
-                if let Some(identity) = semantic_identity(&value) {
-                    if indexed.insert(identity, value).is_some() {
-                        return Err(intent_conflict(
-                            path,
-                            "Raw reorder identities became ambiguous",
-                            None,
-                        ));
-                    }
-                } else {
-                    extras.push(value);
-                }
-            }
-            for identity in order {
-                let Some(value) = indexed.remove(identity) else {
-                    return Err(intent_conflict(
-                        path,
-                        "A Raw reorder anchor no longer exists in the source configuration",
-                        None,
-                    ));
-                };
-                values.push(value);
-            }
-            values.extend(indexed.into_values());
-            values.extend(extras);
-            Ok(())
-        }
-        IntentOperation::ReplaceSequence {
-            path,
-            expected,
-            value,
-        } => {
-            let target = resolve_semantic_path_mut(root, path)?;
-            if target.as_array() != Some(expected) {
-                return Err(intent_conflict(
-                    path,
-                    "An ordered Raw sequence changed in the source and cannot be rebased safely",
-                    Some(Value::Array(value.clone())),
-                ));
-            }
-            *target = Value::Array(value.clone());
-            Ok(())
-        }
-    }
 }
 
 fn semantic_identity(value: &Value) -> Option<(String, String)> {
@@ -3287,56 +3219,9 @@ fn semantic_identity(value: &Value) -> Option<(String, String)> {
     })
 }
 
-fn set_semantic_path(
-    root: &mut Value,
-    path: &[SemanticPathSegment],
-    value: Value,
-) -> std::result::Result<(), Box<ConfigurationConflict>> {
-    if path.is_empty() {
-        *root = value;
-        return Ok(());
-    }
-    let (parent_path, last) = path.split_at(path.len() - 1);
-    let parent = resolve_semantic_path_mut(root, parent_path)?;
-    match &last[0] {
-        SemanticPathSegment::Key { key } => {
-            parent
-                .as_object_mut()
-                .ok_or_else(|| {
-                    intent_conflict(
-                        path,
-                        "Raw target parent is not an object",
-                        Some(value.clone()),
-                    )
-                })?
-                .insert(key.clone(), value);
-        }
-        SemanticPathSegment::Identity {
-            field,
-            value: identity,
-        } => {
-            let values = parent.as_array_mut().ok_or_else(|| {
-                intent_conflict(
-                    path,
-                    "Raw identity target parent is not an array",
-                    Some(value.clone()),
-                )
-            })?;
-            if let Some(index) = identity_index(values, field, identity)? {
-                values[index] = value;
-            } else {
-                values.push(value);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Applies an explicitly rebound Set decision even when an upstream update
-/// removed one of its object/identity anchors. This is deliberately not used
-/// for Active decisions: an upstream removal must first supersede the old
-/// decision, and only an explicit Keep/Manual resolution may recreate the
-/// minimum container chain required by that path.
+/// Applies an explicitly resolved Final edit even when an upstream update
+/// removed one of its object/identity anchors. Only Keep mine or a validated
+/// manual merge may recreate the minimum container chain required by the path.
 fn set_semantic_path_creating_anchors(
     root: &mut Value,
     path: &[SemanticPathSegment],
@@ -3356,7 +3241,7 @@ fn set_semantic_path_creating_anchors(
         match segment {
             SemanticPathSegment::Key { key } => {
                 let object = current.as_object_mut().ok_or_else(|| {
-                    intent_conflict(
+                    semantic_path_conflict(
                         &full_path[..offset],
                         "A final decision cannot recreate an anchor through a non-object value",
                         Some(value.clone()),
@@ -3377,7 +3262,7 @@ fn set_semantic_path_creating_anchors(
                 value: identity,
             } => {
                 let values = current.as_array_mut().ok_or_else(|| {
-                    intent_conflict(
+                    semantic_path_conflict(
                         &full_path[..offset],
                         "A final identity decision cannot recreate an anchor through a non-array value",
                         Some(value.clone()),
@@ -3395,7 +3280,7 @@ fn set_semantic_path_creating_anchors(
                     index
                 } else {
                     if !matches!(tail[0], SemanticPathSegment::Key { .. }) {
-                        return Err(intent_conflict(
+                        return Err(semantic_path_conflict(
                             &full_path[..=offset],
                             "A nested identity anchor cannot be reconstructed safely",
                             Some(value),
@@ -3431,7 +3316,11 @@ fn delete_semantic_path(
     match &last[0] {
         SemanticPathSegment::Key { key } => {
             let values = parent.as_object_mut().ok_or_else(|| {
-                intent_conflict(path, "Raw delete target parent is not an object", None)
+                semantic_path_conflict(
+                    path,
+                    "Final edit delete target parent is not an object",
+                    None,
+                )
             })?;
             values.remove(key);
         }
@@ -3440,7 +3329,11 @@ fn delete_semantic_path(
             value: identity,
         } => {
             let values = parent.as_array_mut().ok_or_else(|| {
-                intent_conflict(path, "Raw delete target parent is not an array", None)
+                semantic_path_conflict(
+                    path,
+                    "Final edit delete target parent is not an array",
+                    None,
+                )
             })?;
             if let Some(index) = identity_index(values, field, identity)? {
                 values.remove(index);
@@ -3461,25 +3354,25 @@ fn resolve_semantic_path_mut<'a>(
                     .as_object_mut()
                     .and_then(|values| values.get_mut(key))
                     .ok_or_else(|| {
-                        intent_conflict(
+                        semantic_path_conflict(
                             &path[..=offset],
-                            "A Raw object anchor no longer exists",
+                            "A Final edit object anchor no longer exists",
                             None,
                         )
                     })?;
             }
             SemanticPathSegment::Identity { field, value } => {
                 let values = current.as_array_mut().ok_or_else(|| {
-                    intent_conflict(
+                    semantic_path_conflict(
                         &path[..=offset],
-                        "A Raw identity parent is no longer an array",
+                        "A Final edit identity parent is no longer an array",
                         None,
                     )
                 })?;
                 let index = identity_index(values, field, value)?.ok_or_else(|| {
-                    intent_conflict(
+                    semantic_path_conflict(
                         &path[..=offset],
-                        "A Raw identity anchor no longer exists",
+                        "A Final edit identity anchor no longer exists",
                         None,
                     )
                 })?;
@@ -3511,7 +3404,7 @@ fn identity_index(
             scope: ConfigurationIssueScope::configuration(),
             source_value: None,
             guided_value: None,
-            raw_value: None,
+            user_value: None,
             effective_value: None,
         }))
     } else {
@@ -3533,20 +3426,20 @@ fn path_overlaps(left: &[SemanticPathSegment], right: &[SemanticPathSegment]) ->
     left[..shared] == right[..shared]
 }
 
-fn intent_conflict(
+fn semantic_path_conflict(
     path: &[SemanticPathSegment],
     reason: impl Into<String>,
-    raw_value: Option<Value>,
+    user_value: Option<Value>,
 ) -> Box<ConfigurationConflict> {
     Box::new(ConfigurationConflict {
         semantic_path: display_semantic_path(path),
         reason: reason.into(),
         severity: ConflictSeverity::Error,
-        message_key: Some("CONFIGURATION_RAW_CONFLICT".into()),
+        message_key: Some("FINAL_EDIT_CONFLICT".into()),
         scope: ConfigurationIssueScope::configuration(),
         source_value: None,
         guided_value: None,
-        raw_value,
+        user_value,
         effective_value: None,
     })
 }
@@ -3587,13 +3480,42 @@ pub enum CandidateValidationStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationDiagnosticLocation {
+    pub semantic_path: String,
+    pub document_path: Vec<String>,
+}
+
+impl ConfigurationDiagnosticLocation {
+    pub fn from_pointer(pointer: &[String]) -> Self {
+        let semantic_path = if pointer.is_empty() {
+            "/".into()
+        } else {
+            format!(
+                "/{}",
+                pointer
+                    .iter()
+                    .map(|key| key.replace('~', "~0").replace('/', "~1"))
+                    .collect::<Vec<_>>()
+                    .join("/")
+            )
+        };
+        Self {
+            semantic_path,
+            document_path: pointer.to_vec(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationDiagnostic {
     pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<ConfigurationDiagnosticLocation>,
     pub message: String,
     /// Stable UI mapping key; the message is retained as technical context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_key: Option<String>,
-    #[serde(default)]
     pub scope: ConfigurationIssueScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
@@ -3608,36 +3530,31 @@ pub struct ConfigurationCandidate {
     pub validation: CandidateValidationStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_evidence: Option<CoreValidationEvidence>,
-    #[serde(default)]
     pub diagnostics: Vec<ConfigurationDiagnostic>,
-    #[serde(default)]
     pub conflicts: Vec<ConfigurationConflict>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationState {
-    pub schema_version: u32,
     pub kind: ProgramKind,
     pub format: ConfigurationFormat,
+    pub state_revision: u64,
     pub generation: u64,
     pub compatibility_profile: CoreCompatibilityProfile,
-    #[serde(default)]
     pub source_statuses: BTreeMap<String, SourceStatus>,
-    #[serde(default)]
     pub source_snapshots: BTreeMap<String, SourceSnapshot>,
     pub base: ConfigurationCandidate,
-    #[serde(default)]
     pub base_provenance: Vec<ProvenanceEntry>,
-    #[serde(default)]
     pub provenance: Vec<ProvenanceEntry>,
-    #[serde(default)]
     pub guided_intent: GuidedIntent,
-    #[serde(default)]
     pub managed_intent: ManagedIntegrationIntent,
-    #[serde(default)]
-    pub raw_intent: RawManualIntent,
+    pub upstream: UpstreamState,
+    pub final_edit: FinalEditState,
+    pub operation_receipts: Vec<ConfigurationOperationReceipt>,
     pub desired: ConfigurationCandidate,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_session: Option<FinalEditorSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied: Option<ConfigurationCandidate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3645,55 +3562,6 @@ pub struct ConfigurationState {
 }
 
 impl ConfigurationState {
-    /// Upgrade persisted configuration state without touching Applied/LKG.
-    /// v3 separated Details-owned dashboard values from Common Guided; v5
-    /// replaces unconditional Raw operations with basis-bound decisions.
-    /// Raw operation binding is completed by `rebuild_desired`, where the
-    /// authoritative upstream document is available.
-    pub fn migrate_legacy_schema(&mut self) -> bool {
-        let mut migrated = false;
-        if self.schema_version == LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION {
-            let legacy_dashboard = self
-                .guided_intent
-                .values
-                .keys()
-                .filter(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
-                .cloned()
-                .collect::<Vec<_>>();
-            for key in legacy_dashboard {
-                if let Some(value) = self.guided_intent.values.remove(&key) {
-                    self.managed_intent.values.insert(key, value);
-                }
-            }
-            self.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
-            migrated = true;
-        }
-        if self.schema_version == LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION {
-            self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
-            migrated = true;
-        }
-        migrated
-    }
-
-    /// Canonicalize only v3 Raw operations that overlap managed fields.  Old
-    /// clients could persist a whole generated Dashboard container as Raw;
-    /// comparing that operation with the newly separated Managed layer turns
-    /// identical generated fields into leaf no-ops while retaining genuine
-    /// overrides and unrelated extension fields.  Non-overlapping tombstones
-    /// are left byte-for-byte untouched.
-    pub fn canonicalize_legacy_managed_raw(&mut self) -> Result<()> {
-        let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
-        let mut generated = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
-        apply_dashboard_intent(self.kind, &mut generated, &self.managed_intent)?;
-        canonicalize_managed_raw_operations(
-            self.kind,
-            &generated,
-            &self.managed_intent,
-            &mut self.raw_intent,
-        );
-        Ok(())
-    }
-
     pub fn from_merge(
         kind: ProgramKind,
         generation: u64,
@@ -3711,6 +3579,8 @@ impl ConfigurationState {
             ));
         }
         let base_provenance = merge.provenance;
+        let upstream =
+            UpstreamState::new(parse_semantic_document(format, merge.content.as_bytes())?);
         let candidate = ConfigurationCandidate {
             revision,
             content: merge.content,
@@ -3721,9 +3591,9 @@ impl ConfigurationState {
             conflicts: merge.conflicts,
         };
         Ok(Self {
-            schema_version: CONFIGURATION_STATE_SCHEMA_VERSION,
             kind,
             format,
+            state_revision: generation,
             generation,
             compatibility_profile,
             source_statuses: BTreeMap::new(),
@@ -3733,8 +3603,11 @@ impl ConfigurationState {
             base_provenance,
             guided_intent: GuidedIntent::default(),
             managed_intent: ManagedIntegrationIntent::default(),
-            raw_intent: RawManualIntent::default(),
+            upstream,
+            final_edit: FinalEditState::default(),
+            operation_receipts: Vec::new(),
             desired: candidate,
+            editor_session: None,
             applied: None,
             last_known_good: None,
         })
@@ -3742,79 +3615,163 @@ impl ConfigurationState {
 
     pub fn upstream_document(&self) -> Result<Value> {
         let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
-        let mut upstream = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
-        apply_dashboard_intent(self.kind, &mut upstream, &self.managed_intent)?;
-        Ok(upstream)
+        self.upstream.clone().reconcile(
+            self.kind,
+            &base,
+            &self.guided_intent,
+            &self.managed_intent,
+            SourceUpdateKind::UserEdit,
+        )
+    }
+
+    pub fn claim_guided_setting(&mut self, setting: &str) -> Result<()> {
+        let before = self.upstream.clone();
+        self.upstream.claim_intent(self.kind, setting)?;
+        if before != self.upstream {
+            self.state_revision = self.state_revision.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    pub fn claim_managed_setting(&mut self, setting: &str) -> Result<()> {
+        let before = self.upstream.clone();
+        self.upstream.claim_details(self.kind, setting)?;
+        if before != self.upstream {
+            self.state_revision = self.state_revision.saturating_add(1);
+        }
+        Ok(())
     }
 
     pub fn upstream_content(&self) -> Result<String> {
         serialize_semantic_document(self.format, &self.upstream_document()?)
     }
 
-    pub fn resolve_raw_decision(
+    pub fn resolve_final_conflict(
         &mut self,
-        decision_id: &str,
-        resolution: RawDecisionResolution,
+        conflict_id: &str,
+        resolution: FinalConflictResolution,
         created_unix_ms: u64,
     ) -> Result<()> {
         let upstream = self.upstream_document()?;
-        resolve_raw_decision(
-            &mut self.raw_intent,
-            &upstream,
-            self.generation,
-            decision_id,
-            resolution,
-        )?;
+        let mut document =
+            parse_semantic_document(self.format, self.final_edit.edited_content.as_bytes())?;
+        let conflict = self
+            .final_edit
+            .conflicts
+            .iter()
+            .find(|conflict| conflict.conflict_id == conflict_id)
+            .cloned()
+            .ok_or_else(|| {
+                CamelliaNexusError::new(
+                    ErrorCode::NotFound,
+                    "Final configuration conflict was not found",
+                )
+            })?;
+        match resolution {
+            FinalConflictResolution::AcceptUpstream => {
+                apply_semantic_value(&mut document, &conflict.path, &conflict.upstream_value)
+            }
+            FinalConflictResolution::KeepMine => {
+                apply_semantic_value(&mut document, &conflict.path, &conflict.user_value)
+            }
+            FinalConflictResolution::ManualEdit { value } => {
+                apply_semantic_value(&mut document, &conflict.path, &value)
+            }
+        }
+        .map_err(|value| CamelliaNexusError::new(ErrorCode::ConfigConflict, value.reason))?;
+        self.final_edit
+            .conflicts
+            .retain(|value| value.conflict_id != conflict_id);
+        self.final_edit.base_content = serialize_semantic_document(self.format, &upstream)?;
+        self.final_edit.edited_content = serialize_semantic_document(self.format, &document)?;
+        self.final_edit.edits = final_edit_entries(&upstream, &document)?;
+        self.final_edit.basis = UpstreamBasis {
+            content_hash: semantic_document_hash(&upstream),
+            candidate_generation: self.generation,
+        };
+        self.final_edit.saved_candidate = None;
         self.rebuild_desired(created_unix_ms)
     }
 
     pub fn rebuild_desired(&mut self, created_unix_ms: u64) -> Result<()> {
+        self.rebuild_desired_with_source_update(created_unix_ms, SourceUpdateKind::UserEdit)
+    }
+
+    pub fn rebuild_desired_with_source_update(
+        &mut self,
+        created_unix_ms: u64,
+        source_update: SourceUpdateKind,
+    ) -> Result<()> {
         let previous_content = self.desired.content.clone();
+        let previously_saved = self.candidate_is_saved();
         let previous_conflicts = self.desired.conflicts.clone();
         let previous_profile_hash = self.desired.compatibility_profile_hash.clone();
-        let previous_decisions = self.raw_intent.decisions.clone();
+        let previous_final_edit = self.final_edit.clone();
+        let previous_upstream = self.upstream.clone();
         let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
-        // Deterministically migrate dashboard values that may have been loaded
-        // from a v3 state (or supplied by an older caller) before building the
-        // new semantic pipeline.  They are never treated as Common Guided
-        // settings after this point.
-        let legacy_dashboard = self
-            .guided_intent
-            .values
-            .keys()
-            .filter(|key| key.starts_with(DASHBOARD_INTENT_PREFIX))
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in legacy_dashboard {
-            if let Some(value) = self.guided_intent.values.remove(&key) {
-                self.managed_intent.values.insert(key, value);
-            }
-        }
-        let guided = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
-        let guided_provenance = apply_provenance_layer(
+        let upstream_document = self.upstream.reconcile(
+            self.kind,
             &base,
-            &guided,
+            &self.guided_intent,
+            &self.managed_intent,
+            source_update,
+        )?;
+        let upstream_provenance = apply_provenance_layer(
+            &base,
+            &upstream_document,
             &self.base_provenance,
-            ProvenanceLayer::Guided,
+            ProvenanceLayer::Upstream,
         );
-        // apply_dashboard_intent mutates its argument; keep the common Guided
-        // provenance separate from the managed layer.
-        let mut effective_guided = guided;
-        apply_dashboard_intent(self.kind, &mut effective_guided, &self.managed_intent)?;
-        reconcile_raw_decisions(&mut self.raw_intent, &effective_guided, self.generation);
-        let (effective, mut conflicts) = apply_raw_intent(&effective_guided, &self.raw_intent);
+        let effective = reconcile_final_edits(
+            &mut self.final_edit,
+            self.format,
+            &upstream_document,
+            self.generation,
+        )?;
+        let mut conflicts = self
+            .final_edit
+            .conflicts
+            .iter()
+            .map(|conflict| ConfigurationConflict {
+                semantic_path: display_semantic_path(&conflict.path),
+                reason: "The upstream configuration and final editor changed the same path".into(),
+                severity: ConflictSeverity::Error,
+                message_key: Some("FINAL_EDIT_CONFLICT".into()),
+                scope: ConfigurationIssueScope {
+                    surface: ConfigurationSurface::Configuration,
+                    owner_id: Some(conflict.conflict_id.clone()),
+                },
+                source_value: match &conflict.upstream_value {
+                    SemanticValue::Present(value) => Some(value.clone()),
+                    SemanticValue::Missing => None,
+                },
+                guided_value: None,
+                user_value: match &conflict.user_value {
+                    SemanticValue::Present(value) => Some(value.clone()),
+                    SemanticValue::Missing => None,
+                },
+                effective_value: match &conflict.upstream_value {
+                    SemanticValue::Present(value) => Some(value.clone()),
+                    SemanticValue::Missing => None,
+                },
+            })
+            .collect::<Vec<_>>();
         self.provenance = apply_provenance_layer(
-            &effective_guided,
+            &upstream_document,
             &effective,
-            &guided_provenance,
-            ProvenanceLayer::Raw,
+            &upstream_provenance,
+            ProvenanceLayer::FinalEdit,
         );
         // Preserve blocking issues produced while merging Sources. Rebuilding
         // downstream layers must not make a source conflict disappear.
         conflicts.extend(self.base.conflicts.clone());
-        conflicts.extend(raw_decision_conflicts(&effective_guided, &self.raw_intent));
-        let content = serialize_semantic_document(self.format, &effective)?;
-        let decisions_changed = previous_decisions != self.raw_intent.decisions;
+        let previous_document = parse_semantic_document(self.format, previous_content.as_bytes())?;
+        let content = if diff_intent_operations(&previous_document, &effective).is_empty() {
+            previous_content.clone()
+        } else {
+            serialize_semantic_document(self.format, &effective)?
+        };
+        let final_edit_changed = previous_final_edit != self.final_edit;
         let recovered_source_issue = !self.source_statuses.is_empty()
             && self.desired.diagnostics.iter().any(|diagnostic| {
                 diagnostic.scope.surface == ConfigurationSurface::Sources
@@ -3833,16 +3790,29 @@ impl ConfigurationState {
             || previous_conflicts != conflicts
             || previous_profile_hash != self.compatibility_profile.profile_hash
             || recovered_source_issue;
-        if !decisions_changed && !candidate_changed {
+        if !final_edit_changed && !candidate_changed && previous_upstream == self.upstream {
             // Re-entering a tab, refreshing an unchanged source, or repeating
             // the same Guided/Details value is a read-equivalent operation.
             // Keep generation and native evidence stable instead of creating a
             // phantom revision that can invalidate an otherwise valid Apply.
-            self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
             return Ok(());
         }
-        self.generation = self.generation.saturating_add(1);
-        self.schema_version = CONFIGURATION_STATE_SCHEMA_VERSION;
+        let content_changed = previous_content != content
+            || previous_profile_hash != self.compatibility_profile.profile_hash;
+        if content_changed {
+            self.generation = self.generation.saturating_add(1);
+        }
+        if previously_saved && previous_content == content {
+            self.final_edit.saved_candidate = Some(SavedCandidateMarker {
+                content_hash: self.desired.revision.content_hash.clone(),
+                candidate_generation: self.generation,
+            });
+        }
+        self.state_revision = self.state_revision.saturating_add(1);
+        self.final_edit.basis.candidate_generation = self.generation;
+        if !candidate_changed {
+            return Ok(());
+        }
         self.desired = ConfigurationCandidate {
             revision: ConfigurationRevision::new(self.generation, &content, created_unix_ms),
             content,
@@ -3862,62 +3832,75 @@ impl ConfigurationState {
         Ok(())
     }
 
-    pub fn replace_raw_from_edited(&mut self, edited: &[u8], created_unix_ms: u64) -> Result<()> {
-        let base = parse_semantic_document(self.format, self.base.content.as_bytes())?;
-        let mut guided = apply_guided_intent(self.kind, &base, &self.guided_intent)?;
-        apply_dashboard_intent(self.kind, &mut guided, &self.managed_intent)?;
+    pub fn replace_final_from_edited(&mut self, edited: &[u8], created_unix_ms: u64) -> Result<()> {
+        if !self.final_edit.conflicts.is_empty() {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Resolve final configuration conflicts before saving",
+            )
+            .with_message_key("FINAL_EDIT_CONFLICT"));
+        }
+        let upstream = self.upstream_document()?;
         let edited = parse_semantic_document(self.format, edited)?;
         validate_static_candidate(self.kind, &edited)?;
-        let mut next = diff_raw_decisions(&guided, &edited, self.generation);
-        // Preserve an unchanged participating decision verbatim. Recreating
-        // it would change its id/basis even though the final document did not
-        // change, producing a phantom generation and invalidating otherwise
-        // current native evidence. Superseded and dormant decisions are not
-        // reused: writing their Raw value again is an explicit new decision
-        // against the current upstream basis.
-        for next_decision in &mut next.decisions {
-            if let Some(existing) = self.raw_intent.decisions.iter().find(|existing| {
-                existing.status.participates_in_candidate()
-                    && existing.operation == next_decision.operation
-            }) {
-                *next_decision = existing.clone();
-            }
+        let next = FinalEditState {
+            basis: UpstreamBasis {
+                content_hash: semantic_document_hash(&upstream),
+                candidate_generation: self.generation,
+            },
+            base_content: serialize_semantic_document(self.format, &upstream)?,
+            edited_content: serialize_semantic_document(self.format, &edited)?,
+            edits: final_edit_entries(&upstream, &edited)?,
+            conflicts: Vec::new(),
+            saved_candidate: self.final_edit.saved_candidate.clone(),
+        };
+        if self.final_edit == next {
+            return Ok(());
         }
-        let next_paths = next
-            .decisions
-            .iter()
-            .map(|decision| intent_operation_path(&decision.operation))
-            .collect::<Vec<_>>();
-        let mut retained = self
-            .raw_intent
-            .decisions
-            .drain(..)
-            .filter_map(|mut decision| {
-                let decision_path = intent_operation_path(&decision.operation);
-                let overlaps = next_paths
-                    .iter()
-                    .any(|path| path_overlaps(path, &decision_path));
-                if overlaps {
-                    // The edited document now contains a new decision for this
-                    // semantic unit.  The new diff below replaces the old
-                    // basis-bound decision without touching unrelated paths.
-                    return None;
-                }
-                if semantic_path_values_equal(&edited, &guided, &decision_path) {
-                    // Editing an active Raw value back to the current upstream
-                    // value is an explicit Accept-upstream action.  Keep the
-                    // history as a dormant decision so the operation is
-                    // reversible, but never let it participate in the
-                    // candidate again.
-                    decision.status = RawDecisionStatus::Dormant;
-                }
-                Some(decision)
+        let previous_revision = self.state_revision;
+        self.final_edit = next;
+        self.rebuild_desired(created_unix_ms)?;
+        if self.state_revision == previous_revision {
+            self.state_revision = self.state_revision.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    pub fn mark_candidate_saved(&mut self) -> Result<()> {
+        let document = parse_semantic_document(self.format, self.desired.content.as_bytes())?;
+        validate_static_candidate(self.kind, &document)?;
+        if !self.final_edit.conflicts.is_empty()
+            || self
+                .desired
+                .conflicts
+                .iter()
+                .any(|conflict| conflict.severity == ConflictSeverity::Error)
+        {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Resolve blocking conflicts before saving the candidate",
+            )
+            .with_message_key("CONFIGURATION_BLOCKING_CONFLICT"));
+        }
+        let marker = SavedCandidateMarker {
+            content_hash: self.desired.revision.content_hash.clone(),
+            candidate_generation: self.generation,
+        };
+        if self.final_edit.saved_candidate.as_ref() != Some(&marker) {
+            self.final_edit.saved_candidate = Some(marker);
+            self.state_revision = self.state_revision.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    pub fn candidate_is_saved(&self) -> bool {
+        self.final_edit
+            .saved_candidate
+            .as_ref()
+            .is_some_and(|marker| {
+                marker.content_hash == self.desired.revision.content_hash
+                    && marker.candidate_generation == self.generation
             })
-            .collect::<Vec<_>>();
-        retained.extend(next.decisions);
-        self.raw_intent.operations.clear();
-        self.raw_intent.decisions = retained;
-        self.rebuild_desired(created_unix_ms)
     }
 
     pub fn mark_validation(
@@ -3926,6 +3909,13 @@ impl ConfigurationState {
         diagnostics: Vec<ConfigurationDiagnostic>,
         evidence: Option<CoreValidationEvidence>,
     ) -> Result<()> {
+        if !self.candidate_is_saved() {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::InvalidState,
+                "Save the current candidate before native validation",
+            )
+            .with_message_key("CONFIGURATION_CANDIDATE_UNSAVED"));
+        }
         if valid {
             let binary_sha256 = self
                 .compatibility_profile
@@ -3939,29 +3929,57 @@ impl ConfigurationState {
                     )
                 })?;
             if !evidence.as_ref().is_some_and(|evidence| {
-                evidence.validates(
+                evidence.validates_candidate(
                     binary_sha256,
                     &self.compatibility_profile.profile_hash,
                     &self.desired.revision.content_hash,
+                    self.generation,
                 )
             }) {
                 return Err(CamelliaNexusError::new(
                     ErrorCode::ConfigConflict,
                     "Native validation evidence does not match the exact binary, profile, and candidate",
-                ));
+                ).with_message_key("CORE_VALIDATION_EVIDENCE_STALE"));
             }
         }
-        self.desired.validation = if valid {
+        let next_validation = if valid {
             CandidateValidationStatus::Valid
         } else {
             CandidateValidationStatus::Invalid
         };
+        let next_evidence = valid.then_some(evidence).flatten();
+        let unchanged = self.desired.validation == next_validation
+            && self.desired.diagnostics == diagnostics
+            && match (&self.desired.validation_evidence, &next_evidence) {
+                (None, None) => true,
+                (Some(current), Some(next)) => {
+                    current.binary_sha256 == next.binary_sha256
+                        && current.profile_hash == next.profile_hash
+                        && current.config_hash == next.config_hash
+                        && current.candidate_generation == next.candidate_generation
+                        && current.validator_contract_revision == next.validator_contract_revision
+                        && current.native_accepted == next.native_accepted
+                }
+                _ => false,
+            };
+        if unchanged {
+            return Ok(());
+        }
+        self.desired.validation = next_validation;
         self.desired.diagnostics = diagnostics;
-        self.desired.validation_evidence = valid.then_some(evidence).flatten();
+        self.desired.validation_evidence = next_evidence;
+        self.state_revision = self.state_revision.saturating_add(1);
         Ok(())
     }
 
     pub fn ensure_apply_ready(&self) -> Result<()> {
+        if !self.candidate_is_saved() {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::InvalidState,
+                "Only a saved configuration candidate can be applied",
+            )
+            .with_message_key("CONFIGURATION_CANDIDATE_UNSAVED"));
+        }
         if self
             .desired
             .conflicts
@@ -3995,75 +4013,49 @@ impl ConfigurationState {
             .validation_evidence
             .as_ref()
             .is_some_and(|evidence| {
-                evidence.validates(
+                evidence.validates_candidate(
                     binary_sha256,
                     &self.compatibility_profile.profile_hash,
                     &self.desired.revision.content_hash,
+                    self.generation,
                 )
             })
         {
             return Err(CamelliaNexusError::new(
                 ErrorCode::ConfigConflict,
                 "Native validation evidence does not match the exact binary, profile, and candidate",
-            ));
+            ).with_message_key("CORE_VALIDATION_EVIDENCE_STALE"));
         }
         Ok(())
     }
 
     pub fn mark_applied(&mut self) -> Result<()> {
         self.ensure_apply_ready()?;
+        let already_applied = self.applied.as_ref() == Some(&self.desired)
+            && self.last_known_good.as_ref() == Some(&self.desired);
+        if already_applied {
+            return Ok(());
+        }
         self.applied = Some(self.desired.clone());
         self.last_known_good = Some(self.desired.clone());
+        self.state_revision = self.state_revision.saturating_add(1);
         Ok(())
     }
 
     pub fn view(&self) -> ConfigurationStateView {
         let base = parse_semantic_document(self.format, self.base.content.as_bytes())
             .unwrap_or(Value::Null);
-        let guided = apply_guided_intent(self.kind, &base, &self.guided_intent)
-            .unwrap_or_else(|_| base.clone());
-        let mut upstream = guided.clone();
-        let _ = apply_dashboard_intent(self.kind, &mut upstream, &self.managed_intent);
+        let upstream = self.upstream_document().unwrap_or_else(|_| base.clone());
         let effective = parse_semantic_document(self.format, self.desired.content.as_bytes())
             .unwrap_or(Value::Null);
-        let mut compatibility_references: Vec<crate::CoreCompatibilityReference> =
-            embedded_core_compatibility_catalog()
-                .ok()
-                .and_then(|catalog| catalog.program(self.kind))
-                .map(|program| {
-                    program
-                        .versions
-                        .iter()
-                        .rev()
-                        .map(|version| crate::CoreCompatibilityReference::Release {
-                            tag: version.tag.clone(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-        if let Ok(manifest) = embedded_core_upstream_manifest()
-            && let Some(tracks) = manifest.program(self.kind)
-        {
-            for commit_sha in [
-                tracks.development.commit_sha.clone(),
-                tracks.stable.commit_sha.clone(),
-            ] {
-                if !compatibility_references.iter().any(|reference| {
-                    matches!(reference, crate::CoreCompatibilityReference::Commit { commit_sha: existing } if existing == &commit_sha)
-                }) {
-                    compatibility_references.push(
-                        crate::CoreCompatibilityReference::Commit { commit_sha },
-                    );
-                }
-            }
-        }
-        let workspace = build_configuration_workspace(self, &base, &guided, &upstream, &effective);
+        let workspace = build_configuration_workspace(self);
         ConfigurationStateView {
-            schema_version: self.schema_version,
             kind: self.kind,
             format: self.format,
+            state_revision: self.state_revision,
             generation: self.generation,
             compatibility_profile: self.compatibility_profile.clone(),
+            core_admission: None,
             source_statuses: self.source_statuses.values().cloned().collect(),
             source_parse_summaries: self
                 .source_snapshots
@@ -4088,55 +4080,24 @@ impl ConfigurationState {
             guided_descriptors: guided_setting_descriptors(self.kind),
             guided_projection: project_guided_settings(
                 self.kind,
-                &effective,
+                &upstream,
                 &self.guided_intent,
-                &self.raw_intent,
+                &self.final_edit,
             ),
             managed_integrations: project_managed_integrations(
                 self.kind,
                 &effective,
+                &upstream,
                 &self.managed_intent,
-                &self.raw_intent,
+                &self.final_edit,
                 &self.desired.conflicts,
             ),
-            compatibility_references,
             workspace,
         }
     }
 }
 
-fn build_configuration_workspace(
-    state: &ConfigurationState,
-    base: &Value,
-    guided: &Value,
-    upstream: &Value,
-    effective: &Value,
-) -> ConfigurationWorkspaceView {
-    // The desired candidate is the single authoritative final document.  The
-    // parsed value is still used for trace construction, but the wire view
-    // must never drift from the content that Save/Validate/Apply operate on.
-    let final_preview_document = state.desired.content.clone();
-    let raw_decisions = state
-        .raw_intent
-        .decisions
-        .iter()
-        .map(|decision| {
-            let path = intent_operation_path(&decision.operation);
-            RawDecisionProjection {
-                decision_id: decision.decision_id.clone(),
-                semantic_path: display_semantic_path(&path),
-                operation: decision.operation.clone(),
-                status: decision.status,
-                origin: decision.origin,
-                basis: decision.basis.clone(),
-                upstream_value: raw_conflict_path_value(upstream, &path)
-                    .ok()
-                    .flatten()
-                    .cloned(),
-                raw_value: intent_operation_value(&decision.operation),
-            }
-        })
-        .collect::<Vec<_>>();
+fn build_configuration_workspace(state: &ConfigurationState) -> ConfigurationWorkspaceView {
     let source_conflicts = state
         .desired
         .conflicts
@@ -4154,16 +4115,14 @@ fn build_configuration_workspace(
         .filter(|conflict| conflict.message_key.as_deref() == Some("LAYER_OWNERSHIP_CONFLICT"))
         .cloned()
         .collect::<Vec<_>>();
-    let raw_conflicts = state
+    let final_conflicts = state
         .desired
         .conflicts
         .iter()
         .filter(|conflict| {
             matches!(
                 conflict.message_key.as_deref(),
-                Some("RAW_DECISION_SUPERSEDED")
-                    | Some("CONFIGURATION_RAW_CONFLICT")
-                    | Some("CONFIGURATION_IDENTITY_DUPLICATED")
+                Some("FINAL_EDIT_CONFLICT") | Some("CONFIGURATION_IDENTITY_DUPLICATED")
             )
         })
         .cloned()
@@ -4172,8 +4131,27 @@ fn build_configuration_workspace(
         state,
         &source_conflicts,
         &layer_conflicts,
-        &raw_conflicts,
+        &final_conflicts,
     );
+    let candidate_saved = state.candidate_is_saved();
+    if !candidate_saved
+        && !blockers
+            .iter()
+            .any(|blocker| blocker.blocks.contains(&ConfigurationGate::Save))
+    {
+        blockers.push(ConfigurationGateBlocker {
+            code: "CONFIGURATION_CANDIDATE_UNSAVED".into(),
+            details: None,
+            message_key: "CONFIGURATION_CANDIDATE_UNSAVED".into(),
+            scope: ConfigurationIssueScope {
+                surface: ConfigurationSurface::Configuration,
+                owner_id: None,
+            },
+            semantic_path: None,
+            blocks: vec![ConfigurationGate::Validate, ConfigurationGate::Apply],
+            recovery_action: ConfigurationRecoveryAction::OpenFinalConfiguration,
+        });
+    }
     if state.ensure_apply_ready().is_err()
         && !blockers
             .iter()
@@ -4186,6 +4164,7 @@ fn build_configuration_workspace(
         };
         blockers.push(ConfigurationGateBlocker {
             code: code.into(),
+            details: None,
             message_key: code.into(),
             scope: ConfigurationIssueScope {
                 surface: ConfigurationSurface::Configuration,
@@ -4196,42 +4175,123 @@ fn build_configuration_workspace(
             recovery_action: ConfigurationRecoveryAction::ReviewCandidate,
         });
     }
-    let can_apply = blockers
-        .iter()
-        .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Apply));
+    let can_apply = candidate_saved
+        && state.ensure_apply_ready().is_ok()
+        && blockers
+            .iter()
+            .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Apply));
     let can_validate = blockers
         .iter()
         .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Validate));
     let can_save = blockers
         .iter()
         .all(|blocker| !blocker.blocks.contains(&ConfigurationGate::Save));
-    let layer_trace = build_layer_trace(state, base, guided, upstream, effective);
-    let editor_paths =
-        build_configuration_editor_paths(&layer_trace, &raw_decisions, &state.desired);
+    let has_blocking_conflict = state
+        .desired
+        .conflicts
+        .iter()
+        .any(|conflict| conflict.severity == ConflictSeverity::Error);
+    let edit_status = if has_blocking_conflict || !state.final_edit.conflicts.is_empty() {
+        FinalEditStatus::Conflict
+    } else if state.final_edit.edits.is_empty() {
+        FinalEditStatus::Clean
+    } else {
+        FinalEditStatus::Modified
+    };
+    let applied_matches = state.applied.as_ref().is_some_and(|applied| {
+        applied.revision.content_hash == state.desired.revision.content_hash
+            && applied.compatibility_profile_hash == state.desired.compatibility_profile_hash
+    });
+    let candidate_status = if !candidate_saved {
+        CandidateStatus::Unsaved
+    } else if applied_matches {
+        CandidateStatus::Applied
+    } else {
+        match state.desired.validation {
+            CandidateValidationStatus::Pending => CandidateStatus::PendingValidation,
+            CandidateValidationStatus::Invalid => CandidateStatus::Invalid,
+            CandidateValidationStatus::Valid => CandidateStatus::Validated,
+        }
+    };
+    let issues_for_path = |path: &[SemanticPathSegment]| {
+        let semantic_path = display_semantic_path(path);
+        state
+            .desired
+            .conflicts
+            .iter()
+            .filter(|conflict| {
+                conflict.semantic_path == semantic_path
+                    || conflict
+                        .semantic_path
+                        .starts_with(&format!("{semantic_path}/"))
+                    || semantic_path.starts_with(&format!("{}/", conflict.semantic_path))
+            })
+            .map(|conflict| ConfigurationEditorIssue {
+                id: format!(
+                    "{}:{}",
+                    conflict
+                        .message_key
+                        .as_deref()
+                        .unwrap_or("CONFIGURATION_CONFLICT"),
+                    conflict.semantic_path
+                ),
+                code: conflict
+                    .message_key
+                    .clone()
+                    .unwrap_or_else(|| "CONFIGURATION_CONFLICT".into()),
+                message_key: conflict
+                    .message_key
+                    .clone()
+                    .unwrap_or_else(|| "CONFIGURATION_CONFLICT".into()),
+                semantic_path: conflict.semantic_path.clone(),
+                severity: conflict.severity,
+                blocking: conflict.severity == ConflictSeverity::Error,
+            })
+            .collect::<Vec<_>>()
+    };
+    let changes = state
+        .final_edit
+        .edits
+        .iter()
+        .map(|entry| FinalChangeProjection {
+            edit_id: entry.edit_id.clone(),
+            semantic_path: display_semantic_path(&entry.path),
+            segments: entry.path.clone(),
+            kind: match (&entry.original, &entry.edited) {
+                (SemanticValue::Missing, SemanticValue::Present(_)) => FinalChangeKind::Added,
+                (SemanticValue::Present(_), SemanticValue::Missing) => FinalChangeKind::Deleted,
+                _ => FinalChangeKind::Modified,
+            },
+            upstream_value: entry.original.clone(),
+            final_value: entry.edited.clone(),
+            issues: issues_for_path(&entry.path),
+        })
+        .collect();
+    let conflicts = state
+        .final_edit
+        .conflicts
+        .iter()
+        .map(|conflict| FinalConflictProjection {
+            conflict_id: conflict.conflict_id.clone(),
+            semantic_path: display_semantic_path(&conflict.path),
+            segments: conflict.path.clone(),
+            kind: conflict.kind,
+            base_value: conflict.base_value.clone(),
+            upstream_value: conflict.upstream_value.clone(),
+            user_value: conflict.user_value.clone(),
+            can_merge: conflict.can_merge,
+        })
+        .collect();
     let editor = ConfigurationEditorView {
-        content: final_preview_document.clone(),
-        revision: state.desired.revision.clone(),
-        paths: editor_paths,
-        decision_counts: ConfigurationDecisionCounts {
-            active: raw_decisions
-                .iter()
-                .filter(|decision| decision.status == RawDecisionStatus::Active)
-                .count() as u32,
-            resolved: raw_decisions
-                .iter()
-                .filter(|decision| decision.status == RawDecisionStatus::Resolved)
-                .count() as u32,
-            superseded: raw_decisions
-                .iter()
-                .filter(|decision| decision.status == RawDecisionStatus::Superseded)
-                .count() as u32,
-            dormant: raw_decisions
-                .iter()
-                .filter(|decision| decision.status == RawDecisionStatus::Dormant)
-                .count() as u32,
+        document: ConfigurationEditorDocument {
+            content: state.desired.content.clone(),
+            revision: state.desired.revision.clone(),
         },
+        edit_status,
+        candidate_status,
+        changes,
+        conflicts,
         blockers,
-        validation_status: state.desired.validation,
         can_save,
         can_validate,
         can_apply,
@@ -4239,117 +4299,11 @@ fn build_configuration_workspace(
     ConfigurationWorkspaceView { editor }
 }
 
-fn build_configuration_editor_paths(
-    traces: &[ConfigurationLayerTrace],
-    decisions: &[RawDecisionProjection],
-    desired: &ConfigurationCandidate,
-) -> Vec<ConfigurationEditorPath> {
-    traces
-        .iter()
-        .map(|trace| {
-            let raw_decision = trace
-                .raw_decision_id
-                .as_ref()
-                .and_then(|id| {
-                    decisions
-                        .iter()
-                        .find(|decision| &decision.decision_id == id)
-                })
-                .cloned();
-            let issues = desired
-                .conflicts
-                .iter()
-                .filter(|conflict| {
-                    semantic_paths_overlap(&conflict.semantic_path, &trace.semantic_path)
-                })
-                .map(|conflict| ConfigurationEditorIssue {
-                    id: format!(
-                        "{}:{}",
-                        conflict
-                            .message_key
-                            .as_deref()
-                            .unwrap_or("CONFIGURATION_CONFLICT"),
-                        conflict.semantic_path
-                    ),
-                    code: conflict
-                        .message_key
-                        .clone()
-                        .unwrap_or_else(|| "CONFIGURATION_CONFLICT".into()),
-                    message_key: conflict
-                        .message_key
-                        .clone()
-                        .unwrap_or_else(|| "CONFIGURATION_CONFLICT".into()),
-                    semantic_path: conflict.semantic_path.clone(),
-                    severity: conflict.severity,
-                    blocking: conflict.severity == ConflictSeverity::Error,
-                })
-                .collect();
-            ConfigurationEditorPath {
-                semantic_path: trace.semantic_path.clone(),
-                segments: semantic_path_segments(&trace.semantic_path),
-                source_ids: trace.source_ids.clone(),
-                source_value: trace.source_value.clone(),
-                intent_value: trace.guided_value.clone(),
-                details_value: trace.details_value.clone(),
-                raw_value: trace.raw_value.clone(),
-                effective_value: trace.effective_value.clone(),
-                winner_layer: trace.winner_layer,
-                raw_decision,
-                issues,
-            }
-        })
-        .collect()
-}
-
-fn semantic_paths_overlap(left: &str, right: &str) -> bool {
-    left == right
-        || left == "/"
-        || right == "/"
-        || left.starts_with(&format!("{right}/"))
-        || right.starts_with(&format!("{left}/"))
-}
-
-fn semantic_path_segments(path: &str) -> Vec<SemanticPathSegment> {
-    if path.is_empty() || path == "/" {
-        return Vec::new();
-    }
-    path.split('/')
-        .skip(1)
-        .fold(Vec::new(), |mut segments, encoded| {
-            let decoded = encoded.replace("~1", "/").replace("~0", "~");
-            let (key, selectors) = decoded
-                .find('[')
-                .map(|index| (&decoded[..index], &decoded[index..]))
-                .unwrap_or((decoded.as_str(), ""));
-            if !key.is_empty() {
-                segments.push(SemanticPathSegment::Key { key: key.into() });
-            }
-            let mut remainder = selectors;
-            while let Some(start) = remainder.find('[') {
-                let after = &remainder[start + 1..];
-                let Some(end) = after.find(']') else { break };
-                let selector = &after[..end];
-                let Some((field, value)) = selector.split_once('=') else {
-                    remainder = &after[end + 1..];
-                    continue;
-                };
-                if !field.is_empty() {
-                    segments.push(SemanticPathSegment::Identity {
-                        field: field.into(),
-                        value: value.into(),
-                    });
-                }
-                remainder = &after[end + 1..];
-            }
-            segments
-        })
-}
-
 fn build_configuration_gate_blockers(
     state: &ConfigurationState,
     source_conflicts: &[ConfigurationConflict],
     layer_conflicts: &[ConfigurationConflict],
-    raw_conflicts: &[ConfigurationConflict],
+    final_conflicts: &[ConfigurationConflict],
 ) -> Vec<ConfigurationGateBlocker> {
     let mut blockers = Vec::new();
     let mut add_conflict = |conflict: &ConfigurationConflict| {
@@ -4360,11 +4314,12 @@ fn build_configuration_gate_blockers(
         let recovery_action = match code.as_str() {
             "SOURCE_VALUE_CONFLICT" => ConfigurationRecoveryAction::ResolveSourceConflict,
             "LAYER_OWNERSHIP_CONFLICT" => ConfigurationRecoveryAction::ResolveLayerConflict,
-            "RAW_DECISION_SUPERSEDED" => ConfigurationRecoveryAction::OpenFinalConfiguration,
+            "FINAL_EDIT_CONFLICT" => ConfigurationRecoveryAction::OpenFinalConfiguration,
             _ => ConfigurationRecoveryAction::ReviewCandidate,
         };
         blockers.push(ConfigurationGateBlocker {
             code: code.clone(),
+            details: None,
             message_key: code,
             scope: conflict.scope.clone(),
             semantic_path: Some(conflict.semantic_path.clone()),
@@ -4379,7 +4334,7 @@ fn build_configuration_gate_blockers(
     for conflict in source_conflicts
         .iter()
         .chain(layer_conflicts)
-        .chain(raw_conflicts)
+        .chain(final_conflicts)
     {
         if conflict.severity == ConflictSeverity::Error {
             add_conflict(conflict);
@@ -4390,28 +4345,48 @@ fn build_configuration_gate_blockers(
             .message_key
             .clone()
             .unwrap_or_else(|| diagnostic.code.clone());
-        let (blocks, recovery_action) = match code.as_str() {
-            "CORE_VALIDATION_EVIDENCE_STALE" | "CORE_PROFILE_MISMATCH" | "CORE_TARGET_CHANGED" => (
-                vec![ConfigurationGate::Apply],
-                ConfigurationRecoveryAction::ValidateCandidate,
-            ),
-            "CORE_INVALID" | "CONFIG_INVALID" | "CONFIGURATION_INVALID" => (
-                vec![ConfigurationGate::Apply],
-                ConfigurationRecoveryAction::ReviewCandidate,
-            ),
-            _ => (
-                vec![ConfigurationGate::Apply],
-                ConfigurationRecoveryAction::ReviewCandidate,
-            ),
+        let (blocks, recovery_action) = if diagnostic.scope.surface == ConfigurationSurface::Sources
+        {
+            (
+                vec![
+                    ConfigurationGate::Save,
+                    ConfigurationGate::Validate,
+                    ConfigurationGate::Apply,
+                ],
+                ConfigurationRecoveryAction::ResolveSourceConflict,
+            )
+        } else {
+            match code.as_str() {
+                "CORE_VALIDATION_EVIDENCE_STALE"
+                | "CORE_PROFILE_MISMATCH"
+                | "CORE_TARGET_CHANGED" => (
+                    vec![ConfigurationGate::Apply],
+                    ConfigurationRecoveryAction::ValidateCandidate,
+                ),
+                "CORE_INVALID" | "CONFIG_INVALID" | "CONFIGURATION_INVALID" => (
+                    vec![ConfigurationGate::Apply],
+                    ConfigurationRecoveryAction::ReviewCandidate,
+                ),
+                _ => (
+                    vec![ConfigurationGate::Apply],
+                    ConfigurationRecoveryAction::ReviewCandidate,
+                ),
+            }
         };
         blockers.push(ConfigurationGateBlocker {
             code,
+            details: (diagnostic.scope.surface == ConfigurationSurface::Configuration)
+                .then(|| diagnostic.details.clone())
+                .flatten(),
             message_key: diagnostic
                 .message_key
                 .clone()
                 .unwrap_or_else(|| "CONFIGURATION_DIAGNOSTIC".into()),
             scope: diagnostic.scope.clone(),
-            semantic_path: None,
+            semantic_path: diagnostic
+                .location
+                .as_ref()
+                .map(|location| location.semantic_path.clone()),
             blocks,
             recovery_action,
         });
@@ -4419,191 +4394,12 @@ fn build_configuration_gate_blockers(
     blockers
 }
 
-fn build_layer_trace(
-    state: &ConfigurationState,
-    base: &Value,
-    guided: &Value,
-    upstream: &Value,
-    effective: &Value,
-) -> Vec<ConfigurationLayerTrace> {
-    let mut paths = Vec::new();
-    collect_trace_paths(base, &mut Vec::new(), &mut paths);
-    collect_trace_paths(guided, &mut Vec::new(), &mut paths);
-    collect_trace_paths(upstream, &mut Vec::new(), &mut paths);
-    collect_trace_paths(effective, &mut Vec::new(), &mut paths);
-    for decision in &state.raw_intent.decisions {
-        paths.push(intent_operation_path(&decision.operation));
-    }
-    paths.sort_by_key(|path| display_semantic_path(path));
-    paths.dedup();
-    paths
-        .into_iter()
-        .map(|path| {
-            let semantic_path = display_semantic_path(&path);
-            let source_value = trace_path_value(base, &path);
-            let guided_value = trace_path_value(guided, &path);
-            let details_value = trace_path_value(upstream, &path);
-            let effective_value = trace_path_value(effective, &path);
-            let raw_decision = raw_decision_for_trace_path(&state.raw_intent.decisions, &path);
-            let winner_layer = if raw_decision
-                .is_some_and(|decision| decision.status.participates_in_candidate())
-            {
-                ConfigurationLayer::RawDecision
-            } else if details_value != guided_value {
-                ConfigurationLayer::Details
-            } else if guided_value != source_value {
-                ConfigurationLayer::Intent
-            } else {
-                ConfigurationLayer::Source
-            };
-            let source_ids = semantic_path_to_pointer(base, &path)
-                .map(|pointer| aggregate_provenance(&state.base_provenance, &pointer).source_ids)
-                .unwrap_or_default();
-            let issue_ids = state
-                .desired
-                .conflicts
-                .iter()
-                .filter(|conflict| {
-                    conflict.semantic_path == semantic_path
-                        || conflict
-                            .semantic_path
-                            .starts_with(&format!("{semantic_path}/"))
-                        || semantic_path.starts_with(&format!("{}/", conflict.semantic_path))
-                })
-                .map(|conflict| {
-                    format!(
-                        "{}:{}",
-                        conflict
-                            .message_key
-                            .as_deref()
-                            .unwrap_or("CONFIGURATION_CONFLICT"),
-                        conflict.semantic_path
-                    )
-                })
-                .collect();
-            ConfigurationLayerTrace {
-                semantic_path,
-                source_ids,
-                source_value,
-                guided_value,
-                details_value,
-                raw_value: raw_decision
-                    .and_then(|decision| intent_operation_value(&decision.operation)),
-                effective_value,
-                winner_layer,
-                raw_decision_id: raw_decision.map(|decision| decision.decision_id.clone()),
-                raw_decision_status: raw_decision.map(|decision| decision.status),
-                issue_ids,
-            }
-        })
-        .collect()
-}
-
-fn raw_decision_for_trace_path<'a>(
-    decisions: &'a [RawDecision],
-    path: &[SemanticPathSegment],
-) -> Option<&'a RawDecision> {
-    let status_priority = |status: RawDecisionStatus| match status {
-        RawDecisionStatus::Superseded => 3_u8,
-        RawDecisionStatus::Resolved | RawDecisionStatus::Active => 2,
-        RawDecisionStatus::Dormant => 1,
-    };
-    let exact = decisions
-        .iter()
-        .filter(|decision| intent_operation_path(&decision.operation) == path)
-        .max_by_key(|decision| status_priority(decision.status));
-    if exact.is_some() {
-        return exact;
-    }
-    // A Set/Delete at an ancestor owns its descendants. Sequence operations
-    // only own their exact array path; allowing a reorder to match every
-    // identity child hid the actual decision from the inspector.
-    decisions
-        .iter()
-        .filter(|decision| decision.status.participates_in_candidate())
-        .filter_map(|decision| {
-            let operation_path = intent_operation_path(&decision.operation);
-            let propagates = matches!(
-                &decision.operation,
-                IntentOperation::Set { .. } | IntentOperation::Delete { .. }
-            );
-            (propagates && operation_path.len() < path.len() && path.starts_with(&operation_path))
-                .then_some((
-                    operation_path.len(),
-                    status_priority(decision.status),
-                    decision,
-                ))
-        })
-        .max_by_key(|(path_len, priority, _)| (*path_len, *priority))
-        .map(|(_, _, decision)| decision)
-}
-
-fn semantic_path_to_pointer(root: &Value, path: &[SemanticPathSegment]) -> Option<String> {
-    let mut current = root;
-    let mut pointer = String::new();
-    for segment in path {
-        match segment {
-            SemanticPathSegment::Key { key } => {
-                current = current.as_object()?.get(key)?;
-                pointer.push('/');
-                pointer.push_str(&escape_pointer(key));
-            }
-            SemanticPathSegment::Identity { field, value } => {
-                let values = current.as_array()?;
-                let index = values.iter().position(|item| {
-                    item.get(field).and_then(Value::as_str) == Some(value.as_str())
-                })?;
-                current = values.get(index)?;
-                pointer.push('/');
-                pointer.push_str(&index.to_string());
-            }
-        }
-    }
-    Some(pointer)
-}
-
-fn trace_path_value(root: &Value, path: &[SemanticPathSegment]) -> Option<Value> {
-    raw_conflict_path_value(root, path).ok().flatten().cloned()
-}
-
-fn collect_trace_paths(value: &Value, path: &mut SemanticPath, output: &mut Vec<SemanticPath>) {
-    match value {
-        Value::Object(object) if !object.is_empty() => {
-            for (key, child) in object {
-                path.push(SemanticPathSegment::Key { key: key.clone() });
-                collect_trace_paths(child, path, output);
-                path.pop();
-            }
-        }
-        Value::Array(values) if sequence_identities(values).is_some() => {
-            let identities = sequence_identities(values).expect("identity shape was checked");
-            for ((field, identity), child) in identities.into_iter().zip(values) {
-                path.push(SemanticPathSegment::Identity {
-                    field,
-                    value: identity,
-                });
-                collect_trace_paths(child, path, output);
-                path.pop();
-            }
-        }
-        Value::Array(values) => {
-            if values.is_empty() {
-                output.push(path.clone());
-            } else {
-                // Ordered identity-less lists are one semantic unit.  Their
-                // provenance and Raw decisions are intentionally path-level.
-                output.push(path.clone());
-            }
-        }
-        _ => output.push(path.clone()),
-    }
-}
-
 fn project_managed_integrations(
     kind: ProgramKind,
     effective: &Value,
+    upstream: &Value,
     managed: &ManagedIntegrationIntent,
-    raw: &RawManualIntent,
+    final_edit: &FinalEditState,
     conflicts: &[ConfigurationConflict],
 ) -> Vec<ManagedIntegrationProjection> {
     let integration_ids: &[&str] = match kind {
@@ -4613,6 +4409,8 @@ fn project_managed_integrations(
         ProgramKind::Generic => &[],
     };
     let targets = managed_ownership_targets(kind);
+    let mut rendered = json!({});
+    let _ = apply_dashboard_intent(kind, &mut rendered, managed);
     integration_ids
         .iter()
         .map(|integration_id| {
@@ -4620,12 +4418,20 @@ fn project_managed_integrations(
                 .iter()
                 .filter(|(_, integration, _)| integration == integration_id)
                 .collect::<Vec<_>>();
-            let raw_paths = visible_raw_operations(raw)
-                .map(intent_operation_path)
-                .filter(|raw_path| {
+            let final_paths = final_edit
+                .edits
+                .iter()
+                .map(|entry| entry.path.clone())
+                .chain(
+                    final_edit
+                        .conflicts
+                        .iter()
+                        .map(|conflict| conflict.path.clone()),
+                )
+                .filter(|final_path| {
                     integration_targets
                         .iter()
-                        .any(|(_, _, target)| managed_path_overlaps(target, raw_path))
+                        .any(|(_, _, target)| managed_path_overlaps(target, final_path))
                 })
                 .map(|path| display_semantic_path(&path))
                 .collect::<Vec<_>>();
@@ -4641,18 +4447,14 @@ fn project_managed_integrations(
                 })
                 .collect::<Vec<_>>();
             let mut issue_ids = issue_ids;
-            for decision in raw
-                .decisions
-                .iter()
-                .filter(|decision| decision.status == RawDecisionStatus::Superseded)
-            {
-                let decision_path = intent_operation_path(&decision.operation);
+            for final_conflict in &final_edit.conflicts {
+                let decision_path = final_conflict.path.clone();
                 if integration_targets
                     .iter()
                     .any(|(_, _, target)| managed_path_overlaps(target, &decision_path))
                 {
                     issue_ids.push(format!(
-                        "RAW_DECISION_SUPERSEDED:{}",
+                        "FINAL_EDIT_CONFLICT:{}",
                         display_semantic_path(&decision_path)
                     ));
                 }
@@ -4662,21 +4464,69 @@ fn project_managed_integrations(
                 .iter()
                 .find(|(key, _)| key.starts_with(&format!("{integration_id}.")))
                 .map(|(_, value)| value.clone());
-            let effective_enabled = integration_targets.iter().any(|(_, _, target)| {
-                raw_conflict_path_value(effective, target)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            });
+            let effective_enabled = integration_targets
+                .iter()
+                .filter(|(setting, _, _)| setting.ends_with("Port"))
+                .filter_map(|(setting, _, _)| managed_setting_path(kind, setting))
+                .any(|target| {
+                    semantic_path_value(effective, &target)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
+                });
+            let settings = integration_targets
+                .iter()
+                .map(|(setting, _, _)| *setting)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter_map(|setting| {
+                    let path = managed_setting_path(kind, setting)?;
+                    let effective_value = semantic_value_at(effective, &path).ok()?;
+                    let effective_value = match effective_value {
+                        SemanticValue::Present(Value::String(ref address))
+                            if setting.ends_with("Port") && address.starts_with("127.0.0.1:") =>
+                        {
+                            address
+                                .rsplit_once(':')
+                                .and_then(|(_, port)| port.parse::<u16>().ok())
+                                .map(|port| SemanticValue::Present(json!(port)))
+                                .unwrap_or(effective_value)
+                        }
+                        value => value,
+                    };
+                    let saved_value = managed
+                        .values
+                        .get(setting)
+                        .cloned()
+                        .map(SemanticValue::Present)
+                        .unwrap_or(SemanticValue::Missing);
+                    let can_use_saved_value = saved_value != SemanticValue::Missing
+                        && !semantic_values_equal_at(
+                            &semantic_value_at(&rendered, &path).ok()?,
+                            &semantic_value_at(upstream, &path).ok()?,
+                            &path,
+                        );
+                    Some(ManagedSettingProjection {
+                        setting_id: setting.into(),
+                        saved_value,
+                        effective_value,
+                        can_use_saved_value,
+                    })
+                })
+                .collect::<Vec<_>>();
             let status = if intent_value.is_none() && !issue_ids.is_empty() {
                 ManagedIntegrationStatus::NeedsAttention
-            } else if intent_value.is_some() && (!issue_ids.is_empty() || !raw_paths.is_empty()) {
+            } else if intent_value.is_some() && (!issue_ids.is_empty() || !final_paths.is_empty()) {
                 ManagedIntegrationStatus::Overridden
+            } else if settings.iter().any(|setting| setting.can_use_saved_value) {
+                ManagedIntegrationStatus::LatestSettings
             } else if intent_value.is_some() {
                 ManagedIntegrationStatus::Explicit
-            } else if !raw_paths.is_empty() && effective_enabled {
-                ManagedIntegrationStatus::RawOnly
-            } else if !effective_enabled && (intent_value.is_some() || !raw_paths.is_empty()) {
+            } else if !final_paths.is_empty() && effective_enabled {
+                ManagedIntegrationStatus::FinalOnly
+            } else if effective_enabled {
+                ManagedIntegrationStatus::LatestSettings
+            } else if !effective_enabled && (intent_value.is_some() || !final_paths.is_empty()) {
                 ManagedIntegrationStatus::NeedsAttention
             } else {
                 ManagedIntegrationStatus::Inactive
@@ -4685,12 +4535,33 @@ fn project_managed_integrations(
                 integration_id: (*integration_id).into(),
                 status,
                 effective_enabled,
+                settings,
                 intent_value,
-                raw_paths,
+                final_paths,
                 issue_ids,
             }
         })
         .collect()
+}
+
+fn managed_setting_path(kind: ProgramKind, setting: &str) -> Option<SemanticPath> {
+    let leaf = match setting {
+        "dashboard.singBoxApi.listenPort" => "listen_port",
+        "dashboard.singBoxApi.updateInterval" => "update_interval",
+        "dashboard.singBoxClash.listenPort" => "external_controller",
+        "dashboard.singBoxClash.downloadUrl" => "external_ui_download_url",
+        "dashboard.xray.apiPort" | "dashboard.xray.metricsPort" => "listen",
+        "dashboard.mihomo.listenPort" => "external-controller",
+        "dashboard.mihomo.downloadUrl" => "external-ui-url",
+        _ => return None,
+    };
+    managed_ownership_targets(kind)
+        .into_iter()
+        .find_map(|(owner, _, path)| {
+            (owner == setting
+                && matches!(path.last(), Some(SemanticPathSegment::Key { key }) if key == leaf))
+            .then_some(path)
+        })
 }
 
 fn managed_ownership_targets(kind: ProgramKind) -> Vec<(&'static str, &'static str, SemanticPath)> {
@@ -4869,203 +4740,17 @@ fn managed_ownership_targets(kind: ProgramKind) -> Vec<(&'static str, &'static s
     }
 }
 
-fn managed_integration_active(managed: &ManagedIntegrationIntent, integration_id: &str) -> bool {
-    let prefix = format!("{integration_id}.");
-    managed.values.keys().any(|key| key.starts_with(&prefix))
-}
-
-/// A managed leaf is overridden by a Raw ancestor, or by the exact leaf.
-/// Descendants of a managed leaf are intentionally not considered overlap so
-/// extensions such as Clash `secret` remain user-owned Raw fields.
-fn managed_path_overlaps(target: &[SemanticPathSegment], raw: &[SemanticPathSegment]) -> bool {
-    raw.len() <= target.len() && raw.iter().zip(target).all(|(left, right)| left == right)
-}
-
-fn raw_operation_matches_managed_duration(
-    setting: &str,
+/// A managed leaf overlaps a Final editor decision made at the same path or
+/// at an ancestor. Descendant extension fields remain independent.
+fn managed_path_overlaps(
     target: &[SemanticPathSegment],
-    operation: &IntentOperation,
-    managed: &ManagedIntegrationIntent,
+    final_path: &[SemanticPathSegment],
 ) -> bool {
-    if setting != "dashboard.singBoxApi.updateInterval"
-        || !is_sing_box_dashboard_interval_path(target)
-        || intent_operation_path(operation) != target
-    {
-        return false;
-    }
-    let IntentOperation::Set { value, .. } = operation else {
-        return false;
-    };
-    let Some(raw_value) = value.as_str() else {
-        return false;
-    };
-    let managed_value = managed
-        .values
-        .get(setting)
-        .and_then(Value::as_str)
-        .unwrap_or("1d");
-    parse_dashboard_interval_nanos(managed_value).is_some()
-        && parse_dashboard_interval_nanos(managed_value)
-            == parse_dashboard_interval_nanos(raw_value)
-}
-
-pub fn managed_raw_override_paths(
-    kind: ProgramKind,
-    managed: &ManagedIntegrationIntent,
-    raw: &RawManualIntent,
-) -> Vec<String> {
-    let targets = managed_ownership_targets(kind)
-        .into_iter()
-        .filter(|(_, integration, _)| managed_integration_active(managed, integration))
-        .collect::<Vec<_>>();
-    let mut paths = visible_raw_operations(raw)
-        .map(|operation| {
-            let raw_path = intent_operation_path(operation);
-            let is_override = targets.iter().any(|(setting, _, target)| {
-                managed_path_overlaps(target, &raw_path)
-                    && !raw_operation_matches_managed_duration(setting, target, operation, managed)
-            });
-            (is_override, raw_path)
-        })
-        .filter_map(|(is_override, path)| is_override.then_some(path))
-        .map(|path| display_semantic_path(&path))
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.dedup();
-    paths
-}
-
-/// Remove only Raw semantics owned by an enabled Details integration.  A Set
-/// on an ancestor object is trimmed so unrelated extension fields (for
-/// example Clash `secret`) survive the takeover.  Destructive sequence
-/// operations cannot be split safely and are removed as the single confirmed
-/// overlapping operation.
-pub fn remove_managed_raw_overrides(
-    kind: ProgramKind,
-    managed: &ManagedIntegrationIntent,
-    raw: &mut RawManualIntent,
-) -> usize {
-    let targets = managed_ownership_targets(kind)
-        .into_iter()
-        .filter(|(_, integration, _)| managed_integration_active(managed, integration))
-        .collect::<Vec<_>>();
-    let mut removed = 0usize;
-    let mut retained = Vec::new();
-    for operation in std::mem::take(&mut raw.operations) {
-        let operation_path = intent_operation_path(&operation);
-        let overlapping = targets
+    final_path.len() <= target.len()
+        && final_path
             .iter()
-            .filter(|(setting, _, target)| {
-                managed_path_overlaps(target, &operation_path)
-                    && !raw_operation_matches_managed_duration(setting, target, &operation, managed)
-            })
-            .collect::<Vec<_>>();
-        if overlapping.is_empty() {
-            retained.push(operation);
-            continue;
-        }
-        removed = removed.saturating_add(1);
-        let IntentOperation::Set { path, value } = operation else {
-            continue;
-        };
-        let mut leaves = Vec::new();
-        flatten_raw_set(&path, &value, &mut leaves);
-        retained.extend(leaves.into_iter().filter(|leaf| {
-            let leaf_path = intent_operation_path(leaf);
-            !targets
-                .iter()
-                .any(|(_, _, target)| managed_path_overlaps(target, &leaf_path))
-        }));
-    }
-    raw.operations = retained;
-    raw.decisions.retain(|decision| {
-        let operation_path = intent_operation_path(&decision.operation);
-        let overlaps = targets.iter().any(|(setting, _, target)| {
-            managed_path_overlaps(target, &operation_path)
-                && !raw_operation_matches_managed_duration(
-                    setting,
-                    target,
-                    &decision.operation,
-                    managed,
-                )
-        });
-        if overlaps {
-            removed = removed.saturating_add(1);
-        }
-        !overlaps
-    });
-    removed
-}
-
-fn canonicalize_managed_raw_operations(
-    kind: ProgramKind,
-    generated: &Value,
-    managed: &ManagedIntegrationIntent,
-    raw: &mut RawManualIntent,
-) {
-    let targets = managed_ownership_targets(kind)
-        .into_iter()
-        .filter(|(_, integration, _)| managed_integration_active(managed, integration))
-        .map(|(_, _, target)| target)
-        .collect::<Vec<_>>();
-    let mut canonical = Vec::new();
-    for operation in std::mem::take(&mut raw.operations) {
-        let path = intent_operation_path(&operation);
-        if !targets
-            .iter()
-            .any(|target| managed_path_overlaps(target, &path))
-        {
-            canonical.push(operation);
-            continue;
-        }
-        let mut operation_effective = generated.clone();
-        if apply_intent_operation(&mut operation_effective, &operation).is_err() {
-            canonical.push(operation);
-            continue;
-        }
-        canonical.extend(diff_raw_intent(generated, &operation_effective).operations);
-    }
-    raw.operations = canonical;
-}
-
-fn flatten_raw_set(
-    path: &[SemanticPathSegment],
-    value: &Value,
-    operations: &mut Vec<IntentOperation>,
-) {
-    match value {
-        Value::Object(object) if !object.is_empty() => {
-            for (key, child) in object {
-                let mut child_path = path.to_vec();
-                child_path.push(SemanticPathSegment::Key { key: key.clone() });
-                flatten_raw_set(&child_path, child, operations);
-            }
-        }
-        Value::Array(array) if sequence_identities(array).is_some() => {
-            let identities = sequence_identities(array).expect("identity shape was checked");
-            for ((field, identity), child) in identities.into_iter().zip(array) {
-                let mut child_path = path.to_vec();
-                child_path.push(SemanticPathSegment::Identity {
-                    field,
-                    value: identity,
-                });
-                flatten_raw_set(&child_path, child, operations);
-            }
-        }
-        _ => operations.push(IntentOperation::Set {
-            path: path.to_vec(),
-            value: value.clone(),
-        }),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ConfigurationLayer {
-    Source,
-    Intent,
-    Details,
-    RawDecision,
+            .zip(target)
+            .all(|(left, right)| left == right)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5079,6 +4764,7 @@ pub enum ConfigurationGate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConfigurationRecoveryAction {
+    OpenCompatibility,
     ResolveSourceConflict,
     ResolveLayerConflict,
     OpenFinalConfiguration,
@@ -5090,6 +4776,8 @@ pub enum ConfigurationRecoveryAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationGateBlocker {
     pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
     pub message_key: String,
     pub scope: ConfigurationIssueScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5097,46 +4785,6 @@ pub struct ConfigurationGateBlocker {
     #[serde(default)]
     pub blocks: Vec<ConfigurationGate>,
     pub recovery_action: ConfigurationRecoveryAction,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigurationLayerTrace {
-    pub semantic_path: String,
-    #[serde(default)]
-    pub source_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guided_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_value: Option<Value>,
-    pub winner_layer: ConfigurationLayer,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_decision_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_decision_status: Option<RawDecisionStatus>,
-    #[serde(default)]
-    pub issue_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawDecisionProjection {
-    pub decision_id: String,
-    pub semantic_path: String,
-    pub operation: IntentOperation,
-    pub status: RawDecisionStatus,
-    pub origin: RawDecisionOrigin,
-    pub basis: RawDecisionBasis,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upstream_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_value: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5152,49 +4800,75 @@ pub struct ConfigurationEditorIssue {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigurationEditorPath {
+pub struct ConfigurationEditorDocument {
+    pub content: String,
+    pub revision: ConfigurationRevision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FinalEditStatus {
+    Clean,
+    Modified,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CandidateStatus {
+    Unsaved,
+    PendingValidation,
+    Invalid,
+    Validated,
+    Applied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FinalChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FinalChangeProjection {
+    pub edit_id: String,
     pub semantic_path: String,
-    #[serde(default)]
-    pub segments: Vec<SemanticPathSegment>,
-    #[serde(default)]
-    pub source_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intent_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_value: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_value: Option<Value>,
-    pub winner_layer: ConfigurationLayer,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_decision: Option<RawDecisionProjection>,
+    pub segments: SemanticPath,
+    pub kind: FinalChangeKind,
+    pub upstream_value: SemanticValue,
+    pub final_value: SemanticValue,
     #[serde(default)]
     pub issues: Vec<ConfigurationEditorIssue>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigurationDecisionCounts {
-    pub active: u32,
-    pub resolved: u32,
-    pub superseded: u32,
-    pub dormant: u32,
+pub struct FinalConflictProjection {
+    pub conflict_id: String,
+    pub semantic_path: String,
+    pub segments: SemanticPath,
+    pub kind: FinalMergeConflictKind,
+    pub base_value: SemanticValue,
+    pub upstream_value: SemanticValue,
+    pub user_value: SemanticValue,
+    pub can_merge: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationEditorView {
-    pub content: String,
-    pub revision: ConfigurationRevision,
+    pub document: ConfigurationEditorDocument,
+    pub edit_status: FinalEditStatus,
+    pub candidate_status: CandidateStatus,
     #[serde(default)]
-    pub paths: Vec<ConfigurationEditorPath>,
-    pub decision_counts: ConfigurationDecisionCounts,
+    pub changes: Vec<FinalChangeProjection>,
+    #[serde(default)]
+    pub conflicts: Vec<FinalConflictProjection>,
     #[serde(default)]
     pub blockers: Vec<ConfigurationGateBlocker>,
-    pub validation_status: CandidateValidationStatus,
     pub can_save: bool,
     pub can_validate: bool,
     pub can_apply: bool,
@@ -5209,11 +4883,12 @@ pub struct ConfigurationWorkspaceView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurationStateView {
-    pub schema_version: u32,
     pub kind: ProgramKind,
     pub format: ConfigurationFormat,
+    pub state_revision: u64,
     pub generation: u64,
     pub compatibility_profile: CoreCompatibilityProfile,
+    pub core_admission: Option<crate::CoreAdmissionReport>,
     pub source_statuses: Vec<SourceStatus>,
     #[serde(default)]
     pub source_parse_summaries: BTreeMap<String, SourceParseSummary>,
@@ -5227,9 +4902,17 @@ pub struct ConfigurationStateView {
     pub guided_projection: Vec<GuidedProjection>,
     #[serde(default)]
     pub managed_integrations: Vec<ManagedIntegrationProjection>,
-    #[serde(default)]
-    pub compatibility_references: Vec<crate::CoreCompatibilityReference>,
     pub workspace: ConfigurationWorkspaceView,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationWorkspaceSnapshot {
+    pub state: ConfigurationStateView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_session: Option<FinalEditorSession>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_result: Option<ConfigurationOperationResult>,
 }
 
 pub fn parse_semantic_document(format: ConfigurationFormat, content: &[u8]) -> Result<Value> {
@@ -5237,7 +4920,8 @@ pub fn parse_semantic_document(format: ConfigurationFormat, content: &[u8]) -> R
         ConfigurationFormat::Jsonc => {
             serde_json::from_slice(&normalize_jsonc(content)).map_err(|error| {
                 CamelliaNexusError::new(ErrorCode::ConfigInvalid, "Configuration is not valid JSON")
-                    .with_details(error.to_string())
+                    .with_message_key("CONFIGURATION_SYNTAX_INVALID")
+                    .with_details(format!("line={}; column={}", error.line(), error.column()))
             })?
         }
         ConfigurationFormat::Yaml => {
@@ -5247,14 +4931,20 @@ pub fn parse_semantic_document(format: ConfigurationFormat, content: &[u8]) -> R
                         ErrorCode::ConfigInvalid,
                         "Configuration is not valid YAML",
                     )
-                    .with_details(error.to_string())
+                    .with_message_key("CONFIGURATION_SYNTAX_INVALID")
+                    .with_details(error.location().map_or_else(
+                        || "format=yaml".into(),
+                        |location| {
+                            format!("line={}; column={}", location.line(), location.column())
+                        },
+                    ))
                 })?;
-            serde_json::to_value(yaml).map_err(|error| {
+            serde_json::to_value(yaml).map_err(|_| {
                 CamelliaNexusError::new(
                     ErrorCode::ConfigInvalid,
                     "YAML configuration contains unsupported non-string keys",
                 )
-                .with_details(error.to_string())
+                .with_message_key("CONFIGURATION_SYNTAX_INVALID")
             })?
         }
     };
@@ -5353,6 +5043,32 @@ mod tests {
     use super::*;
     use crate::{MihomoDashboardSpec, SingBoxClashDashboardSpec, SingBoxDashboardSpec};
 
+    #[test]
+    fn syntax_diagnostics_do_not_echo_invalid_values_or_mapping_keys() {
+        for (format, content) in [
+            (
+                ConfigurationFormat::Jsonc,
+                "{\"fixture-private-token\": invalid}",
+            ),
+            (
+                ConfigurationFormat::Yaml,
+                "fixture-private-token: 1\nfixture-private-token: 2",
+            ),
+            (ConfigurationFormat::Yaml, "? [fixture-private-token]\n: 1"),
+        ] {
+            let error = parse_semantic_document(format, content.as_bytes()).unwrap_err();
+            assert_eq!(
+                error.message_key.as_deref(),
+                Some("CONFIGURATION_SYNTAX_INVALID")
+            );
+            assert!(
+                !serde_json::to_string(&error)
+                    .unwrap()
+                    .contains("fixture-private-token")
+            );
+        }
+    }
+
     fn snapshot(kind: ProgramKind, id: &str, content: &str) -> SourceSnapshot {
         SourceSnapshot::parse(
             id,
@@ -5387,10 +5103,28 @@ mod tests {
                 .expect("fingerprint"),
             profile_hash: state.compatibility_profile.profile_hash.clone(),
             config_hash: state.desired.revision.content_hash.clone(),
-            validator_contract_revision: "test-validator-v1".into(),
+            candidate_generation: state.generation,
+            validator_contract_revision: crate::CORE_IMPLEMENTATION_REVISION.into(),
             native_accepted: true,
             validated_unix_ms: 1,
         }
+    }
+
+    fn replace_test_base(state: &mut ConfigurationState, value: Value, created_unix_ms: u64) {
+        let content = serialize_semantic_document(state.format, &value).expect("serialize base");
+        state.base = ConfigurationCandidate {
+            revision: ConfigurationRevision::new(
+                state.generation.saturating_add(1),
+                &content,
+                created_unix_ms,
+            ),
+            content,
+            compatibility_profile_hash: state.compatibility_profile.profile_hash.clone(),
+            validation: CandidateValidationStatus::Pending,
+            validation_evidence: None,
+            diagnostics: Vec::new(),
+            conflicts: Vec::new(),
+        };
     }
 
     fn provenance_at<'a>(
@@ -5614,127 +5348,27 @@ mod tests {
     }
 
     #[test]
-    fn provenance_tracks_guided_and_raw_layers_without_losing_source_origin() {
-        let merge = merge_configuration_sources(
-            ProgramKind::SingBox,
-            &[snapshot(
-                ProgramKind::SingBox,
-                "source",
-                r#"{"log":{"level":"info"},"outbounds":[{"tag":"direct","type":"direct"}]}"#,
-            )],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::SingBox,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::SingBox),
-        )
-        .expect("state");
-        state
-            .guided_intent
-            .set("logging.level", Value::String("debug".into()));
-        state.rebuild_desired(2).expect("guided rebuild");
-        state
-            .replace_raw_from_edited(
-                br#"{"log":{"level":"debug"},"outbounds":[{"tag":"direct","type":"block"}]}"#,
-                3,
-            )
-            .expect("raw rebuild");
-
-        let log = state
-            .provenance
-            .iter()
-            .find(|entry| entry.semantic_path == "/log/level")
-            .expect("log provenance");
-        assert_eq!(log.source_ids, vec!["source".to_owned()]);
-        assert!(log.guided);
-        assert!(!log.raw);
-
-        let outbound = state
-            .provenance
-            .iter()
-            .find(|entry| entry.semantic_path == "/outbounds/0/type")
-            .expect("outbound provenance");
-        assert_eq!(outbound.source_ids, vec!["source".to_owned()]);
-        assert!(!outbound.guided);
-        assert!(outbound.raw);
-    }
-
-    #[test]
-    fn raw_identity_delete_survives_a_new_base() {
-        let old = serde_json::json!({"outbounds":[{"tag":"a"},{"tag":"b"}]});
-        let edited = serde_json::json!({"outbounds":[{"tag":"b"}]});
-        let intent = diff_raw_intent(&old, &edited);
-        let new =
-            serde_json::json!({"outbounds":[{"tag":"a","type":"direct"},{"tag":"b"},{"tag":"c"}]});
-        let (effective, conflicts) = apply_raw_intent(&new, &intent);
-        assert!(conflicts.is_empty());
-        assert_eq!(
-            effective["outbounds"],
-            serde_json::json!([{"tag":"b"},{"tag":"c"}])
-        );
-    }
-
-    #[test]
-    fn deleting_all_guided_fields_is_only_regular_raw_delete_operations() {
-        let base = serde_json::json!({
-            "log": {"loglevel": "info"},
-            "routing": {"domainStrategy": "AsIs"},
-            "unknown": {"keep": true}
-        });
-        let edited = serde_json::json!({"unknown": {"keep": true}});
-        let intent = diff_raw_intent(&base, &edited);
-        assert!(
-            intent
-                .operations
-                .iter()
-                .all(|operation| matches!(operation, IntentOperation::Delete { .. }))
-        );
-        assert_eq!(intent.operations.len(), 2);
-
-        let updated_base = serde_json::json!({
-            "log": {"loglevel": "debug"},
-            "routing": {"domainStrategy": "IPIfNonMatch"},
-            "unknown": {"keep": true, "new": 1}
-        });
-        let (effective, conflicts) = apply_raw_intent(&updated_base, &intent);
-        assert!(conflicts.is_empty());
-        assert_eq!(
-            effective["unknown"],
-            serde_json::json!({"keep": true, "new": 1})
-        );
-        assert!(effective["log"].get("loglevel").is_none());
-        assert!(effective["routing"].get("domainStrategy").is_none());
-    }
-
-    #[test]
-    fn identityless_sequence_conflicts_instead_of_guessing_after_source_change() {
-        let old = serde_json::json!({"rules":["A","B"]});
-        let edited = serde_json::json!({"rules":["A","C"]});
-        let intent = diff_raw_intent(&old, &edited);
-        let new = serde_json::json!({"rules":["A","B","D"]});
-        let (effective, conflicts) = apply_raw_intent(&new, &intent);
-        assert_eq!(effective, new);
-        assert_eq!(conflicts.len(), 1);
-    }
-
-    #[test]
     fn semantic_three_way_rebase_merges_disjoint_changes_and_detects_same_path_conflict() {
         let base = serde_json::json!({"a":1,"b":1});
         let user = serde_json::json!({"a":9,"b":1});
         let updated = serde_json::json!({"a":1,"b":2});
-        let result = rebase_raw_document(&base, &user, &updated);
+        let result = rebase_final_document(&base, &user, &updated);
         assert!(result.conflicts.is_empty());
         assert_eq!(result.document, serde_json::json!({"a":9,"b":2}));
 
         let user = serde_json::json!({"a":3,"b":1});
         let updated = serde_json::json!({"a":2,"b":1});
-        let result = rebase_raw_document(&base, &user, &updated);
+        let result = rebase_final_document(&base, &user, &updated);
         assert_eq!(result.conflicts.len(), 1);
         assert_eq!(result.conflicts[0].semantic_path, "/a");
-        assert_eq!(result.document["a"], 3);
+        // An unresolved conflict is safe-by-default: the effective preview
+        // follows the updated upstream while retaining Mine in conflict
+        // metadata for an explicit Keep mine resolution.
+        assert_eq!(result.document["a"], 2);
+        assert_eq!(
+            result.conflicts[0].user_value,
+            SemanticValue::Present(json!(3))
+        );
     }
 
     #[test]
@@ -5748,10 +5382,10 @@ mod tests {
         let updated = serde_json::json!({
             "outbounds": [{"tag":"a","server":"new"},{"tag":"b","server":"b"}]
         });
-        let result = rebase_raw_document(&base, &user, &updated);
+        let result = rebase_final_document(&base, &user, &updated);
         assert_eq!(result.conflicts.len(), 1);
         assert_eq!(
-            result.conflicts[0].segments,
+            result.conflicts[0].path,
             vec![
                 SemanticPathSegment::Key {
                     key: "outbounds".into(),
@@ -5769,124 +5403,12 @@ mod tests {
             result.conflicts[0].semantic_path,
             "/outbounds[tag=a]/server"
         );
-        assert_eq!(result.document["outbounds"][0]["server"], "mine");
+        assert_eq!(result.document["outbounds"][0]["server"], "new");
+        assert_eq!(
+            result.conflicts[0].user_value,
+            SemanticValue::Present(json!("mine"))
+        );
         assert_eq!(result.document["outbounds"][2]["tag"], "c");
-    }
-
-    #[test]
-    fn raw_conflict_resolution_uses_structured_identity_and_delete_semantics() {
-        let original = serde_json::json!({
-            "outbounds": [
-                {"tag": "direct", "type": "direct"},
-                {"tag": "edge", "server": "old.example"}
-            ]
-        });
-        let user = serde_json::json!({
-            "outbounds": [{"tag": "direct", "type": "direct"}]
-        });
-        let updated = serde_json::json!({
-            "outbounds": [
-                {"tag": "direct", "type": "direct"},
-                {"tag": "edge", "server": "new.example"}
-            ]
-        });
-        let rebased = rebase_raw_document(&original, &user, &updated);
-        let conflict = rebased.conflicts[0].clone();
-        assert_eq!(conflict.conflict_type, "delete-vs-modify");
-        assert!(matches!(
-            conflict.segments.as_slice(),
-            [
-                SemanticPathSegment::Key { key },
-                SemanticPathSegment::Identity { field, value }
-            ] if key == "outbounds" && field == "tag" && value == "edge"
-        ));
-        let mut draft = RawDraftSession {
-            session_id: "identity-delete".into(),
-            draft_revision: 1,
-            based_on_generation: 2,
-            base_content: serialize_semantic_document(ConfigurationFormat::Jsonc, &updated)
-                .expect("base"),
-            user_content: serialize_semantic_document(ConfigurationFormat::Jsonc, &user)
-                .expect("user"),
-            working_content: serialize_semantic_document(
-                ConfigurationFormat::Jsonc,
-                &rebased.document,
-            )
-            .expect("working"),
-            conflicts: rebased.conflicts,
-            resolutions: BTreeMap::new(),
-            unresolved_conflict_ids: vec![conflict.conflict_id.clone()],
-            updated_unix_ms: 1,
-        };
-
-        resolve_raw_draft_conflict(
-            &mut draft,
-            ConfigurationFormat::Jsonc,
-            &conflict.conflict_id,
-            RawConflictResolution::KeepMine,
-        )
-        .expect("keep deletion");
-
-        let resolved =
-            parse_semantic_document(ConfigurationFormat::Jsonc, draft.working_content.as_bytes())
-                .expect("resolved document");
-        assert_eq!(resolved["outbounds"], user["outbounds"]);
-        assert!(draft.unresolved_conflict_ids.is_empty());
-        assert_eq!(draft.conflicts, vec![conflict]);
-    }
-
-    #[test]
-    fn raw_conflict_resolution_state_tracks_editor_undo_and_redo() {
-        let original = serde_json::json!({"route": {"final": "old"}});
-        let user = serde_json::json!({"route": {"final": "mine"}});
-        let updated = serde_json::json!({"route": {"final": "updated"}});
-        let rebased = rebase_raw_document(&original, &user, &updated);
-        let conflict = rebased.conflicts[0].clone();
-        let mut draft = RawDraftSession {
-            session_id: "undo-redo".into(),
-            draft_revision: 1,
-            based_on_generation: 2,
-            base_content: serialize_semantic_document(ConfigurationFormat::Jsonc, &updated)
-                .expect("base"),
-            user_content: serialize_semantic_document(ConfigurationFormat::Jsonc, &user)
-                .expect("user"),
-            working_content: serialize_semantic_document(
-                ConfigurationFormat::Jsonc,
-                &rebased.document,
-            )
-            .expect("working"),
-            conflicts: rebased.conflicts,
-            resolutions: BTreeMap::new(),
-            unresolved_conflict_ids: Vec::new(),
-            updated_unix_ms: 1,
-        };
-        refresh_raw_draft_conflicts(&mut draft, ConfigurationFormat::Jsonc);
-        assert_eq!(
-            draft.unresolved_conflict_ids,
-            std::slice::from_ref(&conflict.conflict_id)
-        );
-
-        resolve_raw_draft_conflict(
-            &mut draft,
-            ConfigurationFormat::Jsonc,
-            &conflict.conflict_id,
-            RawConflictResolution::UseUpdated,
-        )
-        .expect("resolve");
-        let resolved_content = draft.working_content.clone();
-        assert!(draft.unresolved_conflict_ids.is_empty());
-
-        draft.working_content = draft.user_content.clone();
-        refresh_raw_draft_conflicts(&mut draft, ConfigurationFormat::Jsonc);
-        assert_eq!(
-            draft.unresolved_conflict_ids,
-            std::slice::from_ref(&conflict.conflict_id)
-        );
-
-        draft.working_content = resolved_content;
-        refresh_raw_draft_conflicts(&mut draft, ConfigurationFormat::Jsonc);
-        assert!(draft.unresolved_conflict_ids.is_empty());
-        assert_eq!(draft.conflicts, vec![conflict]);
     }
 
     #[test]
@@ -5920,6 +5442,18 @@ mod tests {
             .expect("fragment");
         assert_eq!(value["proxies"][0]["type"], "hysteria2");
         assert!(snapshot.raw_observation_ref.is_some());
+        let rejected = SourceSnapshot::parse_share(
+            "share",
+            "Share links",
+            &CoreTargetIdentity::unknown(ProgramKind::Mihomo, None),
+            b"vmess://unsupported",
+            2,
+        )
+        .unwrap_err();
+        assert_eq!(
+            rejected.message_key.as_deref(),
+            Some("SOURCE_NO_COMPATIBLE_ITEMS")
+        );
     }
 
     #[test]
@@ -5941,6 +5475,7 @@ mod tests {
             compatibility_profile(ProgramKind::SingBox),
         )
         .expect("state");
+        state.mark_candidate_saved().expect("save candidate");
         state
             .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
             .expect("validation");
@@ -5951,9 +5486,13 @@ mod tests {
             .set("logging.level", Value::String("debug".into()));
         state.rebuild_desired(2).expect("rebuild");
         state
+            .mark_candidate_saved()
+            .expect("save changed candidate");
+        state
             .mark_validation(
                 false,
                 vec![ConfigurationDiagnostic {
+                    location: None,
                     code: "CORE_INVALID".into(),
                     message: "invalid".into(),
                     message_key: None,
@@ -5969,6 +5508,40 @@ mod tests {
             state.desired.content,
             state.applied.expect("applied").content
         );
+    }
+
+    #[test]
+    fn format_only_rebuild_preserves_saved_bytes_and_retarget_requires_only_new_validation() {
+        let kind = ProgramKind::Xray;
+        let content = r#"{"log":{"loglevel":"info"}}"#;
+        let mut merge =
+            merge_configuration_sources(kind, &[snapshot(kind, "source", content)]).unwrap();
+        merge.content = content.into();
+        merge.content_hash = hash_bytes(content.as_bytes());
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state.mark_candidate_saved().unwrap();
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .unwrap();
+        state.mark_applied().unwrap();
+        let generation = state.generation;
+        let applied = state.applied.clone();
+        let evidence = state.desired.validation_evidence.clone();
+        state.rebuild_desired(2).unwrap();
+        assert_eq!(state.desired.content, content);
+        assert_eq!(state.generation, generation);
+        assert_eq!(state.desired.validation_evidence, evidence);
+
+        state.compatibility_profile.profile_hash = "different-profile".into();
+        state.rebuild_desired(3).unwrap();
+        assert_eq!(state.desired.content, content);
+        assert!(state.candidate_is_saved());
+        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
+        assert!(state.desired.validation_evidence.is_none());
+        assert_eq!(state.generation, generation + 1);
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.last_known_good, applied);
     }
 
     #[test]
@@ -5990,6 +5563,7 @@ mod tests {
             compatibility_profile(ProgramKind::SingBox),
         )
         .expect("state");
+        state.mark_candidate_saved().expect("save candidate");
         state
             .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
             .expect("validation");
@@ -6005,6 +5579,45 @@ mod tests {
         assert_eq!(error.code, ErrorCode::ConfigConflict);
         assert!(state.applied.is_none());
         assert!(state.last_known_good.is_none());
+    }
+
+    #[test]
+    fn returning_to_identical_content_requires_current_generation_evidence() {
+        let kind = ProgramKind::SingBox;
+        let merge = merge_configuration_sources(
+            kind,
+            &[snapshot(kind, "source", r#"{"log":{"level":"info"}}"#)],
+        )
+        .unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state.mark_candidate_saved().unwrap();
+        let old_evidence = validation_evidence(&state);
+        state
+            .mark_validation(true, Vec::new(), Some(old_evidence.clone()))
+            .unwrap();
+        state.mark_applied().unwrap();
+        let applied = state.applied.clone();
+        state.guided_intent.set("logging.level", json!("debug"));
+        state.rebuild_desired(2).unwrap();
+        state.guided_intent.set("logging.level", json!("info"));
+        state.rebuild_desired(3).unwrap();
+        state.mark_candidate_saved().unwrap();
+        assert_eq!(
+            state.desired.revision.content_hash,
+            old_evidence.config_hash
+        );
+        assert_ne!(state.generation, old_evidence.candidate_generation);
+        let error = state
+            .mark_validation(true, Vec::new(), Some(old_evidence))
+            .unwrap_err();
+        assert_eq!(
+            error.message_key.as_deref(),
+            Some("CORE_VALIDATION_EVIDENCE_STALE")
+        );
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.last_known_good, applied);
+        assert!(!state.view().workspace.editor.can_apply);
     }
 
     #[test]
@@ -6040,7 +5653,7 @@ mod tests {
             ProgramKind::Mihomo,
             &effective,
             &GuidedIntent::default(),
-            &RawManualIntent::default(),
+            &FinalEditState::default(),
         );
         let dns_mode = projection
             .iter()
@@ -6049,6 +5662,50 @@ mod tests {
         assert_eq!(dns_mode.status, GuidedProjectionStatus::Custom);
         assert_eq!(dns_mode.value, Some(serde_json::json!({"advanced": true})));
         assert_eq!(dns_mode.intent_value, None);
+    }
+
+    #[test]
+    fn guided_projection_keeps_the_upstream_value_when_final_configuration_edits_the_path() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "source",
+                r#"{"log":{"level":"info"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        state
+            .guided_intent
+            .set("logging.level", Value::String("fatal".into()));
+        state.rebuild_desired(2).expect("Guided edit");
+        state
+            .replace_final_from_edited(br#"{"log":{"level":"error"}}"#, 3)
+            .expect("Final configuration edit");
+
+        let projection = state
+            .view()
+            .guided_projection
+            .into_iter()
+            .find(|projection| projection.setting_id == "logging.level")
+            .expect("logging projection");
+
+        assert_eq!(projection.status, GuidedProjectionStatus::FinalEdit);
+        assert_eq!(projection.value, Some(Value::String("fatal".into())));
+        assert_eq!(projection.intent_value, Some(Value::String("fatal".into())));
+        assert_eq!(
+            parse_semantic_document(state.format, state.desired.content.as_bytes())
+                .expect("desired")["log"]["level"],
+            Value::String("error".into())
+        );
     }
 
     #[test]
@@ -6064,17 +5721,14 @@ mod tests {
             }),
             ..ManagedConfigSpec::default()
         };
-        let mut intent = GuidedIntent::default();
+        let mut intent = ManagedIntegrationIntent::default();
         sync_managed_dashboard_intent(&mut intent, &managed);
-        let sing_box = apply_guided_intent(
-            ProgramKind::SingBox,
-            &serde_json::json!({
-                "services": [{"tag":"user-service"}],
-                "experimental": {"clash_api": {"secret":"keep"}}
-            }),
-            &intent,
-        )
-        .expect("sing-box dashboard intent");
+        let mut sing_box = serde_json::json!({
+            "services": [{"tag":"user-service"}],
+            "experimental": {"clash_api": {"secret":"keep"}}
+        });
+        apply_dashboard_intent(ProgramKind::SingBox, &mut sing_box, &intent)
+            .expect("sing-box dashboard intent");
         assert_eq!(sing_box["services"][0]["tag"], "user-service");
         assert_eq!(sing_box["services"][1]["listen_port"], 9090);
         assert_eq!(sing_box["experimental"]["clash_api"]["secret"], "keep");
@@ -6091,12 +5745,10 @@ mod tests {
             ..ManagedConfigSpec::default()
         };
         sync_managed_dashboard_intent(&mut intent, &xray_managed);
-        let xray = apply_guided_intent(
-            ProgramKind::Xray,
-            &serde_json::json!({"api":{"services":["UserService"]},"custom":{"keep":true}}),
-            &intent,
-        )
-        .expect("xray dashboard intent");
+        let mut xray =
+            serde_json::json!({"api":{"services":["UserService"]},"custom":{"keep":true}});
+        apply_dashboard_intent(ProgramKind::Xray, &mut xray, &intent)
+            .expect("xray dashboard intent");
         assert_eq!(xray["api"]["listen"], "127.0.0.1:10085");
         assert_eq!(xray["custom"]["keep"], true);
         assert_eq!(xray["metrics"]["listen"], "127.0.0.1:11111");
@@ -6109,82 +5761,24 @@ mod tests {
             ..ManagedConfigSpec::default()
         };
         sync_managed_dashboard_intent(&mut intent, &mihomo_managed);
-        let mihomo = apply_guided_intent(
-            ProgramKind::Mihomo,
-            &serde_json::json!({"secret":"keep"}),
-            &intent,
-        )
-        .expect("mihomo dashboard intent");
+        let mut mihomo = serde_json::json!({"secret":"keep"});
+        apply_dashboard_intent(ProgramKind::Mihomo, &mut mihomo, &intent)
+            .expect("mihomo dashboard intent");
         assert_eq!(mihomo["secret"], "keep");
         assert_eq!(mihomo["external-controller"], "127.0.0.1:9092");
         assert_eq!(mihomo["external-ui"], "camellia-nexus-mihomo-dashboard");
     }
 
     #[test]
-    fn upstream_managed_change_supersedes_a_prior_raw_decision() {
-        let merge = merge_configuration_sources(
-            ProgramKind::Mihomo,
-            &[snapshot(
-                ProgramKind::Mihomo,
-                "base",
-                "external-controller: 127.0.0.1:9090\n",
-            )],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::Mihomo,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::Mihomo),
-        )
-        .expect("state");
-        state
-            .replace_raw_from_edited(b"external-controller: 127.0.0.1:9999\n", 2)
-            .expect("Raw decision");
-        assert_eq!(state.raw_intent.decisions.len(), 1);
-        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
+    fn common_intent_rejects_managed_integration_settings() {
+        let mut guided = GuidedIntent::default();
+        guided.set("dashboard.singBoxApi.listenPort", Value::from(9090));
 
-        sync_managed_dashboard_intent(
-            &mut state.managed_intent,
-            &ManagedConfigSpec {
-                mihomo_dashboard: Some(MihomoDashboardSpec {
-                    listen_port: 9092,
-                    download_url: None,
-                }),
-                ..ManagedConfigSpec::default()
-            },
-        );
-        state.rebuild_desired(3).expect("rebuild");
+        let error = apply_guided_intent(ProgramKind::SingBox, &serde_json::json!({}), &guided)
+            .expect_err("managed setting must not enter Common Intent");
 
-        assert_eq!(state.desired.validation, CandidateValidationStatus::Invalid);
-        assert_eq!(state.desired.conflicts.len(), 1);
-        assert_eq!(
-            state.desired.conflicts[0].message_key.as_deref(),
-            Some("RAW_DECISION_SUPERSEDED")
-        );
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["external-controller"],
-            "127.0.0.1:9092"
-        );
-        assert_eq!(
-            state.raw_intent.decisions[0].status,
-            RawDecisionStatus::Superseded
-        );
-        assert_eq!(
-            state.desired.conflicts[0].scope,
-            ConfigurationIssueScope {
-                surface: ConfigurationSurface::Configuration,
-                owner_id: Some(state.raw_intent.decisions[0].decision_id.clone()),
-            }
-        );
-        assert!(state.guided_intent.values.is_empty());
-        assert!(
-            state
-                .managed_intent
-                .values
-                .contains_key("dashboard.mihomo.listenPort")
-        );
+        assert_eq!(error.code, ErrorCode::ConfigInvalid);
+        assert!(error.message.contains("Unsupported Guided setting"));
     }
 
     #[test]
@@ -6203,7 +5797,7 @@ mod tests {
                 "dashboard": {"enabled": true, "update_interval": "24h0m0s"}
             }]
         });
-        assert!(diff_raw_intent(&base, &edited).operations.is_empty());
+        assert!(diff_intent_operations(&base, &edited).is_empty());
 
         let mut managed = ManagedIntegrationIntent::default();
         managed.set("dashboard.singBoxApi.listenPort", Value::from(9090));
@@ -6217,241 +5811,10 @@ mod tests {
             generated["services"][0]["dashboard"]["update_interval"],
             "24h0m0s"
         );
-        let equivalent = RawManualIntent {
-            based_on_revision: None,
-            operations: vec![IntentOperation::Set {
-                path: vec![
-                    SemanticPathSegment::Key {
-                        key: "services".into(),
-                    },
-                    SemanticPathSegment::Identity {
-                        field: "tag".into(),
-                        value: MANAGED_SING_BOX_API_TAG.into(),
-                    },
-                    SemanticPathSegment::Key {
-                        key: "dashboard".into(),
-                    },
-                    SemanticPathSegment::Key {
-                        key: "update_interval".into(),
-                    },
-                ],
-                value: Value::String("24h0m0s".into()),
-            }],
-            decisions: Vec::new(),
-        };
-        assert!(managed_raw_override_paths(ProgramKind::SingBox, &managed, &equivalent).is_empty());
-
-        let non_equivalent = RawManualIntent {
-            operations: vec![IntentOperation::Set {
-                path: intent_operation_path(&equivalent.operations[0]),
-                value: Value::String("25h".into()),
-            }],
-            ..equivalent.clone()
-        };
-        assert_eq!(
-            managed_raw_override_paths(ProgramKind::SingBox, &managed, &non_equivalent),
-            vec!["/services[tag=camellia-nexus-api]/dashboard/update_interval"]
-        );
     }
 
     #[test]
-    fn clash_secret_and_custom_service_do_not_override_managed_dashboard() {
-        let merge = merge_configuration_sources(
-            ProgramKind::SingBox,
-            &[snapshot(ProgramKind::SingBox, "base", r#"{"experimental":{"clash_api":{"secret":"keep"}},"services":[{"type":"api","tag":"custom","listen_port":9000}]}"#)],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::SingBox,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::SingBox),
-        )
-        .expect("state");
-        sync_managed_dashboard_intent(
-            &mut state.managed_intent,
-            &ManagedConfigSpec {
-                sing_box_clash_dashboard: Some(SingBoxClashDashboardSpec {
-                    listen_port: 9091,
-                    download_url: None,
-                }),
-                ..ManagedConfigSpec::default()
-            },
-        );
-        state.raw_intent.operations.extend([
-            IntentOperation::Set {
-                path: key_path(&["experimental", "clash_api", "secret"]),
-                value: Value::String("new-secret".into()),
-            },
-            IntentOperation::Set {
-                path: vec![
-                    SemanticPathSegment::Key {
-                        key: "services".into(),
-                    },
-                    SemanticPathSegment::Identity {
-                        field: "tag".into(),
-                        value: "custom".into(),
-                    },
-                    SemanticPathSegment::Key {
-                        key: "listen_port".into(),
-                    },
-                ],
-                value: Value::from(9001),
-            },
-        ]);
-        state.rebuild_desired(2).expect("rebuild");
-        assert!(state.desired.conflicts.is_empty());
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["experimental"]
-                ["clash_api"]["secret"],
-            "new-secret"
-        );
-    }
-
-    #[test]
-    fn removing_managed_parent_supersedes_child_and_reorder_decisions_without_anchor_noise() {
-        let merge = merge_configuration_sources(
-            ProgramKind::SingBox,
-            &[snapshot(ProgramKind::SingBox, "base", r#"{}"#)],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::SingBox,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::SingBox),
-        )
-        .expect("state");
-        sync_managed_dashboard_intent(
-            &mut state.managed_intent,
-            &ManagedConfigSpec {
-                sing_box_dashboard: Some(SingBoxDashboardSpec {
-                    listen_port: 9090,
-                    update_interval: "1d".into(),
-                }),
-                sing_box_clash_dashboard: Some(SingBoxClashDashboardSpec {
-                    listen_port: 9091,
-                    download_url: None,
-                }),
-                ..ManagedConfigSpec::default()
-            },
-        );
-        state.rebuild_desired(2).expect("enable dashboards");
-
-        let mut edited =
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
-        edited["experimental"]["clash_api"]["secret"] = Value::String("keep".into());
-        edited["services"]
-            .as_array_mut()
-            .expect("managed services")
-            .push(json!({
-                "type": "api",
-                "tag": "custom-test-service",
-                "listen": "127.0.0.1",
-                "listen_port": 43901
-            }));
-        state
-            .replace_raw_from_edited(&serde_json::to_vec(&edited).unwrap(), 3)
-            .expect("create child and reorder decisions");
-        assert_eq!(state.raw_intent.decisions.len(), 3);
-        assert!(state.desired.conflicts.is_empty());
-
-        state.managed_intent = ManagedIntegrationIntent::default();
-        state.rebuild_desired(4).expect("disable dashboards");
-
-        assert!(
-            state
-                .raw_intent
-                .decisions
-                .iter()
-                .all(|decision| decision.status == RawDecisionStatus::Superseded)
-        );
-        assert_eq!(state.desired.conflicts.len(), 3);
-        assert!(state.desired.conflicts.iter().all(|conflict| {
-            conflict.message_key.as_deref() == Some("RAW_DECISION_SUPERSEDED")
-        }));
-        let candidate =
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
-        assert!(candidate.get("experimental").is_none());
-        assert!(candidate.get("services").is_none());
-
-        let view = state.view();
-        for decision in &state.raw_intent.decisions {
-            let decision_path = display_semantic_path(&intent_operation_path(&decision.operation));
-            let editor_path = view
-                .workspace
-                .editor
-                .paths
-                .iter()
-                .find(|path| path.semantic_path == decision_path)
-                .expect("decision has an editor path");
-            assert_eq!(
-                editor_path
-                    .raw_decision
-                    .as_ref()
-                    .map(|projection| projection.decision_id.as_str()),
-                Some(decision.decision_id.as_str())
-            );
-        }
-        let native = view
-            .managed_integrations
-            .iter()
-            .find(|projection| projection.integration_id == "dashboard.singBoxApi")
-            .expect("native projection");
-        assert_eq!(native.status, ManagedIntegrationStatus::NeedsAttention);
-
-        let secret_id = state
-            .raw_intent
-            .decisions
-            .iter()
-            .find(|decision| {
-                display_semantic_path(&intent_operation_path(&decision.operation))
-                    == "/experimental/clash_api/secret"
-            })
-            .map(|decision| decision.decision_id.clone())
-            .expect("secret decision");
-        state
-            .resolve_raw_decision(&secret_id, RawDecisionResolution::KeepRaw, 5)
-            .expect("explicitly keep child decision");
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["experimental"]
-                ["clash_api"]["secret"],
-            "keep"
-        );
-        assert_eq!(
-            state
-                .raw_intent
-                .decisions
-                .iter()
-                .find(|decision| decision.decision_id == secret_id)
-                .map(|decision| decision.status),
-            Some(RawDecisionStatus::Resolved)
-        );
-
-        let remaining = state
-            .raw_intent
-            .decisions
-            .iter()
-            .filter(|decision| decision.status == RawDecisionStatus::Superseded)
-            .map(|decision| decision.decision_id.clone())
-            .collect::<Vec<_>>();
-        for (offset, decision_id) in remaining.iter().enumerate() {
-            state
-                .resolve_raw_decision(
-                    decision_id,
-                    RawDecisionResolution::AcceptUpstream,
-                    6 + offset as u64,
-                )
-                .expect("accept remaining upstream decisions");
-        }
-        assert!(state.desired.conflicts.is_empty());
-        assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
-    }
-
-    #[test]
-    fn raw_editor_static_validation_rejects_invalid_ports_and_duplicate_identities() {
+    fn final_editor_static_validation_rejects_invalid_ports_and_duplicate_identities() {
         let merge = merge_configuration_sources(
             ProgramKind::Xray,
             &[snapshot(
@@ -6478,7 +5841,7 @@ mod tests {
             r#"{"inbounds":[{"tag":"local","port":1080},{"tag":"local","port":1081}]}"#,
         ] {
             let error = state
-                .replace_raw_from_edited(invalid_document.as_bytes(), 2)
+                .replace_final_from_edited(invalid_document.as_bytes(), 2)
                 .expect_err("invalid candidate");
             assert_eq!(error.code, ErrorCode::ConfigInvalid);
             assert_eq!(
@@ -6487,122 +5850,16 @@ mod tests {
             );
             assert_eq!(state.generation, original_generation);
             assert_eq!(state.desired.content, original_content);
-            assert!(state.raw_intent.decisions.is_empty());
+            assert!(state.final_edit.edits.is_empty());
         }
 
         state
-            .replace_raw_from_edited(
+            .replace_final_from_edited(
                 br#"{"inbounds":[{"tag":"local","port":1080}],"future_extension":{"port":"opaque"}}"#,
                 3,
             )
             .expect("unknown extensions remain available to the native validator");
         assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
-    }
-
-    #[test]
-    fn managed_takeover_preserves_unowned_fields_from_an_ancestor_set() {
-        let mut managed = ManagedIntegrationIntent::default();
-        managed.set("dashboard.singBoxClash.listenPort", Value::from(9091));
-        let mut raw = RawManualIntent {
-            based_on_revision: None,
-            operations: vec![IntentOperation::Set {
-                path: key_path(&["experimental", "clash_api"]),
-                value: serde_json::json!({
-                    "external_controller": "127.0.0.1:9999",
-                    "external_ui": "custom",
-                    "secret": "keep"
-                }),
-            }],
-            decisions: Vec::new(),
-        };
-        assert_eq!(
-            remove_managed_raw_overrides(ProgramKind::SingBox, &managed, &mut raw),
-            1
-        );
-        assert_eq!(raw.operations.len(), 1);
-        assert_eq!(
-            display_semantic_path(&intent_operation_path(&raw.operations[0])),
-            "/experimental/clash_api/secret"
-        );
-        let mut generated = serde_json::json!({});
-        apply_dashboard_intent(ProgramKind::SingBox, &mut generated, &managed).unwrap();
-        let (effective, conflicts) = apply_raw_intent(&generated, &raw);
-        assert!(conflicts.is_empty());
-        assert_eq!(effective["experimental"]["clash_api"]["secret"], "keep");
-        assert_eq!(
-            effective["experimental"]["clash_api"]["external_controller"],
-            "127.0.0.1:9091"
-        );
-    }
-
-    #[test]
-    fn xray_ownership_ignores_extensions_but_blocks_managed_containers() {
-        let mut managed = ManagedIntegrationIntent::default();
-        managed.set("dashboard.xray.apiPort", Value::from(10085));
-        managed.set("dashboard.xray.metricsPort", Value::from(11111));
-        let extensions = RawManualIntent {
-            based_on_revision: None,
-            operations: vec![
-                IntentOperation::Set {
-                    path: key_path(&["api", "custom"]),
-                    value: Value::Bool(true),
-                },
-                IntentOperation::Set {
-                    path: key_path(&["policy", "system", "custom"]),
-                    value: Value::Bool(true),
-                },
-            ],
-            decisions: Vec::new(),
-        };
-        assert!(managed_raw_override_paths(ProgramKind::Xray, &managed, &extensions).is_empty());
-
-        let container = RawManualIntent {
-            based_on_revision: None,
-            operations: vec![IntentOperation::Delete {
-                path: key_path(&["api"]),
-            }],
-            decisions: Vec::new(),
-        };
-        assert_eq!(
-            managed_raw_override_paths(ProgramKind::Xray, &managed, &container),
-            vec!["/api".to_owned()]
-        );
-    }
-
-    #[test]
-    fn raw_only_projection_is_owned_by_details_without_leaking_to_intent() {
-        let merge = merge_configuration_sources(
-            ProgramKind::Mihomo,
-            &[snapshot(ProgramKind::Mihomo, "base", "mode: rule\n")],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::Mihomo,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::Mihomo),
-        )
-        .expect("state");
-        state.raw_intent.operations.push(IntentOperation::Set {
-            path: key_path(&["external-controller"]),
-            value: Value::String("127.0.0.1:9092".into()),
-        });
-        state.rebuild_desired(2).expect("rebuild");
-        let view = state.view();
-        assert!(view.desired.conflicts.is_empty());
-        assert!(
-            view.guided_projection
-                .iter()
-                .all(|projection| projection.setting_id != "dashboard.mihomo")
-        );
-        let projection = view
-            .managed_integrations
-            .iter()
-            .find(|projection| projection.integration_id == "dashboard.mihomo")
-            .expect("managed projection");
-        assert_eq!(projection.status, ManagedIntegrationStatus::RawOnly);
-        assert!(projection.effective_enabled);
     }
 
     #[test]
@@ -6658,261 +5915,6 @@ mod tests {
     }
 
     #[test]
-    fn v3_dashboard_values_migrate_without_touching_applied_or_lkg() {
-        let merge = merge_configuration_sources(
-            ProgramKind::Mihomo,
-            &[snapshot(ProgramKind::Mihomo, "base", "mode: rule\n")],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::Mihomo,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::Mihomo),
-        )
-        .expect("state");
-        state.schema_version = LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION;
-        state
-            .guided_intent
-            .set("dashboard.mihomo.listenPort", Value::from(9092));
-        let applied = state.applied.clone();
-        let lkg = state.last_known_good.clone();
-        assert!(state.migrate_legacy_schema());
-        assert_eq!(state.schema_version, CONFIGURATION_STATE_SCHEMA_VERSION);
-        assert!(state.guided_intent.values.is_empty());
-        assert_eq!(
-            state.managed_intent.values["dashboard.mihomo.listenPort"],
-            9092
-        );
-        assert_eq!(state.applied, applied);
-        assert_eq!(state.last_known_good, lkg);
-    }
-
-    #[test]
-    fn v3_generated_dashboard_raw_container_is_canonicalized_without_false_override() {
-        let merge = merge_configuration_sources(
-            ProgramKind::SingBox,
-            &[snapshot(
-                ProgramKind::SingBox,
-                "base",
-                r#"{"experimental":{}}"#,
-            )],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::SingBox,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::SingBox),
-        )
-        .expect("state");
-        state.schema_version = LEGACY_MANAGED_CONFIGURATION_STATE_SCHEMA_VERSION;
-        state
-            .guided_intent
-            .set("dashboard.singBoxClash.listenPort", Value::from(9091));
-        state.raw_intent.operations.push(IntentOperation::Set {
-            path: key_path(&["experimental", "clash_api"]),
-            value: serde_json::json!({
-                "external_controller": "127.0.0.1:9091",
-                "external_ui": MANAGED_SING_BOX_CLASH_UI,
-                "secret": "keep"
-            }),
-        });
-
-        assert!(state.migrate_legacy_schema());
-        state
-            .canonicalize_legacy_managed_raw()
-            .expect("canonicalize");
-        state.rebuild_desired(2).expect("rebuild");
-
-        assert!(state.desired.conflicts.is_empty());
-        assert!(state.raw_intent.operations.is_empty());
-        assert_eq!(state.raw_intent.decisions.len(), 1);
-        assert_eq!(
-            display_semantic_path(&intent_operation_path(
-                &state.raw_intent.decisions[0].operation
-            )),
-            "/experimental/clash_api/secret"
-        );
-    }
-
-    #[test]
-    fn raw_decision_resolution_is_path_scoped_and_reentrant() {
-        let merge = merge_configuration_sources(
-            ProgramKind::SingBox,
-            &[snapshot(
-                ProgramKind::SingBox,
-                "base",
-                r#"{"log":{"level":"info"},"dns":{"strategy":"prefer_ipv4"}}"#,
-            )],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::SingBox,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::SingBox),
-        )
-        .expect("state");
-        state
-            .replace_raw_from_edited(
-                br#"{"log":{"level":"debug"},"dns":{"strategy":"prefer_ipv4"}}"#,
-                2,
-            )
-            .expect("Raw decision");
-        let decision_id = state.raw_intent.decisions[0].decision_id.clone();
-
-        state
-            .guided_intent
-            .set("logging.level", Value::String("error".into()));
-        state.rebuild_desired(3).expect("upstream change");
-        assert_eq!(
-            state.raw_intent.decisions[0].status,
-            RawDecisionStatus::Superseded
-        );
-        assert_eq!(state.desired.validation, CandidateValidationStatus::Invalid);
-        assert_eq!(
-            state
-                .view()
-                .guided_projection
-                .iter()
-                .find(|projection| projection.setting_id == "logging.level")
-                .map(|projection| projection.status),
-            Some(GuidedProjectionStatus::RawDecision)
-        );
-        assert!(!state.view().workspace.editor.can_save);
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
-                ["level"],
-            "error"
-        );
-
-        state
-            .resolve_raw_decision(&decision_id, RawDecisionResolution::KeepRaw, 4)
-            .expect("keep Raw");
-        assert!(state.desired.conflicts.is_empty());
-        assert_eq!(
-            state.raw_intent.decisions[0].status,
-            RawDecisionStatus::Resolved
-        );
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
-                ["level"],
-            "debug"
-        );
-
-        state
-            .guided_intent
-            .set("dns.strategy", Value::String("prefer_ipv6".into()));
-        state.rebuild_desired(5).expect("unrelated change");
-        assert_eq!(
-            state.raw_intent.decisions[0].status,
-            RawDecisionStatus::Resolved
-        );
-        assert!(state.desired.conflicts.is_empty());
-
-        state
-            .guided_intent
-            .set("logging.level", Value::String("warn".into()));
-        state.rebuild_desired(6).expect("second upstream change");
-        assert_eq!(
-            state.raw_intent.decisions[0].status,
-            RawDecisionStatus::Superseded
-        );
-        state
-            .resolve_raw_decision(&decision_id, RawDecisionResolution::AcceptUpstream, 7)
-            .expect("accept upstream");
-        assert_eq!(
-            state.raw_intent.decisions[0].status,
-            RawDecisionStatus::Dormant
-        );
-        assert!(state.desired.conflicts.is_empty());
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
-                ["level"],
-            "warn"
-        );
-        state.rebuild_desired(8).expect("repeat rebuild");
-        assert!(state.desired.conflicts.is_empty());
-    }
-
-    #[test]
-    fn raw_editor_accepting_upstream_dormants_only_that_decision() {
-        let merge = merge_configuration_sources(
-            ProgramKind::Xray,
-            &[snapshot(
-                ProgramKind::Xray,
-                "base",
-                r#"{"log":{"loglevel":"warning"},"routing":{"domainStrategy":"AsIs"}}"#,
-            )],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::Xray,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::Xray),
-        )
-        .expect("state");
-        state
-            .replace_raw_from_edited(
-                br#"{"log":{"loglevel":"debug"},"routing":{"domainStrategy":"IPOnDemand"}}"#,
-                2,
-            )
-            .expect("initial Raw decisions");
-        assert_eq!(state.raw_intent.decisions.len(), 2);
-        let routing_id = state
-            .raw_intent
-            .decisions
-            .iter()
-            .find(|decision| {
-                display_semantic_path(&intent_operation_path(&decision.operation))
-                    == "/routing/domainStrategy"
-            })
-            .map(|decision| decision.decision_id.clone())
-            .expect("routing decision");
-
-        state
-            .replace_raw_from_edited(
-                br#"{"log":{"loglevel":"debug"},"routing":{"domainStrategy":"AsIs"}}"#,
-                3,
-            )
-            .expect("accept upstream through editor");
-
-        let log = state
-            .raw_intent
-            .decisions
-            .iter()
-            .find(|decision| {
-                display_semantic_path(&intent_operation_path(&decision.operation))
-                    == "/log/loglevel"
-            })
-            .expect("log decision");
-        let routing = state
-            .raw_intent
-            .decisions
-            .iter()
-            .find(|decision| decision.decision_id == routing_id)
-            .expect("retained routing history");
-        assert_eq!(log.status, RawDecisionStatus::Active);
-        assert_eq!(routing.status, RawDecisionStatus::Dormant);
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["routing"]
-                ["domainStrategy"],
-            "AsIs"
-        );
-        assert_eq!(
-            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap()["log"]
-                ["loglevel"],
-            "debug"
-        );
-    }
-
-    #[test]
     fn repeated_identical_rebuild_preserves_generation_and_evidence() {
         let merge = merge_configuration_sources(
             ProgramKind::SingBox,
@@ -6935,6 +5937,7 @@ mod tests {
             .guided_intent
             .set("logging.level", Value::String("debug".into()));
         state.rebuild_desired(2).expect("initial rebuild");
+        state.mark_candidate_saved().expect("save candidate");
         state
             .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
             .expect("validation");
@@ -6969,6 +5972,7 @@ mod tests {
             compatibility_profile(ProgramKind::Xray),
         )
         .expect("state");
+        state.mark_candidate_saved().expect("save candidate");
         state
             .guided_intent
             .set("logging.level", Value::String("debug".into()));
@@ -6981,45 +5985,6 @@ mod tests {
         state.rebuild_desired(3).expect("same Guided edit");
 
         assert_eq!(state.generation, generation);
-    }
-
-    #[test]
-    fn repeated_identical_raw_save_preserves_decision_and_generation() {
-        let merge = merge_configuration_sources(
-            ProgramKind::Xray,
-            &[snapshot(
-                ProgramKind::Xray,
-                "source",
-                r#"{"log":{"loglevel":"warning"}}"#,
-            )],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::Xray,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::Xray),
-        )
-        .expect("state");
-        let edited = br#"{"log":{"loglevel":"debug"}}"#;
-        state
-            .replace_raw_from_edited(edited, 2)
-            .expect("first Raw save");
-        state
-            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
-            .expect("validation");
-        let generation = state.generation;
-        let decision = state.raw_intent.decisions[0].clone();
-        let evidence = state.desired.validation_evidence.clone();
-
-        state
-            .replace_raw_from_edited(edited, 3)
-            .expect("identical Raw save");
-
-        assert_eq!(state.generation, generation);
-        assert_eq!(state.raw_intent.decisions, vec![decision]);
-        assert_eq!(state.desired.validation_evidence, evidence);
     }
 
     #[test]
@@ -7042,6 +6007,9 @@ mod tests {
         )
         .expect("state");
         state
+            .mark_candidate_saved()
+            .expect("save initial candidate");
+        state
             .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
             .expect("initial validation");
         state.mark_applied().expect("initial apply");
@@ -7049,6 +6017,7 @@ mod tests {
         state.desired.validation = CandidateValidationStatus::Invalid;
         state.desired.validation_evidence = None;
         state.desired.diagnostics = vec![ConfigurationDiagnostic {
+            location: None,
             code: "SOURCE_UNAVAILABLE".into(),
             message: "source unavailable".into(),
             message_key: Some("SOURCE_UNAVAILABLE".into()),
@@ -7063,7 +6032,7 @@ mod tests {
                 freshness: SourceFreshness::Fresh,
                 observed_hash: None,
                 snapshot_hash: None,
-                message: None,
+                message_key: None,
                 observed_unix_ms: Some(2),
             },
         );
@@ -7071,43 +6040,11 @@ mod tests {
 
         state.rebuild_desired(3).expect("source recovery rebuild");
 
-        assert_eq!(state.generation, generation + 1);
+        assert_eq!(state.generation, generation);
         assert_eq!(state.desired.validation, CandidateValidationStatus::Pending);
         assert!(state.desired.diagnostics.is_empty());
         assert_eq!(state.applied, applied);
         assert_eq!(state.last_known_good, applied);
-    }
-
-    #[test]
-    fn identity_editor_path_resolves_indexed_source_provenance() {
-        let merge = merge_configuration_sources(
-            ProgramKind::SingBox,
-            &[snapshot(
-                ProgramKind::SingBox,
-                "source-a",
-                r#"{"services":[{"tag":"first","type":"direct"},{"tag":"second","type":"direct","listen_port":8080}]}"#,
-            )],
-        )
-        .expect("merge");
-        let state = ConfigurationState::from_merge(
-            ProgramKind::SingBox,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::SingBox),
-        )
-        .expect("state");
-        let trace = state
-            .view()
-            .workspace
-            .editor
-            .paths
-            .into_iter()
-            .find(|trace| trace.semantic_path == "/services[tag=second]/listen_port")
-            .expect("identity trace");
-
-        assert_eq!(trace.source_ids, vec!["source-a".to_owned()]);
-        assert_eq!(trace.source_value, Some(Value::from(8080)));
     }
 
     #[test]
@@ -7132,98 +6069,15 @@ mod tests {
         state.desired.content = "{\n  \"log\": { \"loglevel\": \"warning\" }\n}\n".into();
 
         let view = state.view();
-        assert_eq!(view.workspace.editor.content, state.desired.content);
         assert_eq!(
-            view.workspace.editor.revision, state.desired.revision,
+            view.workspace.editor.document.content,
+            state.desired.content
+        );
+        assert_eq!(
+            view.workspace.editor.document.revision, state.desired.revision,
             "the editor must use the same candidate revision as Desired"
         );
-        assert!(
-            view.workspace
-                .editor
-                .paths
-                .iter()
-                .any(|path| path.semantic_path == "/log/loglevel")
-        );
-    }
-
-    #[test]
-    fn editor_paths_keep_intent_and_details_values_separate_and_select_each_winner() {
-        let merge = merge_configuration_sources(
-            ProgramKind::SingBox,
-            &[snapshot(
-                ProgramKind::SingBox,
-                "source",
-                r#"{"log":{"level":"info"},"dns":{"strategy":"prefer_ipv4"},"route":{"final":"direct"}}"#,
-            )],
-        )
-        .expect("merge");
-        let mut state = ConfigurationState::from_merge(
-            ProgramKind::SingBox,
-            1,
-            1,
-            merge,
-            compatibility_profile(ProgramKind::SingBox),
-        )
-        .expect("state");
-        state
-            .guided_intent
-            .set("logging.level", Value::String("debug".into()));
-        sync_managed_dashboard_intent(
-            &mut state.managed_intent,
-            &ManagedConfigSpec {
-                sing_box_dashboard: Some(SingBoxDashboardSpec {
-                    listen_port: 9090,
-                    update_interval: "1d".into(),
-                }),
-                ..ManagedConfigSpec::default()
-            },
-        );
-        state.rebuild_desired(2).expect("upstream layers");
-        let mut edited = parse_semantic_document(state.format, state.desired.content.as_bytes())
-            .expect("candidate");
-        edited["dns"]["strategy"] = Value::String("prefer_ipv6".into());
-        let edited = serialize_semantic_document(state.format, &edited).expect("edited candidate");
-        state
-            .replace_raw_from_edited(edited.as_bytes(), 3)
-            .expect("Raw decision");
-
-        let workspace = state.view().workspace;
-        let trace = workspace.editor.paths.clone();
-        let at = |path: &str| {
-            trace
-                .iter()
-                .find(|item| item.semantic_path == path)
-                .unwrap_or_else(|| panic!("missing trace at {path}"))
-        };
-        assert_eq!(at("/route/final").winner_layer, ConfigurationLayer::Source);
-        assert_eq!(at("/log/level").winner_layer, ConfigurationLayer::Intent);
-        assert_eq!(
-            at("/log/level").intent_value,
-            at("/log/level").details_value
-        );
-        assert_eq!(
-            at("/services[tag=camellia-nexus-api]/listen_port").winner_layer,
-            ConfigurationLayer::Details
-        );
-        assert_eq!(
-            at("/services[tag=camellia-nexus-api]/listen_port").details_value,
-            Some(Value::from(9090))
-        );
-        assert_eq!(
-            at("/dns/strategy").winner_layer,
-            ConfigurationLayer::RawDecision
-        );
-        assert_eq!(
-            at("/dns/strategy").effective_value,
-            Some(Value::String("prefer_ipv6".into()))
-        );
-        let editor_path = at("/dns/strategy");
-        assert_eq!(editor_path.winner_layer, ConfigurationLayer::RawDecision);
-        assert_eq!(
-            editor_path.effective_value,
-            Some(Value::String("prefer_ipv6".into()))
-        );
-        assert!(editor_path.raw_decision.is_some());
+        assert_eq!(view.workspace.editor.edit_status, FinalEditStatus::Clean);
     }
 
     #[test]
@@ -7246,6 +6100,47 @@ mod tests {
         )
         .expect("state");
 
+        let unsaved = state.view().workspace.editor;
+        assert!(unsaved.can_save);
+        assert!(!unsaved.can_validate);
+        assert!(!unsaved.can_apply);
+        assert!(unsaved.blockers.iter().any(|blocker| {
+            blocker.code == "CONFIGURATION_CANDIDATE_UNSAVED"
+                && blocker.blocks == vec![ConfigurationGate::Validate, ConfigurationGate::Apply]
+        }));
+
+        let mut source_invalid_state = state.clone();
+        source_invalid_state.desired.validation = CandidateValidationStatus::Invalid;
+        source_invalid_state.desired.diagnostics = vec![ConfigurationDiagnostic {
+            location: None,
+            code: "SOURCE_INVALID".into(),
+            message: "source invalid".into(),
+            message_key: Some("SOURCE_INVALID".into()),
+            scope: ConfigurationIssueScope::sources("source"),
+            details: None,
+        }];
+        let source_invalid = source_invalid_state.view().workspace.editor;
+        assert!(!source_invalid.can_save);
+        assert!(!source_invalid.can_validate);
+        assert!(!source_invalid.can_apply);
+        assert!(source_invalid.blockers.iter().any(|blocker| {
+            blocker.code == "SOURCE_INVALID"
+                && blocker.blocks
+                    == vec![
+                        ConfigurationGate::Save,
+                        ConfigurationGate::Validate,
+                        ConfigurationGate::Apply,
+                    ]
+                && blocker.recovery_action == ConfigurationRecoveryAction::ResolveSourceConflict
+        }));
+        assert!(
+            !source_invalid
+                .blockers
+                .iter()
+                .any(|blocker| blocker.code == "CONFIGURATION_CANDIDATE_UNSAVED")
+        );
+
+        state.mark_candidate_saved().expect("save candidate");
         let pending = state.view().workspace.editor;
         assert!(pending.can_save);
         assert!(pending.can_validate);
@@ -7275,49 +6170,574 @@ mod tests {
     }
 
     #[test]
-    fn v4_raw_operations_migrate_to_basis_bound_decisions() {
+    fn final_edits_follow_disjoint_upstream_changes_without_a_decision_prompt() {
         let merge = merge_configuration_sources(
             ProgramKind::Xray,
-            &[snapshot(
-                ProgramKind::Xray,
-                "base",
-                r#"{"log":{"loglevel":"warning"}}"#,
-            )],
+            &[snapshot(ProgramKind::Xray, "source", r#"{"a":1,"b":1}"#)],
         )
         .expect("merge");
         let mut state = ConfigurationState::from_merge(
             ProgramKind::Xray,
-            4,
+            1,
             1,
             merge,
             compatibility_profile(ProgramKind::Xray),
         )
         .expect("state");
-        state.schema_version = LEGACY_CONFIGURATION_STATE_SCHEMA_VERSION;
-        state.raw_intent.operations.push(IntentOperation::Set {
-            path: key_path(&["log", "loglevel"]),
-            value: Value::String("debug".into()),
-        });
-        assert!(state.migrate_legacy_schema());
-        state.rebuild_desired(2).expect("rebuild");
-        assert_eq!(state.schema_version, CONFIGURATION_STATE_SCHEMA_VERSION);
-        assert!(state.raw_intent.operations.is_empty());
-        assert_eq!(state.raw_intent.decisions.len(), 1);
+        state
+            .replace_final_from_edited(br#"{"a":9,"b":1}"#, 2)
+            .expect("final edit");
+
+        replace_test_base(
+            &mut state,
+            json!({"a": 1, "b": 2, "longSourceField": "x".repeat(40_000)}),
+            3,
+        );
+        state.rebuild_desired(3).expect("upstream rebase");
+
+        let desired = parse_semantic_document(state.format, state.desired.content.as_bytes())
+            .expect("desired");
+        assert_eq!(desired["a"], 9);
+        assert_eq!(desired["b"], 2);
         assert_eq!(
-            state.raw_intent.decisions[0].origin,
-            RawDecisionOrigin::Migrated
+            desired["longSourceField"].as_str().map(str::len),
+            Some(40_000)
+        );
+        assert!(state.final_edit.conflicts.is_empty());
+        assert_eq!(state.final_edit.edits.len(), 1);
+        assert_eq!(
+            state.view().workspace.editor.edit_status,
+            FinalEditStatus::Modified
         );
         assert_eq!(
-            state.raw_intent.decisions[0].status,
-            RawDecisionStatus::Active
+            state.view().workspace.editor.document.content,
+            state.desired.content
+        );
+    }
+
+    #[test]
+    fn latest_source_and_intent_writes_win_but_refresh_does_not_reclaim_paths() {
+        let kind = ProgramKind::Xray;
+        let merge = merge_configuration_sources(
+            kind,
+            &[snapshot(kind, "source", r#"{"log":{"loglevel":"info"}}"#)],
+        )
+        .unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state.guided_intent.set("logging.level", json!("debug"));
+        state.rebuild_desired(2).unwrap();
+        replace_test_base(&mut state, json!({"log":{"loglevel":"warning"}}), 3);
+        state.rebuild_desired(3).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap()["log"]["loglevel"],
+            "warning"
         );
         assert_eq!(
-            state.view().workspace.editor.paths[0]
-                .raw_decision
-                .as_ref()
-                .expect("migrated editor decision")
-                .semantic_path,
-            "/log/loglevel"
+            state
+                .view()
+                .guided_projection
+                .iter()
+                .find(|value| value.setting_id == "logging.level")
+                .unwrap()
+                .value,
+            Some(json!("warning"))
         );
+        state.claim_guided_setting("logging.level").unwrap();
+        state.rebuild_desired(4).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap()["log"]["loglevel"],
+            "debug"
+        );
+        replace_test_base(
+            &mut state,
+            json!({"log":{"loglevel":"error"}, "newField":42}),
+            5,
+        );
+        state
+            .rebuild_desired_with_source_update(5, SourceUpdateKind::Refresh)
+            .unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap(),
+            json!({"log":{"loglevel":"debug"}, "newField":42})
+        );
+        state.guided_intent.reset("logging.level");
+        state.rebuild_desired(6).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap()["log"]["loglevel"],
+            "error"
+        );
+        let unchanged = state.clone();
+        state
+            .rebuild_desired_with_source_update(7, SourceUpdateKind::Refresh)
+            .unwrap();
+        assert_eq!(state, unchanged);
+    }
+
+    #[test]
+    fn invalid_draft_rebase_ignores_formatting_but_preserves_changed_upstream_basis() {
+        for format in [ConfigurationFormat::Jsonc, ConfigurationFormat::Yaml] {
+            let original = json!({"a":1,"b":1});
+            let mut draft = FinalEditorSession {
+                session_id: "draft".into(),
+                draft_revision: 1,
+                based_on_state_revision: 1,
+                based_on_candidate_generation: 1,
+                base_content: original.to_string(),
+                working_content: "{unfinished".into(),
+                conflicts: Vec::new(),
+                resolutions: BTreeMap::new(),
+                unresolved_conflict_ids: Vec::new(),
+                rebase_required: false,
+                updated_unix_ms: 1,
+            };
+            let formatted = serialize_semantic_document(format, &original).unwrap();
+            rebase_final_editor_session(&mut draft, format, &formatted, 2, 1).unwrap();
+            assert!(!draft.rebase_required);
+            assert_eq!(draft.working_content, "{unfinished");
+            assert_eq!(draft.base_content, formatted);
+            assert_eq!(draft.based_on_state_revision, 2);
+            assert_eq!(draft.draft_revision, 1);
+
+            let updated = serialize_semantic_document(format, &json!({"a":1,"b":2})).unwrap();
+            rebase_final_editor_session(&mut draft, format, &updated, 3, 2).unwrap();
+            assert!(draft.rebase_required);
+            assert_eq!(draft.working_content, "{unfinished");
+            assert_eq!(draft.base_content, formatted);
+            assert_eq!(draft.based_on_state_revision, 2);
+
+            draft.working_content = r#"{"a":9,"b":1}"#.into();
+            rebase_final_editor_session(&mut draft, format, &updated, 3, 2).unwrap();
+            assert!(!draft.rebase_required);
+            assert!(draft.conflicts.is_empty());
+            assert_eq!(
+                parse_semantic_document(format, draft.working_content.as_bytes()).unwrap(),
+                json!({"a":9,"b":2})
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_draft_rebase_ignores_equivalent_dashboard_duration() {
+        let content = |duration: &str| {
+            format!(
+                r#"{{"services":[{{"tag":"{MANAGED_SING_BOX_API_TAG}","dashboard":{{"update_interval":"{duration}"}}}}]}}"#
+            )
+        };
+        let mut draft = FinalEditorSession {
+            session_id: "draft".into(),
+            draft_revision: 1,
+            based_on_state_revision: 1,
+            based_on_candidate_generation: 1,
+            base_content: content("1d"),
+            working_content: "{unfinished".into(),
+            conflicts: Vec::new(),
+            resolutions: BTreeMap::new(),
+            unresolved_conflict_ids: Vec::new(),
+            rebase_required: false,
+            updated_unix_ms: 1,
+        };
+        let updated = content("24h0m0s");
+        rebase_final_editor_session(&mut draft, ConfigurationFormat::Jsonc, &updated, 2, 1)
+            .unwrap();
+        assert!(!draft.rebase_required);
+        assert_eq!(draft.base_content, updated);
+        assert_eq!(draft.working_content, "{unfinished");
+        assert_eq!(draft.based_on_state_revision, 2);
+    }
+
+    #[test]
+    fn draft_conflicts_survive_repeated_updates_and_resolve_missing_values() {
+        let mut draft = FinalEditorSession {
+            session_id: "draft".into(),
+            draft_revision: 1,
+            based_on_state_revision: 1,
+            based_on_candidate_generation: 1,
+            base_content: r#"{"a":1,"b":1}"#.into(),
+            working_content: r#"{"a":9,"b":1}"#.into(),
+            conflicts: Vec::new(),
+            resolutions: BTreeMap::new(),
+            unresolved_conflict_ids: Vec::new(),
+            rebase_required: false,
+            updated_unix_ms: 1,
+        };
+        rebase_final_editor_session(
+            &mut draft,
+            ConfigurationFormat::Jsonc,
+            r#"{"a":2,"b":1}"#,
+            2,
+            2,
+        )
+        .unwrap();
+        let conflict_id = draft.conflicts[0].conflict_id.clone();
+        rebase_final_editor_session(
+            &mut draft,
+            ConfigurationFormat::Jsonc,
+            r#"{"a":3,"b":2}"#,
+            3,
+            3,
+        )
+        .unwrap();
+        assert_eq!(draft.conflicts.len(), 1);
+        assert_eq!(draft.conflicts[0].conflict_id, conflict_id);
+        assert_eq!(
+            draft.conflicts[0].user_value,
+            SemanticValue::Present(json!(9))
+        );
+        assert_eq!(
+            draft.conflicts[0].upstream_value,
+            SemanticValue::Present(json!(3))
+        );
+        resolve_final_editor_conflict(
+            &mut draft,
+            ConfigurationFormat::Jsonc,
+            &conflict_id,
+            FinalConflictResolution::ManualEdit {
+                value: SemanticValue::Missing,
+            },
+        )
+        .unwrap();
+        assert!(draft.unresolved_conflict_ids.is_empty());
+        rebase_final_editor_session(
+            &mut draft,
+            ConfigurationFormat::Jsonc,
+            r#"{"a":3,"b":4}"#,
+            4,
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_semantic_document(ConfigurationFormat::Jsonc, draft.working_content.as_bytes())
+                .unwrap(),
+            json!({"b":4})
+        );
+        assert!(draft.conflicts.is_empty());
+    }
+
+    #[test]
+    fn disjoint_deletion_and_identity_additions_merge_without_false_conflicts() {
+        let result = rebase_final_document(
+            &json!({"a":1,"b":1}),
+            &json!({"a":1,"b":2}),
+            &json!({"b":1}),
+        );
+        assert_eq!(result.document, json!({"b":2}));
+        assert!(result.conflicts.is_empty());
+        let result = rebase_final_document(
+            &json!({"items":[]}),
+            &json!({"items":[{"tag":"mine","value":1}]}),
+            &json!({"items":[{"tag":"updated","value":2}]}),
+        );
+        assert!(result.conflicts.is_empty());
+        assert_eq!(result.document["items"].as_array().unwrap().len(), 2);
+        let result = rebase_final_document(&json!({}), &json!({"a":null}), &json!({"a":1}));
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].base_value, SemanticValue::Missing);
+        assert_eq!(
+            result.conflicts[0].user_value,
+            SemanticValue::Present(Value::Null)
+        );
+    }
+
+    #[test]
+    fn details_reclaims_only_changed_registered_fields_from_sources() {
+        let kind = ProgramKind::Mihomo;
+        let merge = merge_configuration_sources(kind, &[snapshot(kind, "source", "{}")]).unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state
+            .managed_intent
+            .values
+            .insert("dashboard.mihomo.listenPort".into(), json!(9090));
+        state.rebuild_desired(2).unwrap();
+        replace_test_base(
+            &mut state,
+            json!({"external-controller":"127.0.0.1:9091", "external-ui":"user-ui", "unknown":42}),
+            3,
+        );
+        state.rebuild_desired(3).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap()["external-controller"],
+            "127.0.0.1:9091"
+        );
+        let projection = project_managed_integrations(
+            kind,
+            &state.upstream_document().unwrap(),
+            &state.upstream_document().unwrap(),
+            &state.managed_intent,
+            &state.final_edit,
+            &[],
+        );
+        let port = projection[0]
+            .settings
+            .iter()
+            .find(|setting| setting.setting_id == "dashboard.mihomo.listenPort")
+            .unwrap();
+        assert_eq!(port.effective_value, SemanticValue::Present(json!(9091)));
+        assert!(port.can_use_saved_value);
+        state
+            .claim_managed_setting("dashboard.mihomo.listenPort")
+            .unwrap();
+        state.rebuild_desired(4).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap()["external-controller"],
+            "127.0.0.1:9090"
+        );
+        assert_eq!(state.upstream_document().unwrap()["external-ui"], "user-ui");
+        let revision = state.state_revision;
+        let generation = state.generation;
+        state
+            .claim_managed_setting("dashboard.mihomo.listenPort")
+            .unwrap();
+        state.rebuild_desired(4).unwrap();
+        assert_eq!(state.state_revision, revision);
+        assert_eq!(state.generation, generation);
+        state
+            .managed_intent
+            .values
+            .insert("dashboard.mihomo.listenPort".into(), json!(9092));
+        state.rebuild_desired(4).unwrap();
+        let upstream = state.upstream_document().unwrap();
+        assert_eq!(upstream["external-controller"], "127.0.0.1:9092");
+        assert_eq!(upstream["external-ui"], "user-ui");
+        assert_eq!(upstream["unknown"], 42);
+    }
+
+    #[test]
+    fn explicit_source_parent_delete_masks_earlier_intent_and_can_be_edited_again() {
+        let kind = ProgramKind::Xray;
+        let merge = merge_configuration_sources(
+            kind,
+            &[snapshot(kind, "source", r#"{"log":{"loglevel":"info"}}"#)],
+        )
+        .unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state.guided_intent.set("logging.level", json!("debug"));
+        state.rebuild_desired(2).unwrap();
+        replace_test_base(&mut state, json!({"unrelated":true}), 3);
+        state.rebuild_desired(3).unwrap();
+        assert!(state.upstream_document().unwrap().get("log").is_none());
+        state.claim_guided_setting("logging.level").unwrap();
+        state.rebuild_desired(4).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap(),
+            json!({"log":{"loglevel":"debug"}, "unrelated":true})
+        );
+    }
+
+    #[test]
+    fn source_additions_do_not_claim_untouched_sibling_intent_paths() {
+        let kind = ProgramKind::SingBox;
+        let merge = merge_configuration_sources(kind, &[snapshot(kind, "source", "{}")]).unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state.guided_intent.set("logging.level", json!("debug"));
+        state.rebuild_desired(2).unwrap();
+        replace_test_base(&mut state, json!({"log":{"timestamp":true}}), 3);
+        state.rebuild_desired(3).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap(),
+            json!({"log":{"level":"debug","timestamp":true}})
+        );
+    }
+
+    #[test]
+    fn explicit_empty_source_container_masks_earlier_child_contributions() {
+        let kind = ProgramKind::SingBox;
+        let merge = merge_configuration_sources(kind, &[snapshot(kind, "source", "{}")]).unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state.guided_intent.set("logging.level", json!("debug"));
+        state.rebuild_desired(2).unwrap();
+        replace_test_base(&mut state, json!({"log": {}}), 3);
+        state.rebuild_desired(3).unwrap();
+        assert_eq!(state.upstream_document().unwrap(), json!({"log": {}}));
+        state.claim_guided_setting("logging.level").unwrap();
+        state.rebuild_desired(4).unwrap();
+        assert_eq!(
+            state.upstream_document().unwrap(),
+            json!({"log": {"level": "debug"}})
+        );
+    }
+
+    #[test]
+    fn divergent_same_path_changes_block_every_candidate_gate_and_keep_applied() {
+        let merge = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[snapshot(
+                ProgramKind::Xray,
+                "source",
+                r#"{"route":{"final":"base"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::Xray,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::Xray),
+        )
+        .expect("state");
+        state.mark_candidate_saved().expect("save initial");
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validate initial");
+        state.mark_applied().expect("apply initial");
+        let applied = state.applied.clone();
+        state
+            .replace_final_from_edited(br#"{"route":{"final":"mine"}}"#, 2)
+            .expect("edit");
+
+        replace_test_base(&mut state, json!({"route": {"final": "updated"}}), 3);
+        state.rebuild_desired(3).expect("conflicting rebase");
+
+        let preview = parse_semantic_document(state.format, state.desired.content.as_bytes())
+            .expect("preview");
+        assert_eq!(preview["route"]["final"], "updated");
+        assert_eq!(state.final_edit.conflicts.len(), 1);
+        assert_eq!(
+            state.final_edit.conflicts[0].user_value,
+            SemanticValue::Present(json!("mine"))
+        );
+        let editor = state.view().workspace.editor;
+        assert_eq!(editor.edit_status, FinalEditStatus::Conflict);
+        assert!(!editor.can_save);
+        assert!(!editor.can_validate);
+        assert!(!editor.can_apply);
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.last_known_good, applied);
+    }
+
+    #[test]
+    fn final_conflict_resolutions_are_path_scoped_reentrant_and_cancel_is_read_only() {
+        fn conflicted_state() -> ConfigurationState {
+            let merge = merge_configuration_sources(
+                ProgramKind::Xray,
+                &[snapshot(
+                    ProgramKind::Xray,
+                    "source",
+                    r#"{"route":{"final":"base"},"log":{"loglevel":"info"}}"#,
+                )],
+            )
+            .expect("merge");
+            let mut state = ConfigurationState::from_merge(
+                ProgramKind::Xray,
+                1,
+                1,
+                merge,
+                compatibility_profile(ProgramKind::Xray),
+            )
+            .expect("state");
+            state
+                .replace_final_from_edited(
+                    br#"{"route":{"final":"mine"},"log":{"loglevel":"debug"}}"#,
+                    2,
+                )
+                .expect("edit");
+            replace_test_base(
+                &mut state,
+                json!({"route": {"final": "updated"}, "log": {"loglevel": "info"}}),
+                3,
+            );
+            state.rebuild_desired(3).expect("conflict");
+            state
+        }
+
+        let original = conflicted_state();
+        let conflict_id = original.final_edit.conflicts[0].conflict_id.clone();
+        let unchanged = original.clone();
+        assert_eq!(original, unchanged, "Cancel performs no Core transaction");
+
+        let mut accepted = original.clone();
+        accepted
+            .resolve_final_conflict(&conflict_id, FinalConflictResolution::AcceptUpstream, 4)
+            .expect("accept updated");
+        let accepted_value =
+            parse_semantic_document(accepted.format, accepted.desired.content.as_bytes())
+                .expect("accepted");
+        assert_eq!(accepted_value["route"]["final"], "updated");
+        assert_eq!(accepted_value["log"]["loglevel"], "debug");
+        assert!(accepted.final_edit.conflicts.is_empty());
+
+        let mut kept = original.clone();
+        kept.resolve_final_conflict(&conflict_id, FinalConflictResolution::KeepMine, 4)
+            .expect("keep mine");
+        let kept_value =
+            parse_semantic_document(kept.format, kept.desired.content.as_bytes()).expect("kept");
+        assert_eq!(kept_value["route"]["final"], "mine");
+        assert_eq!(kept_value["log"]["loglevel"], "debug");
+        assert!(kept.final_edit.conflicts.is_empty());
+
+        let mut merged = original;
+        merged
+            .resolve_final_conflict(
+                &conflict_id,
+                FinalConflictResolution::ManualEdit {
+                    value: SemanticValue::Present(json!("merged")),
+                },
+                4,
+            )
+            .expect("manual merge");
+        let merged_value =
+            parse_semantic_document(merged.format, merged.desired.content.as_bytes())
+                .expect("merged");
+        assert_eq!(merged_value["route"]["final"], "merged");
+        assert_eq!(merged_value["log"]["loglevel"], "debug");
+    }
+
+    #[test]
+    fn parent_delete_and_upstream_child_change_produce_one_parent_conflict() {
+        let base = json!({"experimental": {"clash_api": {"external_ui": "ui", "secret": "old"}}});
+        let mine = json!({});
+        let updated =
+            json!({"experimental": {"clash_api": {"external_ui": "new-ui", "secret": "old"}}});
+
+        let result = rebase_final_document(&base, &mine, &updated);
+
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].semantic_path, "/experimental");
+        assert_eq!(result.document, updated);
+    }
+
+    #[test]
+    fn repeated_save_is_idempotent_and_unsaved_candidates_cannot_validate_or_apply() {
+        let merge = merge_configuration_sources(
+            ProgramKind::SingBox,
+            &[snapshot(
+                ProgramKind::SingBox,
+                "source",
+                r#"{"log":{"level":"info"}}"#,
+            )],
+        )
+        .expect("merge");
+        let mut state = ConfigurationState::from_merge(
+            ProgramKind::SingBox,
+            1,
+            1,
+            merge,
+            compatibility_profile(ProgramKind::SingBox),
+        )
+        .expect("state");
+        let evidence = validation_evidence(&state);
+        let validation_error = state
+            .mark_validation(true, Vec::new(), Some(evidence))
+            .expect_err("unsaved validation must fail");
+        assert_eq!(validation_error.code, ErrorCode::InvalidState);
+        assert_eq!(
+            state
+                .mark_applied()
+                .expect_err("unsaved apply must fail")
+                .code,
+            ErrorCode::InvalidState
+        );
+
+        state.mark_candidate_saved().expect("first save");
+        let generation = state.generation;
+        let revision = state.state_revision;
+        state.mark_candidate_saved().expect("repeat save");
+        assert_eq!(state.generation, generation);
+        assert_eq!(state.state_revision, revision);
     }
 }

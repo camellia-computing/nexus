@@ -106,7 +106,7 @@ impl Drop for RefreshLease<'_> {
 pub async fn refresh(
     state: &crate::AppState,
     program_id: &ProgramId,
-) -> Result<camellia_nexus_core::ConfigurationStateView> {
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
     let _lease = state.config_refreshes.try_acquire(program_id)?;
     let (spec, _) = state.manager.get(program_id).await?;
     let local_base = state.manager.working_directory(program_id).await?;
@@ -115,15 +115,32 @@ pub async fn refresh(
     } else {
         crate::config_credentials::CredentialSnapshot::empty()
     };
-    let view = state
+    let prepared = state
         .configuration_state
-        .refresh(&state.manager, program_id, Some(&local_base), &credentials)
+        .prepare_source_refresh(&state.manager, program_id, Some(&local_base), &credentials)
         .await?;
-    // Automatic refresh updates Sources/Base and creates a reviewable
-    // candidate only. Native validation and Apply are explicit workspace
-    // stages, so a background timer can never replace Applied/LKG.
+    let configuration_lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, program_id)
+        .await?;
+    let _authorization = crate::commands::authorize_runtime_protected(
+        state,
+        ProtectedOperation::UseManagedConfigSources,
+    )
+    .await?;
+    if state.config_refreshes.is_shutting_down() {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::InvalidState,
+            "Application shutdown is in progress",
+        ));
+    }
+    let snapshot = state
+        .configuration_state
+        .commit_source_refresh_with_lease(&state.manager, prepared, &configuration_lease)
+        .await?;
+    // Refresh commits a candidate; Applied/LKG only change through application.
     state.config_refreshes.mark_completed(program_id);
-    Ok(view)
+    Ok(snapshot)
 }
 
 pub fn spawn_scheduler(
@@ -168,11 +185,15 @@ pub fn spawn_scheduler(
                 let Some(state) = app.try_state::<crate::AppState>() else {
                     return;
                 };
-                if let Err(error) = state.authorization.authorize(
-                    RestrictedOperation::Protected(ProtectedOperation::UseManagedConfigSources),
-                    crate::licensing::unix_now(),
-                ) {
-                    tracing::debug!(program = %program_id, %error, "automatic configuration update deferred until the license is active");
+                if state
+                    .authorization
+                    .authorize(
+                        RestrictedOperation::Protected(ProtectedOperation::UseManagedConfigSources),
+                        crate::licensing::unix_now(),
+                    )
+                    .is_err()
+                {
+                    tracing::debug!(program = %program_id, "automatic configuration update deferred until the license is active");
                     schedule.retry_soon(&program_id, Instant::now());
                     continue;
                 }
@@ -190,7 +211,7 @@ pub fn spawn_scheduler(
                         if coordinator.is_shutting_down() {
                             return;
                         }
-                        tracing::warn!(program = %program_id, %error, "automatic configuration update failed");
+                        log_refresh_failure(&program_id, &error);
                         schedule.retry_soon(&program_id, Instant::now());
                         let _ = app.emit(
                             "automatic-config-update",
@@ -206,11 +227,40 @@ pub fn spawn_scheduler(
     });
 }
 
+fn log_refresh_failure(program_id: &ProgramId, error: &CamelliaNexusError) {
+    tracing::warn!(program = %program_id, code = ?error.code, "automatic configuration update failed");
+}
+
 #[cfg(test)]
 mod tests {
     use camellia_nexus_core::{ErrorCode, ProgramId};
 
     use super::RefreshCoordinator;
+
+    #[test]
+    fn refresh_failure_logs_only_program_and_error_category() {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(output.reopen().unwrap())
+            .finish();
+        let error = camellia_nexus_core::CamelliaNexusError::new(
+            ErrorCode::Network,
+            "https://user:private-password@example.test/config?token=private-token",
+        )
+        .with_message_key("private-message-key")
+        .with_details("private-configuration-value");
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_refresh_failure(&ProgramId::parse("source-refresh").unwrap(), &error);
+        });
+        let logged = std::fs::read_to_string(output.path()).unwrap();
+        assert!(logged.contains("source-refresh"));
+        assert!(logged.contains("Network"));
+        for secret in ["https://", "example.test", "private-", "user:"] {
+            assert!(!logged.contains(secret));
+        }
+    }
 
     #[test]
     fn shutdown_prevents_new_configuration_refresh_leases() {

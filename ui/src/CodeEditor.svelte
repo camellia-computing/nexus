@@ -73,6 +73,7 @@
     ConfigurationLanguage,
   } from './editor/configurationLanguage';
   import { resolveConfigurationMarkerRange } from './editor/configurationMarkers';
+  import { semanticPathSegments } from './editor/configurationMarkerModel';
   import type {
     ConfigurationEditorMarker,
     ConfigurationEditorMarkerResolution,
@@ -99,14 +100,15 @@
   export let jsonSchemaSemantics: JsonSchemaCompletionSemantics | undefined;
   export let markers: ConfigurationEditorMarker[] = [];
   export let activeMarkerId = '';
-  /** Semantic path selected from the Final configuration trace table. */
+  /** Semantic path selected in the Final configuration workspace. */
   export let focusSemanticPath = '';
   export let markerActionsDisabled = false;
 
   const dispatch = createEventDispatcher<{
     retrySchema: void;
     save: void;
-    validate: void;
+    syntaxStatus: { content: string; language: ConfigurationLanguage; invalid: boolean };
+    diagnosticStatus: { content: string; language: ConfigurationLanguage; errorCount: number };
     resolveMarker: {
       conflictId: string;
       resolution: ConfigurationEditorMarkerResolution;
@@ -224,34 +226,27 @@
         && other.disabled === this.disabled;
     }
 
+    ignoreEvent(): boolean {
+      return false;
+    }
+
     toDOM(): HTMLElement {
       const container = document.createElement('span');
       container.className = `cm-configuration-path-widget ${this.marker.kind === 'conflict' ? 'cm-configuration-conflict-widget' : 'cm-configuration-source-widget'}`;
       container.dataset.markerId = this.marker.id;
       const label = document.createElement('span');
       label.className = 'cm-configuration-conflict-label';
-      const markerLabel = this.marker.status === 'superseded'
-        ? translate('Superseded')
-        : this.marker.layer === 'rawDecision'
-          ? translate('Final decision')
-          : this.marker.layer === 'details'
-            ? translate('Details')
-            : this.marker.layer === 'intent'
-              ? translate('Intent')
-              : this.marker.layer === 'source'
-                ? translate('Source')
-                : translate('Conflict');
+      const markerLabel = this.marker.kind === 'conflict'
+        ? translate('Conflict')
+        : translate('Final edit');
       label.textContent = `${markerLabel}: ${this.marker.semanticPath}`;
       label.title = this.marker.message;
       container.append(label);
       if (this.marker.resolvable) {
         container.append(
           this.actionButton('keepMine', translate('Keep Mine')),
-          this.actionButton('useUpdated', translate('Use Updated')),
+          this.actionButton('acceptUpstream', translate('Accept updated')),
         );
-        if (this.marker.canCombine) {
-          container.append(this.actionButton('combine', translate('Combine')));
-        }
       }
       return container;
     }
@@ -279,7 +274,7 @@
   let view: EditorView | undefined;
   let languageService: ConfigurationLanguageService | undefined;
   let externalValue = value;
-  let wrapLines = true;
+  let wrapLines = false;
   let cursorLine = 1;
   let cursorColumn = 1;
   let selectedCharacters = 0;
@@ -287,6 +282,9 @@
   let characterCount = value.length;
   let errorCount = 0;
   let warningCount = 0;
+  let reportedDiagnosticDoc: EditorState['doc'] | null = null;
+  let reportedDiagnosticLanguage: ConfigurationLanguage | null = null;
+  let reportedDiagnosticErrors = -1;
   let canUndo = false;
   let canRedo = false;
   let checking = false;
@@ -403,7 +401,16 @@
           languageTaskCount += 1;
           if (mounted) checking = true;
           try {
-            const analysis = await languageService?.analyze(value, editor.state.doc.toString());
+            const content = editor.state.doc.toString();
+            const analysis = await languageService?.analyze(value, content);
+            if (mounted && analysis && editor.state.doc.toString() === content && language === value) {
+              dispatch('syntaxStatus', {
+                content,
+                language: value,
+                invalid: analysis.diagnostics.some((diagnostic) => diagnostic.severity === 'error'
+                  && /^(json\.|yaml\.|configuration\.)/.test(diagnostic.code)),
+              });
+            }
             const localDiagnostics = analysis?.diagnostics.map(
               (diagnostic) => editorDiagnostic(diagnostic, value),
             ) ?? [];
@@ -541,6 +548,7 @@
         sourceLanguage,
         content,
         marker.segments,
+        marker.documentPath,
       );
       return {
         ...range,
@@ -561,7 +569,7 @@
     const content = editor.state.doc.toString();
     const decorations: Range<Decoration>[] = [];
     for (const marker of markers) {
-      const range = resolveConfigurationMarkerRange(language, content, marker.segments);
+      const range = resolveConfigurationMarkerRange(language, content, marker.segments, marker.documentPath);
       const line = editor.state.doc.lineAt(range.from);
       const active = marker.id === activeMarkerId;
       const classes = [
@@ -598,7 +606,7 @@
             side: 1,
           }).range(line.to),
         );
-      } else if (marker.layer || marker.status) {
+      } else if (marker.kind === 'source') {
         decorations.push(
           Decoration.widget({
             widget: new ConfigurationConflictWidget(
@@ -632,6 +640,7 @@
       language,
       editor.state.doc.toString(),
       marker.segments,
+      marker.documentPath,
     );
     editor.dispatch({
       selection: { anchor: range.from, head: range.to },
@@ -658,6 +667,16 @@
     });
     errorCount = nextErrors;
     warningCount = nextWarnings;
+    if (state.doc !== reportedDiagnosticDoc
+      || language !== reportedDiagnosticLanguage
+      || nextErrors !== reportedDiagnosticErrors) {
+      reportedDiagnosticDoc = state.doc;
+      reportedDiagnosticLanguage = language;
+      reportedDiagnosticErrors = nextErrors;
+      dispatch('diagnosticStatus', {
+        content: state.doc.toString(), language, errorCount: nextErrors,
+      });
+    }
   }
 
   function updateScrollableRegionAccessibility(editor: EditorView) {
@@ -678,11 +697,6 @@
 
   function requestSave(): boolean {
     dispatch('save');
-    return true;
-  }
-
-  function requestValidation(): boolean {
-    dispatch('validate');
     return true;
   }
 
@@ -861,7 +875,6 @@
             { key: 'Shift-F8', run: previousDiagnostic },
             { key: 'Alt-z', run: toggleLineWrapping },
             { key: 'Mod-s', run: requestSave },
-            { key: 'Mod-Enter', run: requestValidation },
             { key: 'Mod-g', run: gotoLine },
             { key: 'Mod-h', run: openReplace },
             { key: 'Mod-Shift-k', run: deleteLine },
@@ -876,7 +889,7 @@
           themeCompartment.of(theme === 'dark' ? accessibleDarkTheme : []),
           phrasesCompartment.of(editorPhrases($uiLanguage)),
           accessibilityCompartment.of(editorAccessibility()),
-          wrappingCompartment.of(EditorView.lineWrapping),
+          wrappingCompartment.of([]),
           schemaCompletionCompartment.of([]),
           readOnlyCompartment.of(editorReadOnly(readOnly)),
           markerDecorationField,
@@ -945,30 +958,18 @@
 
   function focusPath(path: string): void {
     if (!view || !path) return;
-    const rawKey = path.split('/').filter(Boolean).pop();
-    if (!rawKey) return;
-    const key = rawKey.replace(/\[.*$/u, '').replace(/~1/g, '/').replace(/~0/g, '~');
-    if (!key) {
-      dispatch('pathFocus', { path, found: false });
-      return;
-    }
-    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const document = view.state.doc;
-    let found = -1;
-    for (let lineNumber = 1; lineNumber <= document.lines; lineNumber += 1) {
-      const line = document.line(lineNumber);
-      if (new RegExp(`(?:["']${escapedKey}["']|^\\s*${escapedKey})\\s*:`).test(line.text)) {
-        found = line.from;
-        break;
-      }
-    }
-    if (found < 0) {
+    const marker = markers.find((item) => item.semanticPath === path);
+    const range = resolveConfigurationMarkerRange(
+      language, view.state.doc.toString(),
+      marker?.segments ?? semanticPathSegments(path), marker?.documentPath,
+    );
+    if (!range.exact) {
       dispatch('pathFocus', { path, found: false });
       return;
     }
     view.dispatch({
-      selection: { anchor: found, head: Math.min(document.length, found + key.length) },
-      effects: EditorView.scrollIntoView(found, { y: 'center' }),
+      selection: { anchor: range.from, head: range.to },
+      effects: EditorView.scrollIntoView(range.from, { y: 'center' }),
     });
     view.focus();
     dispatch('pathFocus', { path, found: true });
@@ -1035,7 +1036,7 @@
       appliedActiveMarkerId = activeMarkerId;
       // CodeMirror keeps the previous async lint result until the next
       // promise resolves. Clear it when the authoritative marker projection
-      // changes so a resolved Raw conflict cannot remain visible as a stale
+      // changes so a resolved Final edit conflict cannot remain visible as a stale
       // error while the new diagnostics are recomputed.
       view.dispatch(setDiagnostics(view.state, []));
       synchronizeMarkerDecorations(view, activeChanged);
@@ -1190,10 +1191,12 @@
       <span class="editor-format-status">{$t('Checking syntax')}…</span>
     {/if}
     {#if configurationSchemaLoading || schemaCompiling}
-      <span class="editor-schema-status" role="status">{$t('Loading program schema')}…</span>
+      <span class="editor-schema-status" role="status">
+        <span class="schema-status-label">{$t('Loading program schema')}…</span>
+      </span>
     {:else if configurationSchemaError || schemaCompileFailed}
       <span class="editor-schema-status schema-unavailable" role="status">
-        {$t('Program schema unavailable')}
+        <span class="schema-status-label">{$t('Program schema unavailable')}</span>
         <button type="button" on:click={retryConfigurationSchema}>
           {$t('Retry')}
         </button>
@@ -1210,12 +1213,12 @@
       </span>
     {/if}
     <span class="editor-status-spacer"></span>
-    <span title={$t('Cursor position')}>
+    <span class="editor-cursor-status" title={$t('Cursor position')}>
       {$t('Ln')} {cursorLine}, {$t('Col')} {cursorColumn}
       {#if selectedCharacters} · {selectedCharacters} {$t('selected')}{/if}
     </span>
-    <span>{lineCount} {$t(lineCount === 1 ? 'line' : 'lines')} · {characterCount.toLocaleString()} {$t('characters')}</span>
-    <span>{$t('Spaces')}: 2</span>
+    <span class="editor-document-status">{lineCount} {$t(lineCount === 1 ? 'line' : 'lines')} · {characterCount.toLocaleString()} {$t('characters')}</span>
+    <span class="editor-indent-status">{$t('Spaces')}: 2</span>
     <button
       class="editor-status-toggle"
       type="button"
@@ -1848,8 +1851,16 @@
   .editor-schema-status {
     display: inline-flex;
     min-width: 0;
+    max-width: 100%;
     align-items: center;
     gap: 4px;
+    overflow: hidden;
+  }
+
+  .schema-status-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .editor-schema-status.schema-ready {
@@ -1870,6 +1881,7 @@
   }
 
   .editor-schema-status button {
+    flex: 0 0 auto;
     min-height: 20px;
     padding-inline: 4px;
     color: currentColor;
@@ -1913,8 +1925,14 @@
     }
 
     .editor-format-status,
-    .editor-status-bar > span:nth-last-of-type(2) {
+    .editor-cursor-status,
+    .editor-document-status,
+    .editor-indent-status {
       display: none;
+    }
+
+    .editor-schema-status {
+      flex: 1 1 auto;
     }
   }
 
@@ -1966,6 +1984,45 @@
   }
 
   @container configuration-editor (max-width: 540px) {
+    .editor-status-bar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      grid-auto-rows: minmax(24px, auto);
+      gap: 2px 6px;
+      white-space: nowrap;
+    }
+
+    .editor-schema-status {
+      grid-column: 1 / -1;
+      grid-row: 1;
+      width: 100%;
+    }
+
+    .editor-status-problems {
+      grid-column: 1;
+      grid-row: 2;
+    }
+
+    .editor-status-problems > span:last-child {
+      display: none;
+    }
+
+    .editor-status-spacer {
+      grid-column: 2;
+      grid-row: 2;
+      min-width: 0;
+    }
+
+    .editor-status-toggle {
+      grid-column: 3;
+      grid-row: 2;
+    }
+
+    .editor-status-bar > strong {
+      grid-column: 4;
+      grid-row: 2;
+    }
+
     .editor :global(.cm-panel.cm-search input[name='search']),
     .editor :global(.cm-panel.cm-search input[name='replace']) {
       width: 100%;
@@ -1976,7 +2033,9 @@
 
   @container configuration-editor (max-width: 410px) {
     .format-command > span:nth-child(2),
-    .editor-status-bar > span:not(.editor-status-spacer):not(.editor-schema-status) {
+    .editor-cursor-status,
+    .editor-document-status,
+    .editor-indent-status {
       display: none;
     }
 

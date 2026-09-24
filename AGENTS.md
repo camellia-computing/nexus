@@ -68,22 +68,55 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
   the centralized guard.
 - Slow preparation and network reads occur outside the authorization read gate. Re-authorize at the
   final commit boundary and verify the expected `ProgramSpec` before applying prepared content.
+- Acquire the per-program configuration lease before the runtime authorization gate, never in the
+  opposite order. Source observations prepared without the lease must recheck both ProgramSpec and
+  state revision before writing sidecars or the candidate; return the corresponding editor snapshot.
 - Configuration writes are atomic and crash recoverable. A failed native validation or replacement
   must leave the previous usable configuration intact.
-- Managed configuration sources are merged in visible UI order. Later values win; Mihomo mappings
-  merge recursively, same-name object lists replace in place, and ordered lists such as `rules`
-  concatenate in UI order.
+- Candidate save requests bind an operation identity, action kind, state revision and editor revision.
+  Commit the saved candidate, draft consumption and receipt together. Replaying the request returns
+  its receipt and the current workspace without saving or consuming edits created afterward.
+- Save and Apply receipts record the exact candidate revision durably saved by that request, even
+  when subsequent checks reject application. Continue accepting editor input while awaiting the
+  result, defer competing autosaves, and advance its basis only from that confirmed save. Formatting
+  alone must not turn unfinished text into an upstream rebase conflict.
+- Program details and configuration edits commit through the authoritative workspace. Applying a
+  candidate targets the current ProgramSpec only; configuration application must not also replace
+  program settings. Repeated application still verifies the current state revision before reporting
+  success or consuming a draft.
+- Managed configuration sources use program-declared merge rules and a deterministic preview in
+  visible UI order. Divergent same-level values without an explicit merge rule block application.
+  Mihomo mappings merge recursively, same-name object lists replace in place, and ordered lists
+  such as `rules` concatenate in UI order.
+- Managed package replacement commits executable files, ProgramSpec, candidate and editor session
+  together. Recheck the staged identity and state revision at commit. Retain rollback copies until
+  the committed or restored phase is durable; interrupted cleanup must never erase that phase.
+  Pending recovery blocks executable use and preserves local recovery materials.
 - Remote configuration sources are HTTPS-only. Optional Basic credentials belong in the OS secure
   store, never Program JSON, logs, command arguments, or frontend storage. The current limits are
   4 MiB per source and 16 MiB total input.
 - sing-box and Xray use native JSON; Mihomo uses native YAML. The target binary's native validator is
   the final semantic gate before an atomic apply.
-- Core source compatibility has two independent tracks per adapter: Xray `main` plus GitHub latest
-  stable Release, Mihomo `Alpha` plus latest stable, and sing-box `testing` plus latest stable. The
-  upstream manifest resolves moving selectors to exact tag/commit SHAs; the separate historical
-  catalog indexes releases, prereleases, surface events, and feature anchors. Keep binary fingerprint,
-  probe report, compatibility preference, target/profile, and candidate-only validation evidence
-  separate. Version text never proves official source, and Unknown decisions remain attemptable.
+- Core knowledge covers exactly two stable release families per adapter, anchored to the official
+  latest stable Release. sing-box and Mihomo group by major/minor; Xray groups by actual stable
+  release year/month. Every stable patch has an exact source commit and its own capability evidence.
+  Prereleases, unrecognized versions, and releases outside this window cannot be registered, applied,
+  started, or restarted. Stop, inspection, export, and executable replacement remain available.
+- Self-compiled binaries must identify a maintained stable baseline. Reported versions do not prove
+  official origin or installed capabilities. Custom fields require explicit binary schema or
+  dedicated capability evidence; a successful validator exit alone does not prove they are used.
+  Keep admission, build conditions, field semantics, and candidate-only native evidence separate.
+  Program registration, updates, configuration consumers, and lifecycle checks share these rules.
+- Generate configuration structures from Go AST and program-specific decoder registries, including
+  JSON, YAML, and proxy tags. Rules cite immutable source commits and symbols. Track structural and
+  semantic coverage separately; do not convert unknown behavior into a support claim. Knowledge
+  revisions are content hashes, and implementation revisions derive from build information.
+- Configuration contributions follow explicit semantic-path write order across Sources, Intent,
+  and Details. An explicit edit changes only its touched paths; background Source refresh never
+  reclaims paths from later user settings. Final editor text is three-way merged with this latest
+  upstream, with choices required only for divergent overlapping user edits. Every configuration
+  mutation returns one authoritative state/editor snapshot. Preserve the original draft basis on
+  stale retries and preserve unresolved user values through repeated upstream changes.
 - Automatic refresh scheduling, retry state, and shared configuration behavior belong in shared
   services/components rather than program-specific copies.
 

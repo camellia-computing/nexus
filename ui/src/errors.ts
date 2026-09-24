@@ -13,12 +13,9 @@ export type ConfigurationErrorContext =
   | 'configuration-load'
   | 'sources-save'
   | 'sources-refresh'
-  | 'compatibility-save'
-  | 'compatibility-validate'
   | 'guided-change'
-  | 'raw-draft'
+  | 'final-editor-draft'
   | 'configuration-save'
-  | 'configuration-validate'
   | 'configuration-apply'
   | 'configuration-rebase';
 
@@ -96,7 +93,7 @@ const presentations: Record<string, { title: string; message: string }> = {
   LICENSE_PAYMENT_PAST_DUE: { title: 'License payment past due', message: 'This license is unavailable because its payment is past due.' },
   LICENSE_CANCELED: { title: 'License canceled', message: 'This license has been canceled.' },
   LICENSE_DEVICE_DENIED: { title: 'Device authorization revoked', message: 'This device is not authorized for the current license.' },
-  LICENSE_DEVICE_REMOVAL_INCOMPLETE: { title: 'Signed out locally', message: 'This app is signed out, but the device record could not be removed from the license service.' },
+  LICENSE_DEVICE_REMOVAL_INCOMPLETE: { title: 'Device could not be removed', message: 'The license service did not confirm removal. Local access was kept unchanged.' },
   LICENSE_REMOTE_SIGNOUT_INCOMPLETE: { title: 'Signed out locally', message: 'Local access was removed, but the license service could not revoke the remote device sessions.' },
   LICENSE_REVALIDATION_REQUIRED: { title: 'License revalidation required', message: 'The license must be revalidated online before protected features can continue.' },
   LICENSE_CLIENT_UPGRADE_REQUIRED: { title: 'Camellia Nexus update required', message: 'This client version no longer meets the signed minimum version policy, so protected features are unavailable.' },
@@ -170,6 +167,59 @@ const suggestions: Record<string, string> = {
 
 const defaultSuggestion = 'Retry the operation. If it continues, inspect the program logs.';
 
+const admissionMessages: Record<string, string> = {
+  CORE_VERSION_TOO_OLD: 'This version is outside the supported range. Choose a newer program.',
+  CORE_VERSION_NOT_MAINTAINED: 'This program version is not supported yet.',
+  CORE_PRERELEASE_NOT_SUPPORTED: 'Choose a supported stable release instead of a prerelease.',
+  CORE_VERSION_UNRECOGNIZED: 'The program version could not be identified. Choose a recognizable build.',
+  CORE_BINARY_IDENTITY_MISMATCH: 'The program identity is inconsistent. Choose another build.',
+  CORE_KNOWLEDGE_INVALID: 'Program support information could not be loaded.',
+  CORE_PROGRAM_CHECK_UNAVAILABLE: 'This program cannot perform the required checks. Choose another build.',
+};
+
+const assessmentMessages: Record<string, string> = {
+  CORE_CHECK_COMPLETED: 'Check completed.',
+  CORE_NATIVE_REJECTED: 'The current program rejected this candidate.',
+  CORE_NATIVE_FIELD_REJECTED: 'The program reported an unsupported field. Review this configuration.',
+  CORE_NATIVE_TYPE_REJECTED: 'The program reported a value with the wrong type.',
+  CORE_NATIVE_SYNTAX_REJECTED: 'The program could not parse this configuration.',
+  CORE_NATIVE_PORT_REJECTED: 'The program reported an invalid port.',
+  CORE_NATIVE_RESOURCE_UNAVAILABLE: 'The program could not read a required file.',
+  CORE_CONFIGURATION_FIELD_UNCONFIRMED: 'This program has not declared a configuration field. Remove it or choose a build that supports it.',
+  CORE_CONFIGURATION_SCHEMA_UNCONFIRMED: 'This program could not provide usable field information. Retry or choose another build.',
+  CONFIGURATION_VALUE_NOT_ALLOWED: 'A value is not supported by this program. Review Final configuration.',
+  CONFIGURATION_ASSESSMENT_LIMIT: 'This configuration is too complex to check. Reduce it and try again.',
+  CORE_BUILD_CAPABILITY_UNAVAILABLE: 'This build cannot use a configured feature. Change the setting or choose another build.',
+  CORE_BUILD_CAPABILITY_UNCONFIRMED: 'A configured feature could not be confirmed. Choose a build with identifiable capabilities.',
+};
+
+const sourceMessages: Record<string, string> = {
+  SOURCE_URL_INVALID: 'Use an HTTPS source address without embedded credentials.',
+  SOURCE_FILE_NOT_FOUND: 'Source file not found. Select an existing file.',
+  SOURCE_READ_FAILED: 'Could not read this source. Check file access and retry.',
+  SOURCE_CHANGED: 'This source changed during reading. Retry the update.',
+  SOURCE_TOO_LARGE: 'This source exceeds the size limit. Use a smaller configuration.',
+  SOURCE_ACCESS_DENIED: 'The source denied access. Check its credentials.',
+  SOURCE_TIMEOUT: 'The source did not respond in time. Retry the update.',
+  SOURCE_DOWNLOAD_FAILED: 'Could not download this source. Check the connection and retry.',
+  SOURCE_CREDENTIALS_UNAVAILABLE: 'Enter the source password again.',
+  SOURCE_INVALID: 'This source contains invalid configuration. Edit or disable it.',
+  SOURCE_REFRESH_FAILED: 'Could not update this source. Retry the update.',
+  CORE_TARGET_SOURCE_REJECTED: 'This source has no items supported by the current program.',
+};
+
+export function sourceIssueMessage(messageKey: string): string {
+  return sourceMessages[messageKey] ?? sourceMessages.SOURCE_REFRESH_FAILED;
+}
+
+export function coreAssessmentMessage(messageKey: string | undefined): string | undefined {
+  return messageKey ? assessmentMessages[messageKey] : undefined;
+}
+
+export function coreAdmissionMessage(messageKey: string | undefined): string | undefined {
+  return messageKey ? admissionMessages[messageKey] : undefined;
+}
+
 function isLicenseTrustConfigurationError(details: string) {
   return [
     'entitlement signature is invalid',
@@ -206,6 +256,31 @@ export function errorInfoOf(error: unknown): ErrorInfo {
     const details = rawDetails.length > 16_000
       ? `${rawDetails.slice(0, 16_000)}\n… output truncated in the interface`
       : rawDetails;
+    if (messageKey && sourceMessages[messageKey]) {
+      return { code, messageKey, title: 'Configuration source needs attention',
+        message: sourceIssueMessage(messageKey), fallbackMessage: sourceIssueMessage(messageKey), details, suggestion: '' };
+    }
+    if (messageKey && admissionMessages[messageKey]) {
+      return {
+        code,
+        messageKey,
+        title: 'Unsupported program',
+        message: admissionMessages[messageKey],
+        fallbackMessage: admissionMessages[messageKey],
+        details,
+        suggestion: '',
+      };
+    }
+    if (messageKey === 'PROGRAM_PACKAGE_RECOVERY_REQUIRED') {
+      return {
+        code, messageKey,
+        title: 'Program needs recovery',
+        message: 'The program replacement could not be restored automatically.',
+        fallbackMessage: '程序更换未能自动恢复。',
+        details,
+        suggestion: 'Reopen the app to recover before making more changes.',
+      };
+    }
     if (isLicenseTrustConfigurationError(details)) {
       return {
         code,
@@ -276,12 +351,9 @@ const configurationContextLabels: Record<ConfigurationErrorContext, { title: str
   'configuration-load': { title: 'Configuration workspace could not be loaded' },
   'sources-save': { title: 'Configuration sources could not be saved' },
   'sources-refresh': { title: 'Configuration sources could not be updated' },
-  'compatibility-save': { title: 'Compatibility baseline could not be saved' },
-  'compatibility-validate': { title: 'Current candidate could not be validated' },
   'guided-change': { title: 'Guided setting could not be applied' },
-  'raw-draft': { title: 'Final configuration draft could not be saved' },
+  'final-editor-draft': { title: 'Final configuration draft could not be saved' },
   'configuration-save': { title: 'Configuration candidate could not be saved' },
-  'configuration-validate': { title: 'Configuration validation could not be completed' },
   'configuration-apply': { title: 'Configuration could not be applied' },
   'configuration-rebase': { title: 'Configuration draft could not be rebased' },
 };
@@ -296,38 +368,72 @@ export function configurationErrorInfo(
   context: ConfigurationErrorContext,
 ): ErrorInfo {
   const base = errorInfoOf(error);
-  const technical = `${base.message}\n${base.details}`.toLowerCase();
+  if (base.messageKey && admissionMessages[base.messageKey]) return base;
   const contextTitle = configurationContextLabels[context].title;
-  if (base.messageKey === 'CORE_COMPATIBILITY_INVALID') {
+  if (base.messageKey && sourceMessages[base.messageKey]) return { ...base, title: contextTitle };
+  const assessmentMessage = coreAssessmentMessage(base.messageKey);
+  if (assessmentMessage) {
     return {
       ...base,
-      title: contextTitle,
-      message: 'The selected compatibility target is not available for this program.',
-      fallbackMessage: '所选兼容目标不适用于当前程序，原有兼容基线未被覆盖。',
+      title: 'Configuration needs attention',
+      message: assessmentMessage,
+      details: base.details,
+      suggestion: '',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED') {
+    return {
+      ...base,
+      title: 'Configuration needs recovery',
+      message: 'The configuration update needs confirmation.',
+      fallbackMessage: '配置更新结果需要确认。',
       details: base.details || base.message,
-      suggestion: 'Choose a release or commit from this program’s compatibility catalog, then retry.',
+      suggestion: 'Reload the workspace before making more changes.',
     };
   }
-  if (base.messageKey === 'CORE_COMPATIBILITY_PROGRAM_ACTIVE') {
+  if (['CONFIGURATION_OPERATION_INTERRUPTED', 'CONFIGURATION_OPERATION_REJECTED', 'CONFIGURATION_OPERATION_MISMATCH'].includes(base.messageKey ?? '')) {
     return {
       ...base,
-      title: contextTitle,
-      message: 'The compatibility baseline was not changed because the program is still active.',
-      fallbackMessage: '程序仍处于活动状态，因此兼容基线未发生变化。',
+      title: 'Review configuration',
+      message: 'Review the current configuration before applying again.',
+      fallbackMessage: '请检查当前配置，再次应用。',
       details: base.details || base.message,
-      suggestion: 'Stop the program, review the target, and retry the same save.',
+      suggestion: '',
     };
   }
-  if (base.messageKey === 'CORE_COMPATIBILITY_RECOVERY_REQUIRED') {
+  if (base.messageKey === 'CONFIGURATION_COMMIT_RECOVERY_REQUIRED') {
     return {
       ...base,
-      title: contextTitle,
-      message: 'The compatibility state could not be restored automatically. The current effective configuration was not replaced.',
-      fallbackMessage: '兼容状态无法自动恢复；当前有效配置未被替换，需要检查恢复状态。',
-      suggestion: 'Reload the program state. If the recovery notice remains, inspect diagnostic logs before editing again.',
+      title: 'Configuration needs recovery',
+      message: 'The apply result needs confirmation.',
+      fallbackMessage: '应用结果需要确认。',
+      details: base.details || base.message,
+      suggestion: 'Reload the workspace before making more changes.',
     };
   }
-  if (base.messageKey === 'CONFIGURATION_GENERATION_STALE') {
+  if (base.messageKey === 'CONFIGURATION_RECOVERY_REQUIRED') {
+    return {
+      ...base,
+      title: 'Configuration needs recovery',
+      message: 'The operation could not be restored automatically.',
+      fallbackMessage: '操作未能自动恢复。',
+      details: base.details || base.message,
+      suggestion: 'Reload the workspace before making more changes.',
+    };
+  }
+  if (base.messageKey === 'CORE_TARGET_CHANGED' || base.messageKey === 'CORE_VALIDATION_EVIDENCE_STALE') {
+    return {
+      ...base,
+      title: 'Review configuration',
+      message: base.messageKey === 'CORE_TARGET_CHANGED'
+        ? 'The program changed. Review it before applying again.'
+        : 'The configuration needs a fresh check. Review and apply again.',
+      details: base.details || base.message,
+      suggestion: '',
+    };
+  }
+  if (['CONFIGURATION_STATE_STALE', 'CONFIGURATION_GENERATION_STALE', 'CONFIGURATION_DRAFT_STALE']
+    .includes(base.messageKey ?? '')) {
     return {
       ...base,
       title: contextTitle,
@@ -335,16 +441,6 @@ export function configurationErrorInfo(
       fallbackMessage: '配置在本次操作提交前已在其他位置更新。当前草稿和有效配置均已保留。',
       details: base.details || base.message,
       suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
-    };
-  }
-  if (base.messageKey === 'CONFIGURATION_RAW_OVERRIDE') {
-    return {
-      ...base,
-      title: contextTitle,
-      message: 'Final configuration decisions currently own one or more fields managed by this Details integration.',
-      fallbackMessage: '最终配置决定当前接管了“详情”集成所负责的一个或多个字段。',
-      details: base.details || base.message,
-      suggestion: 'Review the listed semantic paths, then confirm takeover to remove only overlapping Final configuration decisions or cancel to keep the current state.',
     };
   }
   if (base.messageKey === 'CONFIGURATION_BLOCKING_CONFLICT') {
@@ -357,7 +453,7 @@ export function configurationErrorInfo(
       suggestion: 'Resolve each conflict in its owning section or Final configuration, then save again.',
     };
   }
-  if (base.code === 'PROGRAM_BUSY' || /program is busy|another operation/.test(technical)) {
+  if (base.code === 'PROGRAM_BUSY') {
     return {
       ...base,
       title: contextTitle,
@@ -366,74 +462,82 @@ export function configurationErrorInfo(
       suggestion: 'Wait for the current operation to finish, then retry the same request.',
     };
   }
-  if (base.code === 'CONFIG_CONFLICT' || /generation|revision|changed since|stale/.test(technical)) {
+  if (base.messageKey === 'FINAL_EDIT_CONFLICT') {
     return {
       ...base,
       title: contextTitle,
-      message: 'The configuration changed elsewhere before this request was committed.',
-      fallbackMessage: '配置在本次操作提交前已在其他位置更新。当前草稿和有效配置均已保留。',
-      suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
+      message: 'Resolve conflicts before continuing.',
+      fallbackMessage: '请先解决冲突。',
+      details: base.details || base.message,
+      suggestion: '',
     };
   }
-  if (
-    base.code === 'CONFIG_INVALID'
-    && /not valid json|not valid yaml|root must be an object|unsupported non-string keys/.test(technical)
-  ) {
+  if (base.messageKey === 'CONFIGURATION_SYNTAX_INVALID') {
     return {
       ...base,
       title: contextTitle,
-      message: 'The final configuration has a syntax or document-structure error. It was not sent to the Core.',
-      fallbackMessage: '最终配置存在语法或文档结构错误，尚未提交给 Core 校验。',
+      message: 'Fix the highlighted configuration syntax.',
+      fallbackMessage: '请修正标出的配置语法。',
       details: base.details || base.message,
-      suggestion: 'Correct the highlighted JSON/YAML error, then save or validate the candidate again.',
+      suggestion: '',
     };
   }
   if (base.messageKey === 'CONFIGURATION_STATIC_INVALID') {
     return {
       ...base,
       title: contextTitle,
-      message: 'The final configuration contains a field value that is invalid before native validation.',
-      fallbackMessage: '最终配置包含可在 Core 校验前确定为无效的字段值，候选配置尚未保存。',
+      message: 'This configuration needs a correction.',
+      fallbackMessage: '这份配置需要修正。',
       details: base.details || base.message,
-      suggestion: 'Correct the field shown in technical details, save the candidate, then validate it with the exact binary.',
+      suggestion: 'Review the highlighted issue and apply again.',
     };
   }
-  if (base.code === 'CONFIG_INVALID' || /native validator|core rejected|validation failed/.test(technical)) {
+  if (base.messageKey === 'CORE_INVALID' || base.messageKey === 'CORE_NATIVE_REJECTED') {
     return {
       ...base,
       title: contextTitle,
       message: 'The selected Core rejected this candidate. Applied and Last Known Good were retained.',
       fallbackMessage: '当前 Core 拒绝了这份候选配置；Applied 和 Last Known Good 已保留。',
-      suggestion: 'Review the validator output, correct the candidate, and validate it again.',
+      suggestion: 'Review the highlighted issue and apply again.',
     };
   }
-  if (base.code === 'INVALID_STATE' && context === 'compatibility-save') {
+  if (['configuration-apply', 'configuration-save'].includes(context)
+    && (!base.code || ['TIMEOUT', 'NETWORK', 'INTERNAL', 'STORAGE'].includes(base.code))) {
     return {
       ...base,
       title: contextTitle,
-      message: 'The compatibility baseline was not committed because the program must be stopped first.',
-      fallbackMessage: '兼容基线尚未保存，因为必须先停止程序。',
-      suggestion: 'Stop the program, review the target, and save the baseline again.',
+      message: context === 'configuration-save' ? 'The save result needs confirmation.' : 'The apply result needs confirmation.',
+      fallbackMessage: context === 'configuration-save' ? '保存结果需要确认。' : '应用结果需要确认。',
+      details: base.details || base.message,
+      suggestion: 'Retry to check the result of this request.',
     };
   }
-  if (base.code === 'STORAGE' || /transaction|restore|recovery|write/.test(technical)) {
+  if (base.code === 'CONFIG_INVALID' || base.code === 'CONFIG_CONFLICT') {
     return {
       ...base,
       title: contextTitle,
-      message: 'The configuration state could not be written safely. The previous usable configuration was kept.',
-      fallbackMessage: '配置状态无法安全写入；之前可用的配置已保留。',
+      message: 'This configuration needs a correction.',
+      fallbackMessage: '这份配置需要修正。',
+      details: base.details || base.message,
+      suggestion: 'Review the highlighted issue and apply again.',
+    };
+  }
+  if (base.code === 'STORAGE') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The configuration could not be saved.',
+      fallbackMessage: '配置未能保存。',
+      details: base.details || base.message,
       suggestion: 'Retry once. If it continues, inspect the diagnostic logs and available disk space.',
     };
   }
   return {
     ...base,
     title: contextTitle,
-    message: base.message === 'The operation could not be completed.'
-      ? 'The configuration request could not be completed.'
-      : base.message,
-    fallbackMessage: base.fallbackMessage === 'The operation could not be completed.'
-      ? '配置请求未能完成。'
-      : base.fallbackMessage,
+    message: 'The configuration request could not be completed.',
+    fallbackMessage: '配置请求未能完成。',
+    details: base.details || base.message,
     suggestion: base.suggestion === defaultSuggestion
       ? 'Review the configuration details and retry the same request.'
       : base.suggestion,

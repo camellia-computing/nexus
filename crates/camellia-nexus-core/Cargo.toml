@@ -23,5 +23,8 @@ tracing.workspace = true
 uuid.workspace = true
 url.workspace = true
 
+[build-dependencies]
+sha2.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

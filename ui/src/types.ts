@@ -50,70 +50,48 @@ export type ProgramState =
   | { status: 'stopFailed'; pid: number; message: string }
   | { status: 'error'; code: string; message: string };
 
-export const PROGRAM_SPEC_SCHEMA_VERSION = 6;
-
-export type CoreTrackedChannel = 'development' | 'stable';
-export type CoreTrackingPolicy = 'branchHead' | 'latestStableRelease';
-export type CoreCompatibilityReference =
-  | { kind: 'release'; tag: string }
-  | { kind: 'commit'; commitSha: string };
-export type CoreCompatibilityPreference =
-  | { mode: 'automatic' }
-  | { mode: 'release'; tag: string }
-  | { mode: 'commit'; commitSha: string }
-  | { mode: 'unknown'; reference?: CoreCompatibilityReference };
 export interface CoreBinaryFingerprint {
   sha256: string;
   size: number;
   modifiedUnixMs: number;
 }
 export interface CoreCliObservation { id: string; available: boolean }
+export interface CoreBuildObservation {
+  goVersion?: { major: number; minor: number; patch: number } | null;
+  operatingSystem: string | null;
+  architecture: string | null;
+  tags: string[] | null;
+  cgo: boolean | null;
+}
 export interface CoreProbeReport {
   revision: string;
   reportedVersion?: string;
   normalizedVersion?: string;
+  prerelease: boolean;
+  hasBuildMetadata: boolean;
   reportedCommit?: string;
+  build?: CoreBuildObservation;
+  identityIssue?: 'ambiguousOutput' | 'malformedBuildInfo';
   cliObservations: CoreCliObservation[];
 }
-export type CoreCompatibilityBasis =
-  | 'verifiedOfficialArtifact'
-  | 'trustedPackage'
-  | 'trackedSource'
-  | 'binaryReported'
-  | 'userDeclared'
-  | 'unknown';
+export type CoreCompatibilityBasis = 'binaryReported' | 'unknown';
 export type CoreVersionCoordinate =
   | { kind: 'release'; tag: string; normalizedVersion: string; commitSha: string }
-  | { kind: 'commit'; commitSha: string; branch?: string }
-  | {
-      kind: 'uncatalogued';
-      normalizedVersion?: string;
-      reason: 'notFound' | 'ambiguous' | 'futureVersion';
-    }
   | { kind: 'unknown' };
 export interface CoreTargetIdentity {
   program: Exclude<ProgramKind, 'generic'>;
   coordinate: CoreVersionCoordinate;
   basis: CoreCompatibilityBasis;
-  catalogRevision: string;
+  knowledgeHash: string;
   reportedVersion?: string;
   fingerprintSha256?: string;
 }
-export type CoreFeatureAvailability = 'supported' | 'unsupported' | 'unknown';
-export type CoreFeatureLifecycle = 'active' | 'deprecated' | 'removed' | 'unreviewed';
-export type CoreEvidenceLevel =
-  | 'catalogConfirmed'
-  | 'binaryReported'
-  | 'userDeclared'
-  | 'nativeAccepted'
-  | 'runtimeConfirmed';
+export type CoreFeatureAvailability = 'sourceDeclared' | 'sourceUnavailable' | 'unconfirmed';
 export interface CoreFeatureDecision {
   featureId: string;
   availability: CoreFeatureAvailability;
-  lifecycle: CoreFeatureLifecycle;
-  behaviorRevision?: string;
-  evidence: CoreEvidenceLevel;
-  attemptAllowed: boolean;
+  buildConditions: string[];
+  evidence: Array<{ source: { modulePath: string; path: string; symbol: string }; bodyHash: string }>;
 }
 export interface CoreCompatibilityProfile {
   target: CoreTargetIdentity;
@@ -124,6 +102,7 @@ export interface CoreValidationEvidence {
   binarySha256: string;
   profileHash: string;
   configHash: string;
+  candidateGeneration: number;
   validatorContractRevision: string;
   nativeAccepted: boolean;
   validatedUnixMs: number;
@@ -139,13 +118,11 @@ export type ExecutableSpec =
   | {
       mode: 'managed';
       path: string;
-      compatibility: CoreCompatibilityPreference;
       metadata?: ExecutableMetadata;
     }
   | {
       mode: 'external';
       path: string;
-      compatibility: CoreCompatibilityPreference;
       metadata?: ExecutableMetadata;
     };
 
@@ -207,7 +184,6 @@ export interface ManagedConfig {
 }
 
 export interface ProgramSpec {
-  schemaVersion: number;
   id: string;
   name: string;
   executable: ExecutableSpec;
@@ -260,12 +236,6 @@ export interface AutomaticConfigUpdateEvent {
   succeeded: boolean;
 }
 
-export interface ValidationResult {
-  valid: boolean;
-  stdout: string;
-  stderr: string;
-}
-
 export type ConfigurationFormat = 'jsonc' | 'yaml';
 export type SourceFreshness = 'fresh' | 'stale' | 'unavailable' | 'invalid' | 'disabled';
 export interface SourceStatus {
@@ -274,7 +244,7 @@ export interface SourceStatus {
   freshness: SourceFreshness;
   observedHash?: string;
   snapshotHash?: string;
-  message?: string;
+  messageKey?: string;
   observedUnixMs?: number;
   parseSummary?: SourceParseSummary;
 }
@@ -308,7 +278,7 @@ export interface ShareTranslationSummary {
   target: CoreTargetIdentity;
   translatorRevision: string;
   profileHash: string;
-  catalogRevision: string;
+  knowledgeHash: string;
   featureDecisions: CoreFeatureDecision[];
   fidelity: TranslationFidelity;
   warnings: ConfigurationIssue[];
@@ -326,55 +296,29 @@ export interface ShareImportPreview {
   summary: SourceParseSummary;
   items: TranslatedShareItem[];
 }
-export type RawConflictResolution =
-  | 'keepMine'
-  | 'useUpdated'
-  | 'combine'
-  | { manualEdit: { value: unknown } };
 export type SemanticPathSegment =
   | { kind: 'key'; key: string }
   | { kind: 'identity'; field: string; value: string };
-export type IntentOperation =
-  | { operation: 'set'; path: SemanticPathSegment[]; value: unknown }
-  | { operation: 'delete'; path: SemanticPathSegment[] }
-  | { operation: 'reorderIdentities'; path: SemanticPathSegment[]; order: Array<[string, string]> }
-  | { operation: 'replaceSequence'; path: SemanticPathSegment[]; expected: unknown[]; value: unknown[] };
-export type RawDecisionOrigin = 'user' | 'migrated' | 'system';
-export type RawDecisionStatus = 'active' | 'superseded' | 'dormant' | 'resolved';
-export interface RawDecisionBasis {
-  upstreamGeneration: number;
-  upstreamContentHash: string;
-  upstreamPathHash: string;
-}
-export type RawDecisionResolution =
-  | 'acceptUpstream'
-  | 'keepRaw'
-  | { manualEdit: { value: unknown } };
-export interface RawConflict {
-  conflictId: string;
-  segments: SemanticPathSegment[];
-  semanticPath: string;
-  displayPath: string;
-  conflictType: string;
-  severity: 'warning' | 'error';
-  originalBase: unknown;
-  updatedBase: unknown;
-  userValue: unknown;
-  suggestedActions: string[];
-  canCombine: boolean;
-}
-export interface RawDraftSession {
+export interface FinalEditorSession {
   sessionId: string;
   draftRevision: number;
-  basedOnGeneration: number;
+  basedOnStateRevision: number;
+  basedOnCandidateGeneration: number;
   baseContent: string;
-  userContent: string;
   workingContent: string;
-  conflicts: RawConflict[];
-  resolutions: Record<string, RawConflictResolution>;
+  conflicts: FinalConflictProjection[];
+  resolutions: Record<string, FinalConflictResolution>;
   unresolvedConflictIds: string[];
+  rebaseRequired: boolean;
   updatedUnixMs: number;
 }
+export type SemanticValue =
+  | { state: 'missing' }
+  | { state: 'present'; value: unknown };
+export type FinalConflictResolution =
+  | 'acceptUpstream'
+  | 'keepMine'
+  | { manualEdit: { value: SemanticValue } };
 export type CandidateValidationStatus = 'pending' | 'valid' | 'invalid';
 export interface ConfigurationRevision {
   generation: number;
@@ -382,6 +326,7 @@ export interface ConfigurationRevision {
   createdUnixMs: number;
 }
 export interface ConfigurationDiagnostic {
+  location?: { semanticPath: string; documentPath: string[] };
   code: string;
   message: string;
   details?: string;
@@ -403,14 +348,14 @@ export interface ConfigurationConflict {
   scope?: ConfigurationIssueScope;
   sourceValue?: unknown;
   guidedValue?: unknown;
-  rawValue?: unknown;
+  userValue?: unknown;
   effectiveValue?: unknown;
 }
 export interface ProvenanceEntry {
   semanticPath: string;
   sourceIds: string[];
-  guided: boolean;
-  raw: boolean;
+  upstream: boolean;
+  finalEdit: boolean;
 }
 export interface ConfigurationCandidate {
   revision: ConfigurationRevision;
@@ -431,25 +376,32 @@ export interface GuidedSettingDescriptor {
   allowedValues: string[];
   enabledWhen?: string;
 }
-export type GuidedProjectionStatus = 'inherited' | 'explicit' | 'custom' | 'overridden' | 'rawDecision';
+export type GuidedProjectionStatus = 'inherited' | 'explicit' | 'custom' | 'overridden' | 'finalEdit';
 export interface GuidedProjection {
   settingId: string;
   status: GuidedProjectionStatus;
   value?: unknown;
   intentValue?: unknown;
 }
-export type ManagedIntegrationStatus = 'inactive' | 'explicit' | 'overridden' | 'rawOnly' | 'needsAttention';
+export type ManagedIntegrationStatus = 'inactive' | 'explicit' | 'overridden' | 'finalOnly' | 'needsAttention' | 'latestSettings';
+export interface ManagedSettingProjection {
+  settingId: string;
+  savedValue: SemanticValue;
+  effectiveValue: SemanticValue;
+  canUseSavedValue: boolean;
+}
 export interface ManagedIntegrationProjection {
   integrationId: string;
   status: ManagedIntegrationStatus;
   effectiveEnabled: boolean;
+  settings: ManagedSettingProjection[];
   intentValue?: unknown;
-  rawPaths: string[];
+  finalPaths: string[];
   issueIds: string[];
 }
-export type ConfigurationLayer = 'source' | 'intent' | 'details' | 'rawDecision';
 export type ConfigurationGate = 'save' | 'validate' | 'apply';
 export type ConfigurationRecoveryAction =
+  | 'openCompatibility'
   | 'resolveSourceConflict'
   | 'resolveLayerConflict'
   | 'openFinalConfiguration'
@@ -457,21 +409,12 @@ export type ConfigurationRecoveryAction =
   | 'reviewCandidate';
 export interface ConfigurationGateBlocker {
   code: string;
+  details?: string;
   messageKey: string;
   scope: ConfigurationIssueScope;
   semanticPath?: string;
   blocks: ConfigurationGate[];
   recoveryAction: ConfigurationRecoveryAction;
-}
-export interface RawDecisionProjection {
-  decisionId: string;
-  semanticPath: string;
-  operation: IntentOperation;
-  status: RawDecisionStatus;
-  origin: RawDecisionOrigin;
-  basis: RawDecisionBasis;
-  upstreamValue?: unknown;
-  rawValue?: unknown;
 }
 export interface ConfigurationEditorIssue {
   id: string;
@@ -481,32 +424,36 @@ export interface ConfigurationEditorIssue {
   severity: 'warning' | 'error';
   blocking: boolean;
 }
-export interface ConfigurationEditorPath {
+export type FinalEditStatus = 'clean' | 'modified' | 'conflict';
+export type CandidateStatus = 'unsaved' | 'pendingValidation' | 'invalid' | 'validated' | 'applied';
+export type FinalChangeKind = 'added' | 'modified' | 'deleted';
+export interface FinalChangeProjection {
+  editId: string;
   semanticPath: string;
   segments: SemanticPathSegment[];
-  sourceIds: string[];
-  sourceValue?: unknown;
-  intentValue?: unknown;
-  detailsValue?: unknown;
-  rawValue?: unknown;
-  effectiveValue?: unknown;
-  winnerLayer: ConfigurationLayer;
-  rawDecision?: RawDecisionProjection;
+  kind: FinalChangeKind;
+  upstreamValue: SemanticValue;
+  finalValue: SemanticValue;
   issues: ConfigurationEditorIssue[];
 }
-export interface ConfigurationDecisionCounts {
-  active: number;
-  resolved: number;
-  superseded: number;
-  dormant: number;
+export type FinalMergeConflictKind = 'addVsAdd' | 'modifyVsModify' | 'deleteVsModify' | 'modifyVsDelete' | 'sequence';
+export interface FinalConflictProjection {
+  conflictId: string;
+  semanticPath: string;
+  segments: SemanticPathSegment[];
+  kind: FinalMergeConflictKind;
+  baseValue: SemanticValue;
+  upstreamValue: SemanticValue;
+  userValue: SemanticValue;
+  canMerge: boolean;
 }
 export interface ConfigurationEditorView {
-  content: string;
-  revision: ConfigurationRevision;
-  paths: ConfigurationEditorPath[];
-  decisionCounts: ConfigurationDecisionCounts;
+  document: { content: string; revision: ConfigurationRevision };
+  editStatus: FinalEditStatus;
+  candidateStatus: CandidateStatus;
+  changes: FinalChangeProjection[];
+  conflicts: FinalConflictProjection[];
   blockers: ConfigurationGateBlocker[];
-  validationStatus: CandidateValidationStatus;
   canSave: boolean;
   canValidate: boolean;
   canApply: boolean;
@@ -514,12 +461,36 @@ export interface ConfigurationEditorView {
 export interface ConfigurationWorkspaceView {
   editor: ConfigurationEditorView;
 }
+export interface CoreAdmissionReport {
+  program: ProgramKind;
+  status: 'admitted' | 'tooOld' | 'notMaintained' | 'prerelease' | 'unrecognized' | 'identityMismatch' | 'probeRejected';
+  messageKey: string;
+  maintainedFamilies: string[];
+  baseline: {
+    tag: string;
+    version: string;
+    commitSha: string;
+    modulePath: string;
+    dependencies: Array<{
+      modulePath: string;
+      version: string;
+      repository: string;
+      commitSha: string;
+      sourceUrl: string;
+    }>;
+    publishedAt: string;
+    sourceTimestamp: string;
+    sourceUrl: string;
+  } | null;
+  knowledgeHash: string;
+}
 export interface ConfigurationStateView {
-  schemaVersion: number;
   kind: ProgramKind;
   format: ConfigurationFormat;
+  stateRevision: number;
   generation: number;
   compatibilityProfile: CoreCompatibilityProfile;
+  coreAdmission: CoreAdmissionReport | null;
   sourceStatuses: SourceStatus[];
   sourceParseSummaries: Record<string, SourceParseSummary>;
   provenance: ProvenanceEntry[];
@@ -529,8 +500,26 @@ export interface ConfigurationStateView {
   guidedDescriptors: GuidedSettingDescriptor[];
   guidedProjection: GuidedProjection[];
   managedIntegrations?: ManagedIntegrationProjection[];
-  compatibilityReferences?: CoreCompatibilityReference[];
   workspace: ConfigurationWorkspaceView;
+}
+export interface ConfigurationMutationContext {
+  operationId: string;
+  kind: 'save' | 'apply';
+  expectedStateRevision: number;
+  editorSessionId?: string;
+  expectedDraftRevision?: number;
+}
+export interface ConfigurationOperationResult {
+  operationId: string;
+  status: 'pending' | 'saved' | 'applied' | 'rejected' | 'interrupted';
+  candidateGeneration: number;
+  savedCandidate?: ConfigurationRevision;
+  messageKey?: string;
+}
+export interface ConfigurationWorkspaceSnapshot {
+  state: ConfigurationStateView;
+  editorSession?: FinalEditorSession;
+  operationResult?: ConfigurationOperationResult;
 }
 
 export interface ActionDescriptor {
@@ -541,9 +530,15 @@ export interface ActionDescriptor {
 }
 
 export interface ActionResult {
-  stdout: string;
-  stderr: string;
+  report: NativeDiagnosticReport;
   previewContent?: string;
+}
+
+export interface NativeDiagnosticReport {
+  messageKey: string;
+  exitCode: number | null;
+  stdoutBytes: number;
+  stderrBytes: number;
 }
 
 export interface LogChunk {

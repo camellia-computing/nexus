@@ -7,9 +7,15 @@ use async_trait::async_trait;
 
 use crate::{
     CommandOutput, CommandPlan, CreateAssets, ExecutableMetadata, LaunchPlan, LoadReport, LogChunk,
-    LogStream, ProcessExit, ProgramConfigTransaction, ProgramId, ProgramSpec, RawConfig, Result,
-    StagedConfig, StagedPackage,
+    LogStream, ProcessExit, ProgramId, ProgramSpec, RawConfig, Result, StagedConfig, StagedPackage,
 };
+
+/// Candidate and editor state committed with a managed executable replacement.
+#[derive(Debug)]
+pub struct PackageConfigurationUpdate {
+    pub expected_state_revision: u64,
+    pub state: crate::ConfigurationState,
+}
 
 #[async_trait]
 pub trait ManagedProcess: Send {
@@ -47,23 +53,9 @@ pub trait ProgramStore: Send + Sync {
         staged: StagedPackage,
         expected_spec: &ProgramSpec,
         next_spec: &ProgramSpec,
+        configuration: Option<PackageConfigurationUpdate>,
     ) -> Result<()>;
     async fn discard_package(&self, staged: StagedPackage) -> Result<()>;
-    async fn begin_program_config_update(
-        &self,
-        expected_spec: &ProgramSpec,
-        next_spec: &ProgramSpec,
-        staged_config: StagedConfig,
-        expected_config_hash: &str,
-    ) -> Result<ProgramConfigTransaction>;
-    async fn finalize_program_config_update(
-        &self,
-        transaction: ProgramConfigTransaction,
-    ) -> Result<()>;
-    async fn rollback_program_config_update(
-        &self,
-        transaction: ProgramConfigTransaction,
-    ) -> Result<()>;
     async fn read_log(
         &self,
         spec: &ProgramSpec,

@@ -19,7 +19,7 @@ import {
 } from '../src/programs/shared/configuration.ts';
 import { applySingBoxDashboardChange } from '../src/programs/sing-box/dashboard-state.ts';
 import { mihomoProgram } from '../src/programs/mihomo/index.ts';
-import { configurationErrorInfo, errorInfoOf } from '../src/errors.ts';
+import { configurationErrorInfo, errorInfoOf, sourceIssueMessage } from '../src/errors.ts';
 import {
   clientVersionAdvisory,
   compareCanonicalSemVer,
@@ -142,6 +142,23 @@ const markerYaml = [
   '    server: edge.example',
   '',
 ].join('\n');
+
+for (const [language, content, expected] of [
+  ['jsonc', markerJson, '"edge.example"'],
+  ['yaml', markerYaml, 'edge.example'],
+]) {
+  const range = resolveConfigurationMarkerRange(language, content, [], ['outbounds', '1', 'server']);
+  assert.equal(content.slice(range.from, range.to), expected);
+  assert.equal(range.exact, true);
+  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '9', 'server']).exact, false);
+  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '01', 'server']).exact, false);
+}
+const nestedMarker = '{"a":{"value":1},"b":{"value":2},"literal[key]":3,"0":4}';
+for (const [path, expected] of [[['b', 'value'], '2'], [['literal[key]'], '3'], [['0'], '4']]) {
+  const range = resolveConfigurationMarkerRange('jsonc', nestedMarker, [], path);
+  assert.equal(nestedMarker.slice(range.from, range.to), expected);
+  assert.equal(range.exact, true);
+}
 const markerYamlRange = resolveConfigurationMarkerRange('yaml', markerYaml, identityMarkerPath);
 assert.equal(markerYaml.slice(markerYamlRange.from, markerYamlRange.to), 'edge.example');
 assert.deepEqual(
@@ -513,6 +530,77 @@ globalThis.localStorage = {
   setItem: (key, value) => draftStorage.set(key, value),
   removeItem: (key) => draftStorage.delete(key),
 };
+globalThis.document = { documentElement: { lang: '' } };
+const { hasChineseTranslation } = await import('../src/i18n.ts');
+for (const message of [
+  'Check completed.',
+  'The program reported an unsupported field. Review this configuration.',
+  'The program reported a value with the wrong type.',
+  'The program could not parse this configuration.',
+  'The program reported an invalid port.',
+  'The program could not read a required file.',
+  'Program needs recovery',
+  'The program replacement could not be restored automatically.',
+  'Reopen the app to recover before making more changes.',
+  'The program is identified automatically.',
+  'Detected program',
+  'Not detected',
+  'Retry detection',
+  'Program detection needs attention.',
+  'Review and apply changes in Final configuration.',
+  'Replace program',
+  'Review program detection in Compatibility.',
+  'Supported release families',
+  'Knowledge digest',
+  'This program cannot perform the required checks. Choose another build.',
+  'This version is outside the supported range. Choose a newer program.',
+  'This program version is not supported yet.',
+  'Choose a supported stable release instead of a prerelease.',
+  'The program version could not be identified. Choose a recognizable build.',
+  'The program identity is inconsistent. Choose another build.',
+  'Program support information could not be loaded.',
+  'This build cannot use a configured feature. Change the setting or choose another build.',
+  'A configured feature could not be confirmed. Choose a build with identifiable capabilities.',
+  'This program has not declared a configuration field. Remove it or choose a build that supports it.',
+  'This program could not provide usable field information. Retry or choose another build.',
+  'Review and save this candidate.',
+  'Validate this saved candidate.',
+  'Fix the highlighted issue and save again.',
+  'This candidate is ready to apply.',
+  'Resolve conflicts before continuing.',
+  'The updated configuration and your edit changed the same path. Review it before saving or applying.',
+  'Final configuration also edits this setting. Changes here may require conflict resolution there.',
+  'Configuration status',
+  'Merge manually',
+  'Review configuration',
+  'Using latest settings',
+  'Latest setting',
+  'Use this value',
+  'Not set',
+  'Dashboard download URL',
+  'Fix the highlighted configuration syntax.',
+  'This configuration needs a correction.',
+  'Review the highlighted issue and apply again.',
+  'The configuration could not be saved.',
+  'Retry to check the result of this request.',
+  'Submitted changes saved.',
+  'Configuration source needs attention',
+  ...['SOURCE_URL_INVALID', 'SOURCE_FILE_NOT_FOUND', 'SOURCE_READ_FAILED', 'SOURCE_CHANGED',
+    'SOURCE_TOO_LARGE', 'SOURCE_ACCESS_DENIED', 'SOURCE_TIMEOUT', 'SOURCE_DOWNLOAD_FAILED',
+    'SOURCE_CREDENTIALS_UNAVAILABLE', 'SOURCE_INVALID', 'SOURCE_REFRESH_FAILED', 'CORE_TARGET_SOURCE_REJECTED']
+    .map(sourceIssueMessage),
+]) {
+  assert.equal(hasChineseTranslation(message), true, `Missing Chinese UI text: ${message}`);
+}
+for (const key of ['SOURCE_FILE_NOT_FOUND', 'SOURCE_ACCESS_DENIED', 'SOURCE_INVALID']) {
+  const error = { code: 'NETWORK', messageKey: key, message: 'private-original-message', details: '{"sourceId":"source-a"}' };
+  for (const info of [errorInfoOf(error), configurationErrorInfo(error, 'sources-refresh')]) {
+    assert.equal(info.message, sourceIssueMessage(key));
+    assert.equal(info.suggestion, '');
+    assert.ok(!JSON.stringify(info).includes('private-original-message'));
+  }
+}
+assert.equal(sourceIssueMessage('private-unrecognized-code'), sourceIssueMessage('SOURCE_REFRESH_FAILED'));
 const sensitiveDraft = {
   ...defaultDraft('generic', 'Linux'),
   argumentLine: '--token command-secret',
@@ -701,33 +789,45 @@ assert.equal(storageError.fallbackMessage, 'Application data could not be access
 assert.equal(storageError.details, 'permission denied');
 assert.notEqual(storageError.title, 'storage');
 assert.doesNotMatch(storageError.title, /_/);
+const packageRecovery = errorInfoOf({
+  code: 'STORAGE',
+  messageKey: 'PROGRAM_PACKAGE_RECOVERY_REQUIRED',
+  message: 'Internal commit error',
+  details: 'commit: Storage; recovery: Storage',
+});
+assert.equal(packageRecovery.title, 'Program needs recovery');
+assert.doesNotMatch(packageRecovery.message, /Internal|unchanged|retained/);
+assert.equal(packageRecovery.details, 'commit: Storage; recovery: Storage');
 const configurationSchemaError = errorInfoOf({
   code: 'CONFIGURATION_SCHEMA_INVALID',
   message: 'Program could not generate a configuration schema',
 });
 assert.equal(configurationSchemaError.title, 'Program schema unavailable');
 assert.match(configurationSchemaError.suggestion, /schema command/);
-const wrappedCompatibilityError = configurationErrorInfo(
+const wrappedAdmissionError = configurationErrorInfo(
   new Error(JSON.stringify({
-    code: 'INVALID_SPEC',
-    messageKey: 'CORE_COMPATIBILITY_INVALID',
-    message: 'Selected Core commit SHA is invalid',
+    code: 'UNSUPPORTED_BINARY',
+    messageKey: 'CORE_VERSION_UNRECOGNIZED',
+    message: 'Cannot resolve the supplied program identity',
+    details: 'maintained families: fixture-current, fixture-previous',
   })),
-  'compatibility-save',
+  'configuration-load',
 );
-assert.equal(wrappedCompatibilityError.code, 'INVALID_SPEC');
-assert.equal(wrappedCompatibilityError.messageKey, 'CORE_COMPATIBILITY_INVALID');
-assert.match(wrappedCompatibilityError.message, /not available/);
-assert.match(wrappedCompatibilityError.details, /commit SHA/);
-const managedRawOverrideError = configurationErrorInfo({
-  code: 'CONFIG_CONFLICT',
-  messageKey: 'CONFIGURATION_RAW_OVERRIDE',
-  message: 'Managed integration is overridden by Raw configuration',
-  details: '{"semanticPaths":["/experimental/clash_api/external_controller"]}',
-}, 'details-save');
-assert.match(managedRawOverrideError.message, /Final configuration decisions currently own/);
-assert.match(managedRawOverrideError.suggestion, /confirm takeover/);
-assert.match(managedRawOverrideError.details, /external_controller/);
+assert.equal(wrappedAdmissionError.code, 'UNSUPPORTED_BINARY');
+assert.equal(wrappedAdmissionError.messageKey, 'CORE_VERSION_UNRECOGNIZED');
+assert.match(wrappedAdmissionError.message, /could not be identified/);
+assert.match(wrappedAdmissionError.details, /maintained families/);
+const unknownConfigurationError = configurationErrorInfo({ code: 'CUSTOM_FAILURE', message: 'internal generation write rejected' }, 'sources-save');
+assert.equal(unknownConfigurationError.message, 'The configuration request could not be completed.');
+assert.equal(unknownConfigurationError.details, 'internal generation write rejected');
+const ambiguousApply = configurationErrorInfo({ code: 'STORAGE', message: 'write failed after commit' }, 'configuration-apply');
+assert.equal(ambiguousApply.message, 'The apply result needs confirmation.');
+const ambiguousSave = configurationErrorInfo({ code: 'TIMEOUT', message: 'save response missing' }, 'configuration-save');
+assert.equal(ambiguousSave.message, 'The save result needs confirmation.');
+assert.equal(ambiguousSave.suggestion, 'Retry to check the result of this request.');
+assert.doesNotMatch(ambiguousApply.message, /kept|retained|unchanged/);
+const genericConflict = configurationErrorInfo({ code: 'CONFIG_CONFLICT', message: 'native validator rejected old generation' }, 'configuration-apply');
+assert.equal(genericConflict.message, 'This configuration needs a correction.');
 for (const [code, title, message] of [
   ['TIMEOUT', 'Operation timed out', 'The operation did not finish in time.'],
   ['NETWORK', 'Network error', 'The network request could not be completed.'],
@@ -1071,5 +1171,27 @@ assert.equal(licenseNoticeRequiresPersistentAttention({
 const catalog = { version: 1, order: ['alpha', 'beta', 'gamma'] };
 assert.deepEqual(moveCatalogItem(catalog, 'gamma', 'beta').order, ['alpha', 'gamma', 'beta']);
 assert.deepEqual(moveCatalogItem(catalog, 'alpha').order, ['beta', 'gamma', 'alpha']);
+
+for (const messageKey of ['CONFIGURATION_VALUE_NOT_ALLOWED', 'CONFIGURATION_ASSESSMENT_LIMIT', 'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED', 'CORE_NATIVE_FIELD_REJECTED', 'CORE_NATIVE_TYPE_REJECTED', 'CORE_NATIVE_SYNTAX_REJECTED', 'CORE_NATIVE_PORT_REJECTED', 'CORE_NATIVE_RESOURCE_UNAVAILABLE']) {
+  const error = configurationErrorInfo({ code: 'CONFIG_INVALID', messageKey, message: 'Internal source implementation', details: 'rule: bounded-details' }, 'configuration-apply');
+  assert.equal(error.title, 'Configuration needs attention');
+  assert.equal(error.suggestion, '');
+  assert.equal(error.details, 'rule: bounded-details');
+  assert.doesNotMatch(error.message, /Internal source/);
+}
+for (const messageKey of ['CORE_TARGET_CHANGED', 'CORE_VALIDATION_EVIDENCE_STALE']) {
+  const error = configurationErrorInfo({ code: 'CONFIG_CONFLICT', messageKey, message: 'Internal validation identity mismatch' }, 'configuration-apply');
+  assert.equal(error.title, 'Review configuration');
+  assert.equal(error.suggestion, '');
+  assert.doesNotMatch(error.message, /Internal validation/);
+  assert.match(error.message, /apply/i);
+  assert.ok(hasChineseTranslation(error.message));
+}
+for (const messageKey of ['CORE_VERSION_TOO_OLD', 'CORE_VERSION_NOT_MAINTAINED', 'CORE_PRERELEASE_NOT_SUPPORTED', 'CORE_VERSION_UNRECOGNIZED', 'CORE_BINARY_IDENTITY_MISMATCH', 'CORE_KNOWLEDGE_INVALID']) {
+  const error = errorInfoOf({ code: 'UNSUPPORTED_BINARY', messageKey, message: 'Internal admission failure', details: 'maintained families: supported-range' });
+  assert.equal(error.title, 'Unsupported program');
+  assert.equal(error.suggestion, '');
+  assert.doesNotMatch(error.message, /Internal admission/);
+}
 
 console.log('Frontend utility tests passed.');

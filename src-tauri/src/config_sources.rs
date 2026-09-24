@@ -75,7 +75,8 @@ pub async fn materialize(
     if content.len() > MAX_CONFIG_BYTES {
         return Err(CamelliaNexusError::invalid_spec(
             "Merged configuration exceeds the 4 MiB limit",
-        ));
+        )
+        .with_message_key("SOURCE_TOO_LARGE"));
     }
     let snapshots_by_id = snapshots
         .iter()
@@ -99,7 +100,7 @@ pub async fn materialize(
                     freshness,
                     observed_hash: snapshot.map(|snapshot| snapshot.content_hash.clone()),
                     snapshot_hash: snapshot.map(|snapshot| snapshot.content_hash.clone()),
-                    message: None,
+                    message_key: None,
                     observed_unix_ms: snapshot.map(|_| observed_unix_ms),
                 },
             )
@@ -211,7 +212,8 @@ pub async fn refresh_snapshots(
                 let parsed = if total > MAX_TOTAL_SOURCE_BYTES {
                     Err(CamelliaNexusError::invalid_spec(
                         "Configuration sources exceed the 16 MiB aggregate limit",
-                    ))
+                    )
+                    .with_message_key("SOURCE_TOO_LARGE"))
                 } else {
                     parse_source_snapshot(
                         &target,
@@ -239,7 +241,7 @@ pub async fn refresh_snapshots(
                         freshness: SourceFreshness::Fresh,
                         observed_hash: Some(snapshot.content_hash.clone()),
                         snapshot_hash: Some(snapshot.content_hash.clone()),
-                        message: None,
+                        message_key: None,
                         observed_unix_ms: Some(observed_unix_ms),
                     },
                 );
@@ -255,7 +257,7 @@ pub async fn refresh_snapshots(
                             freshness: SourceFreshness::Stale,
                             observed_hash,
                             snapshot_hash: Some(snapshot.content_hash.clone()),
-                            message: Some(error.to_string()),
+                            message_key: Some(source_error_key(&error).into()),
                             observed_unix_ms: Some(observed_unix_ms),
                         },
                     );
@@ -270,7 +272,7 @@ pub async fn refresh_snapshots(
                             freshness: failure_freshness,
                             observed_hash,
                             snapshot_hash: None,
-                            message: Some(error.to_string()),
+                            message_key: Some(source_error_key(&error).into()),
                             observed_unix_ms: Some(observed_unix_ms),
                         },
                     );
@@ -305,7 +307,7 @@ fn disabled_source_status(
             snapshot_hash: previous
                 .get(source.id())
                 .map(|snapshot| snapshot.content_hash.clone()),
-            message: None,
+            message_key: None,
             observed_unix_ms: None,
         },
     )
@@ -352,7 +354,8 @@ async fn resolve_sources(
         if total > MAX_TOTAL_SOURCE_BYTES {
             return Err(CamelliaNexusError::invalid_spec(
                 "Configuration sources exceed the 16 MiB aggregate limit",
-            ));
+            )
+            .with_message_key("SOURCE_TOO_LARGE"));
         }
         ordered[index] = Some(source);
     }
@@ -421,7 +424,7 @@ async fn resolve_source(
                 name.clone(),
                 read_local_source_stable(&resolved_path)
                     .await
-                    .map_err(|error| annotate_source_error(name, error))?,
+                    .map_err(|error| annotate_source_error(source.id(), error))?,
                 contains_tail_marker(file_name),
             )
         }
@@ -440,7 +443,7 @@ async fn resolve_source(
                 name.clone(),
                 fetch_remote_source(client, url, authentication.as_ref(), credentials)
                     .await
-                    .map_err(|error| annotate_source_error(name, error))?,
+                    .map_err(|error| annotate_source_error(source.id(), error))?,
                 contains_tail_marker(&path),
             )
         }
@@ -460,13 +463,14 @@ async fn read_local_source(path: &Path) -> Result<Vec<u8>> {
                 ErrorCode::NotFound,
                 "Local configuration source was not found",
             )
-            .with_details(path.display().to_string())
+            .with_message_key("SOURCE_FILE_NOT_FOUND")
         } else {
             CamelliaNexusError::new(
                 ErrorCode::Storage,
                 "Failed to open local configuration source",
             )
-            .with_details(error.to_string())
+            .with_message_key("SOURCE_READ_FAILED")
+            .with_details(format!("{:?}", error.kind()))
         }
     })?;
     let metadata = file.metadata().await.map_err(|error| {
@@ -474,12 +478,21 @@ async fn read_local_source(path: &Path) -> Result<Vec<u8>> {
             ErrorCode::Storage,
             "Failed to read local configuration source metadata",
         )
-        .with_details(error.to_string())
+        .with_message_key("SOURCE_READ_FAILED")
+        .with_details(format!("{:?}", error.kind()))
     })?;
-    if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES as u64 {
+    if !metadata.is_file() {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::InvalidPath,
+            "Configuration source is not a file",
+        )
+        .with_message_key("SOURCE_READ_FAILED"));
+    }
+    if metadata.len() > MAX_SOURCE_BYTES as u64 {
         return Err(CamelliaNexusError::invalid_spec(
             "Local configuration source must be a file no larger than 4 MiB",
-        ));
+        )
+        .with_message_key("SOURCE_TOO_LARGE"));
     }
     let mut content = Vec::with_capacity(metadata.len().min(MAX_SOURCE_BYTES as u64) as usize);
     file.take(MAX_SOURCE_BYTES as u64 + 1)
@@ -490,12 +503,14 @@ async fn read_local_source(path: &Path) -> Result<Vec<u8>> {
                 ErrorCode::Storage,
                 "Failed to read local configuration source",
             )
-            .with_details(error.to_string())
+            .with_message_key("SOURCE_READ_FAILED")
+            .with_details(format!("{:?}", error.kind()))
         })?;
     if content.len() > MAX_SOURCE_BYTES {
         return Err(CamelliaNexusError::invalid_spec(
             "Local configuration source must be no larger than 4 MiB",
-        ));
+        )
+        .with_message_key("SOURCE_TOO_LARGE"));
     }
     Ok(content)
 }
@@ -518,7 +533,7 @@ async fn read_local_source_stable(path: &Path) -> Result<Vec<u8>> {
                     ErrorCode::ConfigInvalid,
                     "Local configuration source is empty",
                 )
-                .with_details(path.display().to_string()));
+                .with_message_key("SOURCE_INVALID"));
             }
             return Ok(content);
         }
@@ -531,9 +546,9 @@ async fn read_local_source_stable(path: &Path) -> Result<Vec<u8>> {
         ErrorCode::ConfigConflict,
         "Local configuration source changed while it was being read",
     )
+    .with_message_key("SOURCE_CHANGED")
     .with_details(format!(
-        "{} (last observed {} bytes)",
-        path.display(),
+        "Observed bytes: {}",
         last.as_ref().map_or(0, Vec::len)
     )))
 }
@@ -544,14 +559,15 @@ async fn fetch_remote_source(
     authentication: Option<&ConfigSourceAuthentication>,
     credentials: &crate::config_credentials::CredentialSnapshot,
 ) -> Result<Vec<u8>> {
-    let parsed = reqwest::Url::parse(url).map_err(|error| {
+    let parsed = reqwest::Url::parse(url).map_err(|_| {
         CamelliaNexusError::invalid_spec("Invalid remote configuration URL")
-            .with_details(error.to_string())
+            .with_message_key("SOURCE_URL_INVALID")
     })?;
     if !valid_remote_source_url(&parsed) {
         return Err(CamelliaNexusError::invalid_spec(
             "Remote configuration URLs must use HTTPS without embedded credentials",
-        ));
+        )
+        .with_message_key("SOURCE_URL_INVALID"));
     }
     let request = client
         .get(parsed)
@@ -559,7 +575,10 @@ async fn fetch_remote_source(
             reqwest::header::ACCEPT,
             "application/json, text/plain;q=0.9",
         )
-        .header(reqwest::header::USER_AGENT, "camellia-nexus/2.0");
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("camellia-nexus/", env!("CARGO_PKG_VERSION")),
+        );
     let request = match authentication {
         Some(ConfigSourceAuthentication::Basic {
             username,
@@ -575,13 +594,7 @@ async fn fetch_remote_source(
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|error| {
-            CamelliaNexusError::new(
-                ErrorCode::Network,
-                "Failed to download configuration source",
-            )
-            .with_details(error.without_url().to_string())
-        })?;
+        .map_err(remote_source_error)?;
     let final_url = response.url();
     if final_url.scheme() != "https"
         || !final_url.username().is_empty()
@@ -589,7 +602,8 @@ async fn fetch_remote_source(
     {
         return Err(CamelliaNexusError::invalid_spec(
             "Remote configuration redirects must remain on HTTPS without embedded credentials",
-        ));
+        )
+        .with_message_key("SOURCE_URL_INVALID"));
     }
     if response
         .content_length()
@@ -597,17 +611,16 @@ async fn fetch_remote_source(
     {
         return Err(CamelliaNexusError::invalid_spec(
             "Remote configuration source exceeds the 4 MiB limit",
-        ));
+        )
+        .with_message_key("SOURCE_TOO_LARGE"));
     }
     let mut content = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        CamelliaNexusError::new(ErrorCode::Network, "Failed to read configuration source")
-            .with_details(error.without_url().to_string())
-    })? {
+    while let Some(chunk) = response.chunk().await.map_err(remote_source_error)? {
         if content.len().saturating_add(chunk.len()) > MAX_SOURCE_BYTES {
             return Err(CamelliaNexusError::invalid_spec(
                 "Remote configuration source exceeds the 4 MiB limit",
-            ));
+            )
+            .with_message_key("SOURCE_TOO_LARGE"));
         }
         content.extend_from_slice(&chunk);
     }
@@ -630,6 +643,7 @@ fn parse_sources(
                 observed_unix_ms,
                 source.append_xray_outbounds,
             )
+            .map_err(|error| annotate_source_error(&source.id, error))
         })
         .collect()
 }
@@ -707,21 +721,13 @@ fn merge_sources(kind: ProgramKind, sources: &[ResolvedSource]) -> Result<String
     Ok(merge_configuration_sources(kind, &snapshots)?.content)
 }
 
-pub(crate) fn parse_object(name: &str, content: &[u8]) -> Result<Map<String, Value>> {
-    let normalized = camellia_nexus_core::normalize_jsonc(content);
-    let value: Value = serde_json::from_slice(&normalized).map_err(|error| {
-        CamelliaNexusError::new(
-            ErrorCode::ConfigInvalid,
-            "Configuration source is not valid JSON",
-        )
-        .with_details(format!("{name}: {error}"))
-    })?;
+pub(crate) fn parse_object(content: &[u8]) -> Result<Map<String, Value>> {
+    let value = camellia_nexus_core::parse_semantic_document(ConfigurationFormat::Jsonc, content)?;
     value.as_object().cloned().ok_or_else(|| {
         CamelliaNexusError::new(
             ErrorCode::ConfigInvalid,
             "Configuration source root must be an object",
         )
-        .with_details(name.to_owned())
     })
 }
 
@@ -729,12 +735,51 @@ fn contains_tail_marker(value: &str) -> bool {
     value.to_ascii_lowercase().contains("tail")
 }
 
-fn annotate_source_error(name: &str, mut error: CamelliaNexusError) -> CamelliaNexusError {
-    error.details = Some(match error.details.take() {
-        Some(details) => format!("{name}: {details}"),
-        None => name.to_owned(),
-    });
-    error
+fn remote_source_error(error: reqwest::Error) -> CamelliaNexusError {
+    let (code, key) = if error.is_timeout() {
+        (ErrorCode::Timeout, "SOURCE_TIMEOUT")
+    } else if error
+        .status()
+        .is_some_and(|status| matches!(status.as_u16(), 401 | 403))
+    {
+        (ErrorCode::Network, "SOURCE_ACCESS_DENIED")
+    } else {
+        (ErrorCode::Network, "SOURCE_DOWNLOAD_FAILED")
+    };
+    CamelliaNexusError::new(code, "Configuration source could not be downloaded")
+        .with_message_key(key)
+}
+
+fn source_error_key(error: &CamelliaNexusError) -> &'static str {
+    match error.message_key.as_deref() {
+        Some("SOURCE_URL_INVALID") => "SOURCE_URL_INVALID",
+        Some("SOURCE_FILE_NOT_FOUND") => "SOURCE_FILE_NOT_FOUND",
+        Some("SOURCE_READ_FAILED") => "SOURCE_READ_FAILED",
+        Some("SOURCE_CHANGED") => "SOURCE_CHANGED",
+        Some("SOURCE_TOO_LARGE") => "SOURCE_TOO_LARGE",
+        Some("SOURCE_ACCESS_DENIED") => "SOURCE_ACCESS_DENIED",
+        Some("SOURCE_TIMEOUT") => "SOURCE_TIMEOUT",
+        Some("SOURCE_DOWNLOAD_FAILED") => "SOURCE_DOWNLOAD_FAILED",
+        Some("SOURCE_CREDENTIALS_UNAVAILABLE") => "SOURCE_CREDENTIALS_UNAVAILABLE",
+        _ => match error.code {
+            ErrorCode::NotFound => "SOURCE_FILE_NOT_FOUND",
+            ErrorCode::Network => "SOURCE_DOWNLOAD_FAILED",
+            ErrorCode::Timeout => "SOURCE_TIMEOUT",
+            ErrorCode::RequestTooLarge | ErrorCode::OutputLimitExceeded => "SOURCE_TOO_LARGE",
+            ErrorCode::ConfigConflict => "SOURCE_CHANGED",
+            ErrorCode::ConfigInvalid | ErrorCode::InvalidSpec => "SOURCE_INVALID",
+            ErrorCode::Storage | ErrorCode::InvalidPath => "SOURCE_READ_FAILED",
+            _ => "SOURCE_REFRESH_FAILED",
+        },
+    }
+}
+
+fn annotate_source_error(source_id: &str, error: CamelliaNexusError) -> CamelliaNexusError {
+    CamelliaNexusError::new(error.code, "Configuration source needs attention")
+        .with_message_key(source_error_key(&error))
+        .with_details(
+            serde_json::json!({"sourceId": source_id, "category": error.code}).to_string(),
+        )
 }
 
 fn now_unix_ms() -> u64 {
@@ -750,19 +795,17 @@ mod tests {
 
     use super::*;
     use camellia_nexus_core::{
-        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType, RestartPolicy, SCHEMA_VERSION,
+        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType, RestartPolicy,
     };
     use serde_yaml_ng::Value as YamlValue;
     use tokio::io::AsyncWriteExt;
 
     fn source_test_spec(sources: Vec<ConfigSourceSpec>) -> ProgramSpec {
         ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("source-test").expect("id"),
             name: "Source test".into(),
             executable: ExecutableSpec::External {
                 path: PathBuf::from("xray"),
-                compatibility: Default::default(),
                 metadata: None,
             },
             program_type: ProgramType::Xray {
@@ -822,6 +865,129 @@ mod tests {
         assert!(result.statuses[unavailable_id].observed_hash.is_none());
         assert!(result.unavailable);
         assert!(result.snapshots.is_empty());
+        assert_eq!(
+            result.statuses[invalid_id].message_key.as_deref(),
+            Some("SOURCE_INVALID")
+        );
+        assert_eq!(
+            result.statuses[unavailable_id].message_key.as_deref(),
+            Some("SOURCE_FILE_NOT_FOUND")
+        );
+    }
+
+    #[test]
+    fn source_error_context_retains_only_identity_and_a_fixed_category() {
+        for (code, key) in [
+            (ErrorCode::Network, "SOURCE_DOWNLOAD_FAILED"),
+            (ErrorCode::ConfigInvalid, "SOURCE_INVALID"),
+            (ErrorCode::Storage, "SOURCE_READ_FAILED"),
+            (ErrorCode::Timeout, "SOURCE_TIMEOUT"),
+            (ErrorCode::Internal, "SOURCE_REFRESH_FAILED"),
+        ] {
+            let error = annotate_source_error("source-a", CamelliaNexusError::new(code,
+                "https://private-user:private-password@private.example/config?token=private-token")
+                .with_message_key("private-message-key")
+                .with_details("private-key-material"));
+            assert_eq!(error.message_key.as_deref(), Some(key));
+            let encoded = serde_json::to_string(&error).unwrap();
+            assert!(!encoded.contains("private"));
+            assert!(!encoded.contains("https://"));
+            if code != ErrorCode::Internal {
+                assert!(encoded.contains("source-a"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_source_reports_no_path_or_name_and_reenters_after_repair() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private-fixture-token.json");
+        let mut spec = source_test_spec(vec![ConfigSourceSpec::Local {
+            id: "source".into(),
+            name: "private-source-name".into(),
+            enabled: true,
+            path: path.clone(),
+        }]);
+        let credentials = crate::config_credentials::CredentialSnapshot::empty();
+        let error = materialize(&spec, None, &credentials).await.err().unwrap();
+        assert_eq!(error.message_key.as_deref(), Some("SOURCE_FILE_NOT_FOUND"));
+        let encoded = serde_json::to_string(&error).unwrap();
+        assert!(!encoded.contains("private"));
+        assert!(!encoded.contains(&directory.path().display().to_string()));
+        if let ConfigSourceSpec::Local { name, .. } =
+            &mut spec.managed_config.as_mut().unwrap().sources[0]
+        {
+            *name = "Source".into();
+        }
+        let previous = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{"log":{"loglevel":"info"}}"#,
+            1,
+            false,
+        )
+        .unwrap();
+        let previous = BTreeMap::from([("source".into(), previous)]);
+        let failed = refresh_snapshots(&spec, None, &credentials, &previous, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            failed.snapshots,
+            previous.values().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(failed.statuses["source"].freshness, SourceFreshness::Stale);
+        assert_eq!(
+            failed.statuses["source"].message_key.as_deref(),
+            Some("SOURCE_FILE_NOT_FOUND")
+        );
+        assert!(
+            !serde_json::to_string(&failed.statuses)
+                .unwrap()
+                .contains("private")
+        );
+        std::fs::write(&path, br#"{"log":{"loglevel":"debug"}}"#).unwrap();
+        let fixed = refresh_snapshots(&spec, None, &credentials, &previous, 3)
+            .await
+            .unwrap();
+        assert_eq!(fixed.statuses["source"].freshness, SourceFreshness::Fresh);
+        assert!(fixed.statuses["source"].message_key.is_none());
+        assert!(fixed.snapshots[0].content.contains("debug"));
+    }
+
+    #[tokio::test]
+    async fn remote_failure_reports_categories_without_request_or_response_values() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        for (status, key) in [
+            (401, "SOURCE_ACCESS_DENIED"),
+            (403, "SOURCE_ACCESS_DENIED"),
+            (500, "SOURCE_DOWNLOAD_FAILED"),
+        ] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                stream.read_u8().await.unwrap();
+                stream.write_all(format!("HTTP/1.1 {status} private-response\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            });
+            let error = Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/private-path?token=private-token"))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap_err();
+            let error = remote_source_error(error);
+            assert_eq!(error.message_key.as_deref(), Some(key));
+            assert!(!serde_json::to_string(&error).unwrap().contains("private"));
+            server.await.unwrap();
+        }
     }
 
     #[test]
@@ -1167,7 +1333,7 @@ mod tests {
         };
         let error = merge_sources(ProgramKind::Mihomo, &[source]).expect_err("invalid root");
         assert_eq!(error.code, ErrorCode::ConfigInvalid);
-        assert!(error.message.contains("mapping"));
+        assert_eq!(error.message_key.as_deref(), Some("SOURCE_INVALID"));
     }
 
     #[test]
@@ -1177,8 +1343,29 @@ mod tests {
             "log": { "level": "info", },
             "value": "// retained",
         }"#;
-        let parsed = parse_object("jsonc", source).expect("parse JSONC");
+        let parsed = parse_object(source).expect("parse JSONC");
         assert_eq!(parsed["log"]["level"], "info");
         assert_eq!(parsed["value"], "// retained");
+    }
+
+    #[test]
+    fn object_queries_use_position_only_syntax_errors_and_reject_non_objects() {
+        let malformed = br#"{"private-fixture-token":"unterminated"#;
+        let error = parse_object(malformed).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ConfigInvalid);
+        assert_eq!(
+            error.message_key.as_deref(),
+            Some("CONFIGURATION_SYNTAX_INVALID")
+        );
+        let details = error.details.unwrap();
+        assert!(details.starts_with("line=1; column="));
+        assert!(!details.contains("private-fixture-token"));
+        assert!(!error.message.contains("private-fixture-token"));
+        for input in [b"null".as_slice(), b"[]", br#""private-fixture-token""#] {
+            let error = parse_object(input).unwrap_err();
+            assert_eq!(error.code, ErrorCode::ConfigInvalid);
+            assert!(error.details.is_none());
+        }
+        assert_eq!(parse_object(br#"{"fixed":true}"#).unwrap()["fixed"], true);
     }
 }
