@@ -35,14 +35,14 @@
   const blockerMessages: Record<string, string> = {
     CONFIGURATION_INVALID: 'Fix the highlighted issue and save again.',
     CONFIG_INVALID: 'Fix the highlighted issue and save again.',
-    CORE_INVALID: 'The current program rejected this candidate.',
-    CORE_VALIDATION_EVIDENCE_STALE: 'This candidate will be checked again when you apply it.',
-    CORE_PROFILE_MISMATCH: 'Review this candidate, then apply it again.',
-    CORE_TARGET_CHANGED: 'Review this candidate for the current program.',
+    CORE_INVALID: 'The program could not use these changes.',
+    CORE_VALIDATION_EVIDENCE_STALE: 'Your changes will be checked when you apply them.',
+    CORE_PROFILE_MISMATCH: 'Apply again to check these changes with the current program.',
+    CORE_TARGET_CHANGED: 'Review these changes for the current program.',
     SOURCE_VALUE_CONFLICT: 'Resolve the source conflict before continuing.',
     SOURCE_INVALID: 'Fix the invalid source before continuing.',
     SOURCE_UNAVAILABLE: 'Refresh or disable the unavailable source before continuing.',
-    LAYER_OWNERSHIP_CONFLICT: 'Resolve the configuration ownership conflict before continuing.',
+    LAYER_OWNERSHIP_CONFLICT: 'Choose which setting to use before continuing.',
     FINAL_EDIT_CONFLICT: 'Resolve this edit conflict before continuing.',
     CONFIGURATION_IDENTITY_DUPLICATED: 'Remove the duplicate identity before continuing.',
   };
@@ -104,12 +104,8 @@
     : effectiveCandidateStatus === 'invalid'
       ? 'Fix the highlighted issue, then try again.'
       : effectiveCandidateStatus === 'applied'
-        ? 'This candidate is applied.'
+        ? 'Configuration is up to date.'
         : 'Ready to apply.';
-
-  function semanticPayload(value: SemanticValue): unknown {
-    return value.state === 'present' ? value.value : undefined;
-  }
 
   function displaySemantic(value: SemanticValue): string {
     if (value.state === 'missing') return $t('Not present');
@@ -122,12 +118,6 @@
     try { return JSON.stringify(value.value, null, 2) ?? 'null'; } catch { return 'null'; }
   }
 
-  function display(value: unknown): string {
-    if (value === undefined) return $t('Not present');
-    if (value === null) return 'null';
-    if (typeof value === 'string') return value;
-    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
-  }
 
   function blockerMessage(messageKey: string): string {
     return coreAdmissionMessage(messageKey) ?? coreAssessmentMessage(messageKey) ?? blockerMessages[messageKey] ?? 'Review this issue before continuing.';
@@ -194,9 +184,7 @@
             <span><strong>{$t(blockerMessage(blocker.messageKey))}</strong></span>
           </div>
         {/if}
-        {#if blocker.details}
-          <details class="blocker-details"><summary>{$t('Technical details')}</summary><pre>{blocker.details}</pre></details>
-        {/if}
+        {#if blocker.details}<details class="blocker-details"><summary>{$t('Information for support')}</summary><p>{$t('Share this only if support asks for it.')}</p><pre>{blocker.details}</pre></details>{/if}
       {/each}
     </section>
   {/if}
@@ -242,7 +230,6 @@
         {#if manualError}<p class="inline-error" role="alert">{manualError}</p>{/if}
         <div class="action-row"><button type="button" class="manual-button" on:click={resolveManual} disabled={disabled}>{$t('Use merged value')}</button><button type="button" on:click={() => { manualOpen = false; manualError = ''; manualValue = selectedConflict ? editableSemantic(selectedConflict.userValue) : ''; }} disabled={disabled}>{$t('Cancel')}</button></div>
         {/if}
-        <details><summary>{$t('Technical details')}</summary><p><code>{selectedConflict.kind}</code></p><pre>{display(semanticPayload(selectedConflict.baseValue))}</pre></details>
       {:else if selectedChange}
         <p class="inspector-summary">{$t('This path differs from the current upstream configuration.')}</p>
         <div class="value-grid">

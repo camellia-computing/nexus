@@ -95,24 +95,20 @@
   }
 
   const diagnosticMessageKeys: Record<string, string> = {
-    SOURCE_INVALID: 'The latest source content is invalid; Applied and Last Known Good were retained.',
-    SOURCE_UNAVAILABLE: 'No parsed snapshot is available for this source.',
-    CORE_PROFILE_MISMATCH: 'The candidate was validated for a different compatibility profile.',
-    CORE_VALIDATION_EVIDENCE_STALE: 'The binary, compatibility profile, or configuration changed after native validation.',
-    CORE_INVALID: 'The Core rejected this candidate; Applied and Last Known Good were retained.',
-    CORE_TARGET_CHANGED: 'The Core compatibility target changed; review and validate the candidate again.',
-    CORE_TARGET_SOURCE_REJECTED: 'A source item is not expressible for the selected Core compatibility target.',
+    SOURCE_INVALID: 'Fix or disable this source before continuing.',
+    SOURCE_UNAVAILABLE: 'Refresh or disable the unavailable source before continuing.',
+    CORE_PROFILE_MISMATCH: 'Apply again to check these changes with the current program.',
+    CORE_VALIDATION_EVIDENCE_STALE: 'Your changes will be checked when you apply them.',
+    CORE_INVALID: 'The program could not use these changes. Your current configuration was kept.',
+    CORE_TARGET_CHANGED: 'Review these changes for the current program.',
+    CORE_TARGET_SOURCE_REJECTED: 'This source cannot be used with the selected program target.',
   };
 
-  function diagnosticMessage(code: string, message: string, messageKey?: string): string {
+  function diagnosticMessage(code: string, messageKey?: string): string {
     const key = messageKey && diagnosticMessageKeys[messageKey]
       ? diagnosticMessageKeys[messageKey]
       : diagnosticMessageKeys[code];
-    return localizedMessage(
-      key
-        ?? 'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.',
-    )
-      + (key ? '' : ` (${code})`);
+    return localizedMessage(key ?? 'Review the highlighted setting. Your current configuration was kept.');
   }
 
   function localizedMessage(source: string): string {
@@ -122,13 +118,11 @@
     return $uiLanguage === 'en' ? source : translate(source);
   }
 
-  function conflictMessage(reason: string, messageKey?: string): string {
+  function conflictMessage(messageKey?: string): string {
     if (messageKey === 'CONFIGURATION_IDENTITY_DUPLICATED') {
-      return translate('A Final configuration identity is duplicated and cannot be applied safely.');
+      return translate('Two entries have the same name. Rename or remove one.');
     }
-    return translate(
-      'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.',
-    );
+    return translate('This setting changed in two places. Choose which value to use.');
   }
 
   function belongsToIntent(issue: { scope?: { surface: string } }): boolean {
@@ -200,10 +194,10 @@
   {#if intentDiagnostics.length > 0 || intentConflicts.length > 0}
     <div class="guided-diagnostics" role="status">
       {#each intentDiagnostics as diagnostic (`diagnostic-${diagnostic.code}`)}
-        <span><strong>{diagnostic.code}</strong>{diagnosticMessage(diagnostic.code, diagnostic.message, diagnostic.messageKey)}</span>
+        <span>{diagnosticMessage(diagnostic.code, diagnostic.messageKey)}<details><summary>{$t('Information for support')}</summary><code>{diagnostic.code}</code></details></span>
       {/each}
       {#each intentConflicts as conflict (`conflict-${conflict.semanticPath}`)}
-        <span><strong>{conflict.semanticPath}</strong>{conflictMessage(conflict.reason, conflict.messageKey)}</span>
+        <span>{conflictMessage(conflict.messageKey)}<details><summary>{$t('Information for support')}</summary><code>{conflict.semanticPath}</code></details></span>
       {/each}
     </div>
   {/if}
@@ -231,7 +225,9 @@
   article p { margin: 0; font-size: .8rem; line-height: 1.4; opacity: .78; }
   .dependency-note { color: var(--ui-text-warning, inherit); }
   .guided-diagnostics { display: grid; gap: 5px; padding: 10px; border-radius: 9px; background: rgba(210,70,70,.09); }
-  .guided-diagnostics span { display: flex; gap: 8px; font-size: .82rem; }
+  .guided-diagnostics span { min-width: 0; overflow-wrap: anywhere; font-size: .82rem; }
+  .guided-diagnostics details { margin-top: 4px; font-size: .75rem; }
+  .guided-diagnostics code { overflow-wrap: anywhere; }
   @container (max-width: 480px) { .guided-grid { grid-template-columns: 1fr; } }
   @media (max-width: 520px) { .guided-grid { grid-template-columns: 1fr; } .setting-control { align-items: stretch; } .setting-control button { margin-inline-start: 0; } }
 </style>

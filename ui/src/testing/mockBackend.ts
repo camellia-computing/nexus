@@ -357,6 +357,8 @@ let sourceSaveFailurePending = previewParameters.has('__ui_source_save_error');
 let finalDraftDiscardRacePending = previewParameters.has('__ui_final_draft_discard_race');
 let configurationResponseLostPending = previewParameters.has('__ui_configuration_response_lost');
 let configurationSaveResponseLostPending = previewParameters.has('__ui_configuration_save_response_lost');
+let configurationWorkspaceReads = 0;
+let configurationMetadataFailurePending = previewParameters.has('__ui_config_metadata_error_once');
 let configurationResponseHeldPending = previewParameters.has('__ui_configuration_hold_response');
 let finalDraftWriteFailurePending = previewParameters.has('__ui_final_draft_write_failure');
 let finalDraftResponseHeldPending = previewParameters.has('__ui_final_draft_hold_response');
@@ -2997,7 +2999,17 @@ export function installMockBackend() {
         }
         return mockProgramSelectionResult(command, programId, []);
       }
-      case 'load_config': return configDocument(stringArg(args, 'programId'));
+      case 'load_config': {
+        const document = configDocument(stringArg(args, 'programId'));
+        if (configurationMetadataFailurePending) {
+          configurationMetadataFailurePending = false;
+          throw new Error('Optional editor metadata is unavailable.');
+        }
+        if (previewParameters.has('__ui_slow_config_metadata')) {
+          return new Promise((resolve) => window.setTimeout(() => resolve(document), 4500));
+        }
+        return document;
+      }
       case 'get_configuration_workspace': {
         if (new URLSearchParams(window.location.search).has('__ui_identity_read_error') && !identityReadReady) {
           throw new Error(JSON.stringify({
@@ -3006,7 +3018,12 @@ export function installMockBackend() {
           }));
         }
         const programId = stringArg(args, 'programId');
-        return configurationWorkspaceSnapshot(programId);
+        const snapshot = configurationWorkspaceSnapshot(programId);
+        configurationWorkspaceReads += 1;
+        if (previewParameters.has('__ui_slow_workspace_after_first') && configurationWorkspaceReads > 1) {
+          return new Promise((resolve) => window.setTimeout(() => resolve(snapshot), 2500));
+        }
+        return snapshot;
       }
       case 'preview_configuration_import': {
         const programId = stringArg(args, 'programId');

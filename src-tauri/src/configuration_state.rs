@@ -180,12 +180,10 @@ impl ConfigurationCoordinator {
         id: &ProgramId,
         lease: &ConfigurationLease,
     ) -> Result<ConfigurationWorkspaceSnapshot> {
-        let state = self.load_view_with_lease(manager, id, lease).await?;
-        let editor_session = self
-            .get_final_editor_session_with_lease(manager, id, lease)
-            .await?;
+        let (spec, state) = self.load_state_for_view(manager, id, lease).await?;
+        let editor_session = final_editor_session_for_state(&state);
         Ok(ConfigurationWorkspaceSnapshot {
-            state,
+            state: view_for_spec(&spec, &state)?,
             editor_session: Some(editor_session),
             operation_result: None,
         })
@@ -195,8 +193,18 @@ impl ConfigurationCoordinator {
         &self,
         manager: &ProgramManager,
         id: &ProgramId,
-        _lease: &ConfigurationLease,
+        lease: &ConfigurationLease,
     ) -> Result<ConfigurationStateView> {
+        let (spec, state) = self.load_state_for_view(manager, id, lease).await?;
+        view_for_spec(&spec, &state)
+    }
+
+    async fn load_state_for_view(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        _lease: &ConfigurationLease,
+    ) -> Result<(ProgramSpec, ConfigurationState)> {
         let spec = manager.refresh_binary_identity_if_changed(id).await?;
         let mut state = self.load_or_initialize(manager, id).await?;
         let previous_state_revision = state.state_revision;
@@ -204,9 +212,8 @@ impl ConfigurationCoordinator {
             self.store
                 .save_configuration_state(id, &state, Some(previous_state_revision))
                 .await?;
-            return view_for_spec(&spec, &state);
         }
-        view_for_spec(&spec, &state)
+        Ok((spec, state))
     }
 
     pub(crate) async fn initialize_created(
@@ -286,22 +293,7 @@ impl ConfigurationCoordinator {
         _lease: &ConfigurationLease,
     ) -> Result<FinalEditorSession> {
         let (_, state) = self.load_current(manager, id).await?;
-        if let Some(draft) = state.editor_session {
-            return Ok(draft);
-        }
-        Ok(FinalEditorSession {
-            session_id: Uuid::new_v4().to_string(),
-            draft_revision: 0,
-            based_on_state_revision: state.state_revision,
-            based_on_candidate_generation: state.generation,
-            base_content: state.desired.content.clone(),
-            working_content: state.desired.content,
-            conflicts: Vec::new(),
-            resolutions: std::collections::BTreeMap::new(),
-            unresolved_conflict_ids: Vec::new(),
-            rebase_required: false,
-            updated_unix_ms: now_unix_ms(),
-        })
+        Ok(final_editor_session_for_state(&state))
     }
 
     pub(crate) async fn update_final_configuration_draft_with_lease(
@@ -1740,6 +1732,25 @@ fn ordered_snapshots(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn final_editor_session_for_state(state: &ConfigurationState) -> FinalEditorSession {
+    state
+        .editor_session
+        .clone()
+        .unwrap_or_else(|| FinalEditorSession {
+            session_id: Uuid::new_v4().to_string(),
+            draft_revision: 0,
+            based_on_state_revision: state.state_revision,
+            based_on_candidate_generation: state.generation,
+            base_content: state.desired.content.clone(),
+            working_content: state.desired.content.clone(),
+            conflicts: Vec::new(),
+            resolutions: std::collections::BTreeMap::new(),
+            unresolved_conflict_ids: Vec::new(),
+            rebase_required: false,
+            updated_unix_ms: now_unix_ms(),
+        })
 }
 
 fn view_for_spec(spec: &ProgramSpec, state: &ConfigurationState) -> Result<ConfigurationStateView> {

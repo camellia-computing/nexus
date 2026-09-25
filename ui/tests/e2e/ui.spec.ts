@@ -2927,26 +2927,22 @@ test('maintained releases show automatic identity without capability-count claim
     {
       query: '&__ui_core_target=release-xray',
       programId: 'xray-primary',
-      target: 'Xray v26.3.27',
-      coordinate: 'v26.3.27 · d2758a023cd7',
+      version: '26.3.27',
     },
     {
       query: '&__ui_core_target=release-mihomo',
       programId: 'mihomo-alpha',
-      target: 'Mihomo Meta v1.19.29',
-      coordinate: 'v1.19.29 · e26714a181ac',
+      version: '1.19.29',
     },
     {
       query: '&__ui_core_target=release-singbox',
       programId: 'sing-box-edge',
-      target: 'sing-box version 1.13.18',
-      coordinate: 'v1.13.18 · 45ca32dcb966',
+      version: '1.13.18',
     },
     {
       query: '&__ui_core_target=release-singbox-new',
       programId: 'sing-box-edge',
-      target: 'sing-box version 1.14.0',
-      coordinate: 'v1.14.0 · 0b8995879f29',
+      version: '1.14.0',
     },
   ];
 
@@ -2956,12 +2952,15 @@ test('maintained releases show automatic identity without capability-count claim
     await openProgramDetails(page, scenario.programId);
     await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
     const panel = page.locator('#program-panel-compatibility');
-    await expect(panel).toContainText('This candidate is applied');
+    await expect(panel).toContainText('Configuration is up to date');
+    await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText(scenario.version);
     const advanced = panel.locator('.compatibility-advanced');
     await expect(advanced).not.toHaveAttribute('open', '');
-    await advanced.getByText('Advanced details', { exact: true }).click();
-    await expect(advanced.getByText(scenario.coordinate, { exact: true })).toBeVisible();
-    await expect(advanced.getByText('Accepted for this candidate', { exact: true })).toBeVisible();
+    await advanced.getByText('About compatibility', { exact: true }).click();
+    await expect(advanced.getByText('Supported versions', { exact: true })).toBeVisible();
+    await expect(advanced).toContainText('This program accepted the saved configuration');
+    await expect(advanced).not.toContainText('fingerprint');
+    await expect(advanced).not.toContainText('digest');
     await expectNoViewportOverflow(page);
     await expectAccessible(page, '#program-panel-compatibility');
     await panel.screenshot({ path: testInfo.outputPath(`core-release-${index + 1}.png`) });
@@ -3002,14 +3001,14 @@ test('future Core versions and stale validation evidence stay explicit at compac
   const panel = page.locator('#program-panel-compatibility');
   await expect(panel).toContainText('This program version is not supported yet');
   const advanced = panel.locator('.compatibility-advanced');
-  await advanced.getByText('Advanced details', { exact: true }).click();
+  await advanced.getByText('About compatibility', { exact: true }).click();
   await expect(panel.getByRole('button', { name: 'Replace program', exact: true })).toBeVisible();
   await expect(advanced.getByText('99.0.0 · futureVersion', { exact: true })).toHaveCount(0);
-  await expect(advanced.getByText('Validation required', { exact: true })).toBeVisible();
+  await expect(advanced.getByText('Supported versions', { exact: true })).toBeVisible();
   const compatibilityIssue = panel.locator('.surface-issues');
-  await expect(compatibilityIssue).toContainText('This candidate will be checked again when you apply it');
+  await expect(compatibilityIssue).toContainText('Your changes will be checked when you apply them');
   await expect(compatibilityIssue.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).not.toBeVisible();
-  await compatibilityIssue.getByText('Technical details', { exact: true }).click();
+  await compatibilityIssue.getByText('Information for support', { exact: true }).click();
   await expect(compatibilityIssue.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
@@ -3116,7 +3115,7 @@ test('unrecognized binaries keep configuration inspectable without a reference o
   await page.locator('.editor-blockers').getByRole('button', { name: /The program version could not be identified/ }).click();
   await expect(panel).toBeVisible();
   await expect(panel.locator('.compatibility-advanced')).not.toHaveAttribute('open', '');
-  await panel.getByText('Advanced details', { exact: true }).click();
+  await panel.getByText('About compatibility', { exact: true }).click();
   await expect(panel).toContainText('26.3 · 26.2');
   await expect(panel).not.toContainText('Accepted for this candidate');
   await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
@@ -3162,10 +3161,26 @@ test('automatic identity layout contains long messages and controls across langu
       }
       const panel = page.locator('#program-panel-compatibility');
       await expect(panel).toContainText(language === 'Chinese' ? '无法确认程序版本' : 'The program version could not be identified');
-      for (const width of [400, 520, 680, 760, 1024, 1280]) {
+      for (const width of [400, 520, 680, 760, 960, 1024, 1100, 1250, 1280, 1400]) {
         await page.setViewportSize({ width, height: 860 });
         await expect(panel.locator('.compatibility-status-card button')).toBeVisible();
         await expectNoViewportOverflow(page);
+        expect(await page.locator('.program-tabs').evaluate((tabs) => {
+          const fits = (child: Element, parent: Element) => {
+            const rect = child.getBoundingClientRect();
+            const bounds = parent.getBoundingClientRect();
+            return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1
+              && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1;
+          };
+          return Array.from(tabs.querySelectorAll('[role="tab"]')).every((tab) => {
+            const labels = Array.from(tab.querySelectorAll('.tab-label'))
+              .filter((label) => getComputedStyle(label).display !== 'none');
+            return fits(tab, tabs)
+              && labels.length <= 1
+              && labels.every((label) => fits(label, tab))
+              && Array.from(tab.querySelectorAll('svg')).every((icon) => fits(icon, tab));
+          });
+        })).toBe(true);
         expect(await panel.evaluate((element) => {
           const selectors = '.compatibility-card > *, .compatibility-status-card > *, .compatibility-status-card strong';
           return Array.from(element.querySelectorAll(selectors)).every((child) => {
@@ -3324,7 +3339,7 @@ test('Final configuration keeps validation behind one Apply action', async ({ pa
   const compatibilityPanel = page.locator('#program-panel-compatibility');
   await expect(compatibilityPanel.getByRole('button', { name: 'Validate current candidate', exact: true })).toHaveCount(0);
   await expect(compatibilityPanel.getByRole('button', { name: 'Open Final configuration', exact: true })).toBeVisible();
-  await expect(compatibilityPanel).toContainText('Final configuration has unapplied changes');
+  await expect(compatibilityPanel).toContainText('Your changes are not applied yet');
 });
 
 test('Final configuration editor remains reachable from compact mobile to wide desktop', async ({ page }) => {
@@ -3390,9 +3405,9 @@ test('Final configuration and Compatibility validation rerender fully in Chinese
   await expect(workspace).not.toContainText('The updated configuration and your edit changed the same path');
   await page.getByRole('tab', { name: '兼容性', exact: true }).click();
   const compatibility = page.locator('#program-panel-compatibility');
-  await expect(compatibility).toContainText('候选配置需要在“最终配置”中处理');
+  await expect(compatibility).toContainText('请在最终配置中修正标出的问题');
   await expect(compatibility.getByRole('button', { name: '打开最终配置', exact: true })).toBeVisible();
-  await expect(compatibility.getByText('高级详情', { exact: true })).toBeVisible();
+  await expect(compatibility.getByText('兼容性说明', { exact: true })).toBeVisible();
   await expectNoViewportOverflow(page);
   await expectAccessible(page, '#program-panel-compatibility');
 });
@@ -3405,7 +3420,7 @@ test('Compatibility sends unapplied edits back to the single Final configuration
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
   const panel = page.locator('#program-panel-compatibility');
   await expect(panel.getByRole('button', { name: 'Validate current candidate', exact: true })).toHaveCount(0);
-  await expect(panel).toContainText('Final configuration has unapplied changes');
+  await expect(panel).toContainText('Your changes are not applied yet');
   await panel.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Apply and restart', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: /Validate/, exact: true })).toHaveCount(0);
@@ -3500,12 +3515,12 @@ test('an upstream candidate applies through one action without generation drift'
   await page.getByLabel('Log level').selectOption('debug');
 
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
-  const compatibility = page.locator('#program-panel-compatibility');
-  await compatibility.getByText('Advanced details', { exact: true }).click();
-  const generationCell = compatibility.locator('.compatibility-evidence-grid > div')
-    .filter({ hasText: 'Generation' });
-  const generationBeforeSave = await generationCell.locator('code').textContent();
-  expect(generationBeforeSave).toMatch(/^\d+$/);
+  const generationBeforeSave = await page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, string>) => Promise<{ state: { generation: number } }>;
+    } }).__TAURI_INTERNALS__;
+    return (await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' })).state.generation;
+  });
 
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   const workspace = page.locator('.final-editor-workspace');
@@ -3520,9 +3535,28 @@ test('an upstream candidate applies through one action without generation drift'
   await confirmation.getByRole('button', { name: 'Apply and restart', exact: true }).click();
   await expect(workspace.getByText('Applied', { exact: true })).toBeVisible();
 
-  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
-  await compatibility.getByText('Advanced details', { exact: true }).click();
-  await expect(generationCell.locator('code')).toHaveText(generationBeforeSave ?? '');
+  const generationAfterApply = await page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, string>) => Promise<{ state: { generation: number } }>;
+    } }).__TAURI_INTERNALS__;
+    return (await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' })).state.generation;
+  });
+  expect(generationAfterApply).toBe(generationBeforeSave);
+});
+
+test('latest settings and Final configuration remain usable while optional reads are slow', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'material', 'light', 1, '&__ui_slow_workspace_after_first&__ui_slow_config_metadata');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const level = page.getByLabel('Log level');
+  await expect(level).toBeVisible();
+  await level.selectOption('debug');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toBeVisible({ timeout: 2000 });
+  await expect(editor).toContainText('"loglevel": "debug"', { timeout: 2000 });
+  await expect(page.locator('.configuration-loading')).toHaveCount(0);
 });
 
 test('Apply changes performs save, native validation and activation as one operation', async ({ page }) => {
@@ -3540,7 +3574,7 @@ test('Apply changes performs save, native validation and activation as one opera
   await apply.click();
   await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
   await expect(apply).toBeDisabled();
-  await expect(apply).toHaveAttribute('title', /This candidate is applied/);
+  await expect(apply).toHaveAttribute('title', /Configuration is up to date/);
   await expect(page.getByRole('button', { name: 'Save candidate', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(0);
 });
@@ -3564,7 +3598,7 @@ test('native rejection stays in one localized editor notice and clears after rep
   await expect(workspace.locator('.result')).toHaveCount(0);
   await expect(editor).toContainText('debug');
   await expect(editor.locator('[title="The program reported a value with the wrong type"]')).toHaveCount(0);
-  await details.getByText('Technical details', { exact: true }).click();
+  await details.getByText('Information for support', { exact: true }).click();
   await expect(details.locator('pre')).toContainText('"exitCode":1');
   await expect(details.locator('pre')).toContainText('"stderrBytes":240');
   for (const width of [400, 520, 680, 760, 1024, 1280]) {
@@ -3815,7 +3849,7 @@ for (const invalidDraft of [false, true]) {
     await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
     await expect(editor).toContainText(invalidDraft ? 'repaired' : 'keep-me');
     await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Core compatibility', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Program compatibility', exact: true })).toBeVisible();
     await expectNoViewportOverflow(page);
   });
 }
@@ -4269,7 +4303,7 @@ test('sing-box schema completion and structural diagnostics remain program-speci
   const showSuggestions = shell.getByRole('button', { name: 'Show suggestions', exact: true });
 
   await expect(shell.locator('.editor-schema-status.schema-ready')).toContainText(
-    'Schema suggestions ready',
+    'Suggestions ready',
   );
   await expect(showSuggestions).toBeEnabled();
   await expect(showSuggestions).toHaveAttribute('title', 'Show suggestions · Ctrl Space');
@@ -4334,18 +4368,18 @@ test('schema failure keeps editing available and retry restores enhancement', as
 
   await expect(editor).toBeEditable();
   await expect(shell.locator('.editor-schema-status.schema-unavailable')).toContainText(
-    'Program schema unavailable',
+    'Suggestions unavailable',
   );
   const showSuggestions = shell.getByRole('button', { name: 'Show suggestions', exact: true });
   await expect(showSuggestions).toBeDisabled();
-  await expect(showSuggestions).toHaveAttribute('title', 'Program schema unavailable');
+  await expect(showSuggestions).toHaveAttribute('title', 'Suggestions unavailable');
   const retry = shell.getByRole('button', { name: 'Retry', exact: true });
   await retry.scrollIntoViewIfNeeded();
   await expect(retry).toBeInViewport();
   await expectNoViewportOverflow(page);
   await retry.click();
   await expect(shell.locator('.editor-schema-status.schema-ready')).toContainText(
-    'Schema suggestions ready',
+    'Suggestions ready',
   );
   await expect(showSuggestions).toBeEnabled();
   await expect(shell.locator('.editor-schema-status.schema-unavailable')).toHaveCount(0);
@@ -4363,6 +4397,18 @@ test('schema failure keeps editing available and retry restores enhancement', as
     'Configuration document',
   );
   await expectAccessible(page, '.code-editor-shell');
+});
+
+test('optional editor information can fail without hiding the final configuration', async ({ page }) => {
+  await openPreview(page, 'material', 'light', 1, '&__ui_config_metadata_error_once');
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const shell = page.locator('.code-editor-shell');
+  await expect(editor).toBeEditable();
+  await expect(editor).toContainText('outbounds');
+  await expect(shell.locator('.editor-schema-status.schema-unavailable')).toContainText('Suggestions unavailable');
+  await shell.locator('.editor-schema-status.schema-unavailable').getByRole('button', { name: 'Retry' }).click();
+  await expect(shell.locator('.editor-schema-status.schema-ready')).toContainText('Suggestions ready');
+  await expect(editor).toContainText('outbounds');
 });
 
 test('the YAML configuration editor preserves comments, anchors and aliases while formatting', async ({ page }) => {

@@ -1143,8 +1143,8 @@
           title={schemaReady
             ? `${$t('Show suggestions')} · Ctrl Space`
             : $t(configurationSchemaError || schemaCompileFailed
-              ? 'Program schema unavailable'
-              : 'Loading program schema')}
+              ? 'Suggestions unavailable'
+              : 'Loading suggestions')}
           on:click={() => runEditorCommand(startCompletion)}
         >
           <span class="editor-command-icon" aria-hidden="true"><Icon name="suggestions" size={16} /></span>
@@ -1192,11 +1192,11 @@
     {/if}
     {#if configurationSchemaLoading || schemaCompiling}
       <span class="editor-schema-status" role="status">
-        <span class="schema-status-label">{$t('Loading program schema')}…</span>
+        <span class="schema-status-label">{$t('Loading suggestions')}…</span>
       </span>
     {:else if configurationSchemaError || schemaCompileFailed}
       <span class="editor-schema-status schema-unavailable" role="status">
-        <span class="schema-status-label">{$t('Program schema unavailable')}</span>
+        <span class="schema-status-label">{$t('Suggestions unavailable')}</span>
         <button type="button" on:click={retryConfigurationSchema}>
           {$t('Retry')}
         </button>
@@ -1205,10 +1205,10 @@
       <span
         class="editor-schema-status schema-ready"
         role="status"
-        title={$t('Schema suggestions appear as you type. Press Ctrl Space or use Show suggestions to open them.')}
+        title={$t('Suggestions appear as you type. Press Ctrl Space to see them.')}
       >
         <span class="schema-ready-icon" aria-hidden="true"><Icon name="suggestions" size={13} /></span>
-        <span>{$t('Schema suggestions ready')}</span>
+        <span>{$t('Suggestions ready')}</span>
         <kbd aria-hidden="true">Ctrl Space</kbd>
       </span>
     {/if}

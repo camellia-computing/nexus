@@ -10,10 +10,10 @@
   const diagnosticMessages: Record<string, string> = {
     SOURCE_INVALID: 'Fix or disable this source before continuing.',
     SOURCE_UNAVAILABLE: 'Refresh or disable this source before continuing.',
-    CORE_PROFILE_MISMATCH: 'Review this candidate for the current compatibility setting.',
-    CORE_VALIDATION_EVIDENCE_STALE: 'This candidate will be checked again when you apply it.',
-    CORE_INVALID: 'The current program rejected this candidate. Your active configuration was kept.',
-    CORE_TARGET_CHANGED: 'Review this candidate for the current program.',
+    CORE_PROFILE_MISMATCH: 'Apply again to check these changes with the current program.',
+    CORE_VALIDATION_EVIDENCE_STALE: 'Your changes will be checked when you apply them.',
+    CORE_INVALID: 'The program could not use these changes. Your current configuration was kept.',
+    CORE_TARGET_CHANGED: 'Review these changes for the current program.',
     CORE_TARGET_SOURCE_REJECTED: 'This source cannot be used with the selected program target.',
     FINAL_EDIT_CONFLICT: 'Review this path in Final configuration.',
     SOURCE_VALUE_CONFLICT: 'Choose a source value before continuing.',
@@ -23,18 +23,18 @@
   const diagnosticTitles: Record<string, string> = {
     SOURCE_INVALID: 'Source needs attention',
     SOURCE_UNAVAILABLE: 'Source is unavailable',
-    CORE_PROFILE_MISMATCH: 'Compatibility profile mismatch',
-    CORE_VALIDATION_EVIDENCE_STALE: 'Native validation evidence is stale',
-    CORE_INVALID: 'Candidate rejected by Core',
+    CORE_PROFILE_MISMATCH: 'Configuration needs a new check',
+    CORE_VALIDATION_EVIDENCE_STALE: 'Configuration needs a new check',
+    CORE_INVALID: 'Configuration was not applied',
     CORE_BUILD_CAPABILITY_UNAVAILABLE: 'Configuration needs attention',
     CORE_BUILD_CAPABILITY_UNCONFIRMED: 'Configuration needs attention',
     CONFIGURATION_VALUE_NOT_ALLOWED: 'Configuration needs attention',
     CONFIGURATION_ASSESSMENT_LIMIT: 'Configuration needs attention',
-    CORE_TARGET_CHANGED: 'Compatibility target changed',
+    CORE_TARGET_CHANGED: 'Program changed',
     CORE_TARGET_SOURCE_REJECTED: 'Source is not supported by this target',
-    FINAL_EDIT_CONFLICT: 'Final edit needs review',
+    FINAL_EDIT_CONFLICT: 'Your edit needs review',
     SOURCE_VALUE_CONFLICT: 'Source values conflict',
-    LAYER_OWNERSHIP_CONFLICT: 'Configuration ownership conflict',
+    LAYER_OWNERSHIP_CONFLICT: 'Settings conflict',
   };
 
   function owns(issue: { scope?: { surface: ConfigurationSurface } }): boolean {
@@ -53,21 +53,21 @@
   function diagnosticMessage(code: string, messageKey?: string): string {
     return coreAssessmentMessage(messageKey ?? code) ?? diagnosticMessages[messageKey ?? '']
       ?? diagnosticMessages[code]
-      ?? 'Structured diagnostic details are unavailable. Review the highlighted settings or editor problems and validator output. Applied and Last Known Good were retained.';
+      ?? 'Review the highlighted setting. Your current configuration was kept.';
   }
 
   function conflictMessage(messageKey?: string): string {
     if (messageKey === 'FINAL_EDIT_CONFLICT') {
-      return 'The updated configuration and your edit changed the same path. Review it before saving or applying.';
+      return 'This setting changed in two places. Choose which value to use.';
     }
     if (messageKey === 'SOURCE_VALUE_CONFLICT') {
-      return 'A source value conflict must be resolved before this candidate can be saved.';
+      return 'Two sources set different values. Choose one in Sources.';
     }
     if (messageKey === 'LAYER_OWNERSHIP_CONFLICT') {
-      return 'The same semantic path is owned by more than one configuration layer. Choose one owner before saving.';
+      return 'Two settings change the same value. Choose which one to use.';
     }
     if (messageKey === 'CONFIGURATION_IDENTITY_DUPLICATED') {
-      return 'A Final configuration identity is duplicated and cannot be applied safely.';
+      return 'Two entries have the same name. Rename or remove one.';
     }
     return 'Review this conflict in Final configuration.';
   }
@@ -84,14 +84,14 @@
       <article>
         <div><strong>{$t(diagnosticTitles[diagnostic.messageKey ?? diagnostic.code] ?? diagnosticTitles[diagnostic.code] ?? 'Configuration issue')}</strong></div>
         <p>{$t(diagnosticMessage(diagnostic.code, diagnostic.messageKey))}</p>
-        <details><summary>{$t('Technical details')}</summary><code>{diagnostic.code}</code>{#if diagnostic.scope?.ownerId}<code>{diagnostic.scope.ownerId}</code>{/if}{#if diagnostic.details}<pre>{diagnostic.details}</pre>{/if}</details>
+        <details><summary>{$t('Information for support')}</summary><code>{diagnostic.code}</code>{#if diagnostic.scope?.ownerId}<code>{diagnostic.scope.ownerId}</code>{/if}{#if diagnostic.details}<pre>{diagnostic.details}</pre>{/if}</details>
       </article>
     {/each}
     {#each conflicts as conflict, index (`conflict-${conflict.semanticPath}-${index}`)}
       <article>
         <div><strong>{$t('Configuration conflict')}</strong><code>{conflict.semanticPath}</code></div>
         <p>{$t(conflictMessage(conflict.messageKey))}</p>
-        <details><summary>{$t('Technical details')}</summary>{#if conflict.messageKey}<code>{conflict.messageKey}</code>{/if}{#if conflict.scope?.ownerId}<code>{conflict.scope.ownerId}</code>{/if}</details>
+        <details><summary>{$t('Information for support')}</summary>{#if conflict.messageKey}<code>{conflict.messageKey}</code>{/if}{#if conflict.scope?.ownerId}<code>{conflict.scope.ownerId}</code>{/if}</details>
       </article>
     {/each}
   </section>

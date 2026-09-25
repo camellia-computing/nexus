@@ -613,11 +613,13 @@
 
   async function synchronizeFinalEditorBeforeUpstreamMutation(
     id: string,
-  ): Promise<ConfigurationWorkspaceSnapshot> {
+  ): Promise<ConfigurationStateView> {
     await flushFinalEditorDraftBeforeUpstreamMutation(id);
-    const snapshot = await api.getConfigurationWorkspace(id);
+    if (selectedId !== id) throw new Error('The selected program changed.');
+    if (configurationState) return configurationState;
+    const snapshot = await requestConfigurationWorkspace(id);
     await adoptConfigurationWorkspace(id, snapshot);
-    return snapshot;
+    return snapshot.state;
   }
 
   function resumeFinalEditorDraft() {
@@ -853,13 +855,13 @@
     : coreAdmissionRejected
       ? coreAdmissionMessage(configurationState.coreAdmission?.messageKey) ?? 'Program detection needs attention.'
       : configEditorDirty || finalEditorSession?.draftRevision
-        ? 'Final configuration has unapplied changes.'
+        ? 'Your changes are not applied yet.'
         : configurationState.workspace.editor.editStatus === 'conflict'
           || configurationState.workspace.editor.candidateStatus === 'invalid'
-          ? 'The candidate needs attention in Final configuration.'
+          ? 'Fix the highlighted setting in Final configuration.'
           : configurationState.workspace.editor.candidateStatus === 'applied'
-            ? 'This candidate is applied.'
-            : 'Review and apply changes in Final configuration.';
+            ? 'Configuration is up to date.'
+            : 'Check your changes in Final configuration.';
   $: compatibilityPrimaryDisabled = !!busy || configurationStateLoadingId === selectedId;
   $: configurationNeedsActivation = !!configurationState && (
     configEditorDirty
@@ -896,7 +898,7 @@
       : configurationHasMergeBlocker
         ? 'Resolve conflicts before continuing.'
         : !configurationNeedsActivation
-          ? 'This candidate is applied.'
+          ? 'Configuration is up to date.'
           : configSaveRequiresRestart
             ? 'Apply and restart'
             : 'Apply changes';
@@ -2431,16 +2433,6 @@
     return 'Not detected';
   }
 
-  function coreCoordinateLabel(identity?: CoreTargetIdentity) {
-    if (!identity) return 'Not detected';
-    switch (identity.coordinate.kind) {
-      case 'release':
-        return `${identity.coordinate.tag} · ${identity.coordinate.commitSha.slice(0, 12)}`;
-      default:
-        return 'Unknown';
-    }
-  }
-
   function stateNameKey(state: ProgramState) {
     const names: Record<ProgramState['status'], string> = {
       stopped: 'Stopped',
@@ -2858,8 +2850,8 @@
     let expectedConfigurationGeneration = configurationState?.generation;
     if (spec.type.kind !== 'generic') {
       try {
-        const snapshot = await synchronizeFinalEditorBeforeUpstreamMutation(id);
-        expectedConfigurationGeneration = snapshot.state.generation;
+        const state = await synchronizeFinalEditorBeforeUpstreamMutation(id);
+        expectedConfigurationGeneration = state.generation;
       } catch (value) {
         reportWorkspaceError(
           workspaceScope,
@@ -2927,7 +2919,10 @@
                 );
               }
               const currentGeneration = preliminarySnapshot?.state.generation
-                ?? (await api.getConfigurationWorkspace(id)).state.generation;
+                ?? expectedConfigurationGeneration;
+              if (currentGeneration === undefined) {
+                throw new Error('Configuration state is unavailable.');
+              }
               const snapshot = await api.updateConfigurationSources(
                 id,
                 requestedSources,
@@ -3189,9 +3184,9 @@
     if (!selectedId || detailsChanged || busy) return;
     const programId = selectedId;
     await mutateConfiguration(programId, 'save', async () => {
-      const workspace = await synchronizeFinalEditorBeforeUpstreamMutation(programId);
+      const state = await synchronizeFinalEditorBeforeUpstreamMutation(programId);
       const persisted = await api.getProgram(programId);
-      const snapshot = await api.updateProgram(persisted.spec, workspace.state.generation, [settingId]);
+      const snapshot = await api.updateProgram(persisted.spec, state.generation, [settingId]);
       if (snapshot) await adoptConfigurationWorkspace(programId, snapshot);
     }, async (error) => {
       reportWorkspaceError('details', error, 'details-save', async () => { await useSavedManagedSetting(settingId); });
@@ -3823,10 +3818,10 @@
       id,
       'replace-package',
       async () => {
-        const workspace = hasWorkspace
+        const state = hasWorkspace
           ? await synchronizeFinalEditorBeforeUpstreamMutation(id)
           : null;
-        const snapshot = await api.replacePackage(id, source, workspace?.state.stateRevision);
+        const snapshot = await api.replacePackage(id, source, state?.stateRevision);
         if (snapshot) await adoptConfigurationWorkspace(id, snapshot);
         if (selectedId !== id) return;
         const updated = await api.getProgram(id);
@@ -3857,43 +3852,48 @@
     try {
       const editor = ensureCodeEditor();
       if (!selectedId || configDocument) {
-        if (selectedId && configDocument) {
-          void loadConfigurationSchemaForEditor(
-            selectedId,
-            configDocument.configurationSchema,
-          );
-        }
         await editor;
         return;
       }
       const id = selectedId;
-      await mutate(
-        'load-config',
-        async () => {
-          const [snapshot, document] = await Promise.all([
-            requestConfigurationWorkspace(id),
-            api.loadConfig(id),
-            editor,
-          ]);
-          if (selectedId !== id || activeTab !== 'configuration') return;
-          const { state } = snapshot;
-          configDocument = {
-            ...document,
-            content: state.workspace.editor.document.content,
-            baseHash: state.desired.revision.contentHash,
-            language: state.format,
-          };
-          await adoptConfigurationWorkspace(id, snapshot);
-          void loadConfigurationSchemaForEditor(id, document.configurationSchema);
-        },
-        async (value) => {
-          reportConfigError(value, 'configuration-load', async () => { await showConfiguration(); });
-        },
-      );
+      let state = configurationState;
+      if (!state || configurationStateLoadError) {
+        const snapshot = await requestConfigurationWorkspace(id);
+        if (selectedId !== id || activeTab !== 'configuration') return;
+        await adoptConfigurationWorkspace(id, snapshot);
+        state = snapshot.state;
+      }
+      if (selectedId !== id || activeTab !== 'configuration') return;
+      configDocument = {
+        content: state.workspace.editor.document.content,
+        baseHash: state.desired.revision.contentHash,
+        language: state.format,
+        documentationUrl: '',
+      };
+      void loadConfigurationEditorMetadata(id, selectionGeneration);
+      await editor;
     } catch (value) {
       reportConfigError(value, 'configuration-load', async () => { await showConfiguration(); });
     } finally {
       await restoreMainScrollAfterTabRender(previousMainScrollTop, 'configuration', programId);
+    }
+  }
+
+  async function loadConfigurationEditorMetadata(programId: string, selection: number) {
+    try {
+      const document = await api.loadConfig(programId);
+      if (selectedId !== programId || selectionGeneration !== selection || !configDocument) return;
+      configDocument = {
+        ...configDocument,
+        documentationUrl: document.documentationUrl,
+        configurationSchema: document.configurationSchema,
+      };
+      void loadConfigurationSchemaForEditor(programId, document.configurationSchema);
+    } catch {
+      if (selectedId === programId && selectionGeneration === selection
+        && detail?.spec.type.kind === 'singBox') {
+        configurationSchemaError = true;
+      }
     }
   }
 
@@ -3991,7 +3991,11 @@
   }
 
   function retryConfigurationSchema() {
-    if (!selectedId || !configDocument?.configurationSchema) return;
+    if (!selectedId || !configDocument) return;
+    if (!configDocument.configurationSchema) {
+      void loadConfigurationEditorMetadata(selectedId, selectionGeneration);
+      return;
+    }
     void loadConfigurationSchemaForEditor(
       selectedId,
       configDocument.configurationSchema,
@@ -4027,23 +4031,24 @@
       'guided-setting',
       async () => {
         let current = await synchronizeFinalEditorBeforeUpstreamMutation(id);
-        let snapshot = current;
+        let snapshot: ConfigurationWorkspaceSnapshot | null = null;
         for (let attempt = 0; attempt < 2; attempt += 1) {
           try {
             snapshot = await api.setGuidedIntent(id, {
               settingId: event.detail.settingId,
               value: event.detail.value,
-              expectedGeneration: current.state.generation,
+              expectedGeneration: current.generation,
             });
             break;
           } catch (error) {
             if (attempt !== 0 || !isRetryableConfigurationConflict(error)) throw error;
-            current = await api.getConfigurationWorkspace(id);
+            const refreshed = await api.getConfigurationWorkspace(id);
             if (selectedId !== id) throw error;
-            await adoptConfigurationWorkspace(id, current);
+            await adoptConfigurationWorkspace(id, refreshed);
+            current = refreshed.state;
           }
         }
-        await adoptConfigurationWorkspace(id, snapshot);
+        if (snapshot) await adoptConfigurationWorkspace(id, snapshot);
       },
       async (value) => {
         reportIntentError(value, async () => { await changeGuidedSetting(event); });
@@ -4591,6 +4596,7 @@
     stopXrayDashboardPolling();
     activeTab = tab;
     if (!selectedId || detail?.spec.type.kind === 'generic') return;
+    if (configurationState && !configurationStateLoadError) return;
     const id = selectedId;
     await loadConfigurationStateSummary(id);
   }
@@ -5933,34 +5939,27 @@
       {:else if activeTab === 'compatibility'}
         <div id="program-panel-compatibility" role="tabpanel" tabindex="0" aria-labelledby="program-tab-compatibility" class="panel configuration-workspace">
           <header class="workspace-header">
-            <div><p class="eyebrow">{$t('Compatibility')}</p><h2 id="core-compatibility-heading">{$t('Core compatibility')}</h2><p>{$t('The program is identified automatically.')}</p></div>
+            <div><h2 id="core-compatibility-heading">{$t('Program compatibility')}</h2><p>{$t('Checks whether this program can use your configuration.')}</p></div>
           </header>
-          <section class="compatibility-card" aria-label={$t('Detected program')}>
-            <strong>{programDefinition(detail.spec.type.kind).displayName}</strong>
-            <code>{!configurationStateLoadError && configurationState?.coreAdmission?.baseline?.version || $t('Not detected')}</code>
-          </section>
-          <section class:warning={configurationStateLoadError || coreAdmissionRejected || configurationState?.workspace.editor.editStatus === 'conflict' || configurationState?.workspace.editor.candidateStatus === 'invalid'} class="compatibility-status-card" aria-live="polite">
-            <div><strong>{$t(compatibilityConclusion)}</strong></div>
-            <button class="primary" type="button" on:click={runCompatibilityPrimaryAction} disabled={compatibilityPrimaryDisabled} title={$t(compatibilityPrimaryLabel)}>{$t(compatibilityPrimaryLabel)}</button>
-          </section>
+          <div class="compatibility-overview">
+            <section class="compatibility-card" aria-label={$t('Detected program')}>
+              <span>{$t('Detected program')}</span>
+              <div><strong>{programDefinition(detail.spec.type.kind).displayName}</strong><strong>{!configurationStateLoadError && configurationState?.coreAdmission?.baseline?.version || $t('Not detected')}</strong></div>
+            </section>
+            <section class:warning={configurationStateLoadError || coreAdmissionRejected || configurationState?.workspace.editor.editStatus === 'conflict' || configurationState?.workspace.editor.candidateStatus === 'invalid'} class="compatibility-status-card" aria-live="polite">
+              <strong>{$t(compatibilityConclusion)}</strong>
+              <button class="primary" type="button" on:click={runCompatibilityPrimaryAction} disabled={compatibilityPrimaryDisabled} title={$t(compatibilityPrimaryLabel)}>{$t(compatibilityPrimaryLabel)}</button>
+            </section>
+          </div>
           <details class="compatibility-advanced">
-            <summary>{$t('Advanced details')}</summary>
+            <summary>{$t('About compatibility')}</summary>
             <ConfigurationSurfaceIssues state={configurationState} surface="compatibility" />
-            {#if workspaceErrors.compatibility}<pre class="compatibility-error-details">{workspaceErrors.compatibility.details || workspaceErrors.compatibility.code}</pre>{/if}
-            <div class="compatibility-evidence-grid">
+            <div class="compatibility-facts">
               {#if configurationState?.coreAdmission}
-                <div><span>{$t('Supported release families')}</span><code>{configurationState.coreAdmission.maintainedFamilies.join(' · ')}</code></div>
-                <div><span>{$t('Knowledge digest')}</span><code>{configurationState.coreAdmission.knowledgeHash}</code></div>
+                <div><strong>{$t('Supported versions')}</strong><span>{configurationState.coreAdmission.maintainedFamilies.join(' · ')}</span></div>
               {/if}
-              {#if !coreAdmissionRejected && !configurationStateLoadError}
-              <div><span>{$t('Detected target')}</span><strong>{coreTargetLabel(configurationState?.compatibilityProfile.target) ?? $t('Not reported')}</strong><small>{coreCoordinateLabel(configurationState?.compatibilityProfile.target)}</small></div>
-              <div><span>{$t('Binary fingerprint')}</span><code>{configurationState?.compatibilityProfile.target.fingerprintSha256 ?? $t('Not available')}</code></div>
-              {/if}
-              {#if configurationState}
-                <div><span>{$t('Generation')}</span><code>{configurationState.generation}</code></div>
-                <div><span>{$t('Profile hash')}</span><code>{configurationState.compatibilityProfile.profileHash}</code></div>
-                <div><span>{$t('Candidate hash')}</span><code>{configurationState.desired.revision.contentHash}</code></div>
-                <div><span>{$t('Validation')}</span><strong>{!coreAdmissionRejected && !configurationStateLoadError && configurationState.desired.validationEvidence?.nativeAccepted ? $t('Accepted for this candidate') : $t('Validation required')}</strong><small>{$t('Applied/LKG retained')}</small></div>
+              {#if configurationState && !coreAdmissionRejected && !configurationStateLoadError}
+                <div><strong>{$t('Configuration check')}</strong><span>{$t(configurationState.desired.validationEvidence?.nativeAccepted ? 'This program accepted the saved configuration.' : 'Changes are checked with this program when you apply them.')}</span></div>
               {/if}
             </div>
           </details>

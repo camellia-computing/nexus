@@ -666,7 +666,8 @@
 
   .program-tabs { position: sticky; z-index: 8; top: calc(var(--ui-page-padding) * -1 + 8px); display: flex; width: min(100%, 1280px); min-width: 0; gap: 5px; margin: 0 auto 12px; overflow: hidden; padding: 5px; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-md); background: color-mix(in srgb, var(--ui-surface-overlay) 90%, transparent); box-shadow: var(--ui-shadow-sm); backdrop-filter: blur(18px) saturate(125%); }
   .program-tabs button { position: relative; display: inline-flex; min-width: 0; min-height: 36px; flex: 1 1 0; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 11px; background: transparent; padding: 7px clamp(4px, .8vw, 12px); box-shadow: none; color: var(--ui-text-secondary); }
-  .program-tabs .tab-label { min-width: 0; text-align: center; white-space: nowrap; }
+  .program-tabs button > svg { flex: none; }
+  .program-tabs .tab-label { min-width: 0; max-width: 100%; text-align: center; white-space: normal; overflow-wrap: anywhere; line-height: 1.15; }
   .program-tabs .tab-label-compact { display: none; }
   .program-tabs button:hover:not(:disabled) { border: 0; background: var(--ui-state-hover); color: var(--ui-text-primary); }
   .program-tabs button.active { background: var(--ui-state-selected); color: var(--ui-brand); }
@@ -797,26 +798,28 @@
   .command-line-input, .config-input { font-family: var(--ui-font-mono); font-size: var(--ui-font-size-sm); }
   .runtime-subsection { display: grid; gap: 10px; }
   .subsection-label { color: var(--ui-text-tertiary); font-size: var(--ui-font-size-xs); font-weight: var(--ui-weight-semibold); letter-spacing: .06em; text-transform: uppercase; }
-  .compatibility-card { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; min-width: 0; gap: 8px; padding: 16px; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-lg); background: color-mix(in srgb, var(--ui-surface-raised) 88%, var(--ui-brand) 12%); }
-  .compatibility-card > * { min-width: 0; overflow-wrap: anywhere; }
+  .compatibility-overview { display: grid; width: min(100%, 920px); min-width: 0; grid-template-columns: minmax(0, .9fr) minmax(0, 1.6fr); gap: 10px; margin-inline: auto; }
+  .compatibility-card { display: grid; min-width: 0; align-content: center; gap: 7px; padding: 16px; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-lg); background: color-mix(in srgb, var(--ui-surface-raised) 88%, var(--ui-brand) 12%); }
+  .compatibility-card > span { color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); }
+  .compatibility-card > div { display: flex; min-width: 0; flex-wrap: wrap; gap: 3px 9px; }
+  .compatibility-card strong { min-width: 0; overflow-wrap: anywhere; }
   .compatibility-status-card { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--ui-brand) 35%, var(--ui-border-subtle)); border-radius: var(--ui-radius-md); background: var(--ui-brand-soft); }
   .compatibility-status-card.warning { border-color: color-mix(in srgb, var(--ui-warning) 48%, var(--ui-border-subtle)); background: var(--ui-warning-soft); }
-  .compatibility-status-card > div { display: grid; min-width: 0; gap: 3px; }
+  .compatibility-status-card > strong { min-width: 0; overflow-wrap: anywhere; }
   .compatibility-status-card :is(strong, small) { overflow-wrap: anywhere; }
   .compatibility-status-card small { color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); }
   .compatibility-status-card > button { flex: 0 1 auto; min-width: 0; text-align: center; white-space: normal; overflow-wrap: anywhere; }
-  .compatibility-advanced { min-width: 0; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-md); background: var(--ui-surface-2); padding: 10px 12px; }
-  .compatibility-error-details { min-width: 0; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .compatibility-advanced { width: min(100%, 920px); min-width: 0; margin-inline: auto; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-md); background: var(--ui-surface-2); padding: 10px 12px; }
   .compatibility-advanced summary { cursor: pointer; color: var(--ui-text-secondary); font-size: var(--ui-font-size-sm); font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
   .compatibility-advanced[open] summary { margin-bottom: 10px; }
-  .compatibility-evidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: 7px; }
-  .compatibility-evidence-grid > div { display: grid; min-width: 0; gap: 2px; padding: 7px 8px; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-sm); background: var(--ui-surface-raised); }
-  .compatibility-evidence-grid span { color: var(--ui-text-secondary); font-size: .68rem; text-transform: uppercase; }
-  .compatibility-evidence-grid code, .compatibility-evidence-grid strong, .compatibility-evidence-grid small { min-width: 0; overflow-wrap: anywhere; font-size: var(--ui-font-size-xs); }
-  .compatibility-evidence-grid small { color: var(--ui-text-secondary); }
+  .compatibility-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .compatibility-facts > div { display: grid; min-width: 0; gap: 3px; align-content: start; }
+  .compatibility-facts strong, .compatibility-facts span { min-width: 0; overflow-wrap: anywhere; font-size: var(--ui-font-size-sm); }
+  .compatibility-facts span { color: var(--ui-text-secondary); }
   .compatibility-load-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-inline-start: 3px solid var(--ui-danger); padding-inline-start: 10px; color: var(--ui-text-secondary); font-size: var(--ui-font-size-xs); line-height: var(--ui-line-height-body); }
   .compatibility-load-error button { flex: 0 0 auto; min-height: 32px; }
-  @media (max-width: 520px) { .compatibility-status-card { align-items: stretch; flex-direction: column; } .compatibility-status-card > button { width: 100%; } }
+  @media (max-width: 720px) { .compatibility-overview { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 520px) { .compatibility-status-card { align-items: stretch; flex-direction: column; } .compatibility-status-card > button { width: 100%; } .compatibility-facts { grid-template-columns: minmax(0, 1fr); } }
   @media (max-width: 700px) { .workspace-header { flex-direction: column; } .workspace-actions { justify-content: flex-start; } }
 }
 
@@ -1593,6 +1596,11 @@
 }
 
 @layer responsive {
+  @media (min-width: 900px) and (max-width: 1399px) {
+    .program-tabs .tab-label-full { display: none; }
+    .program-tabs .tab-label-compact { display: inline; }
+  }
+
   @media (max-width: 1199px) {
     :root { --ui-sidebar-width: 242px; --ui-page-padding: 22px; }
     :root[data-ui-theme='material'] { --ui-sidebar-width: 242px; }

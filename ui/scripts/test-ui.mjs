@@ -542,7 +542,8 @@ for (const message of [
   'Program needs recovery',
   'The program replacement could not be restored automatically.',
   'Reopen the app to recover before making more changes.',
-  'The program is identified automatically.',
+  'Program compatibility',
+  'Checks whether this program can use your configuration.',
   'Detected program',
   'Not detected',
   'Retry detection',
@@ -550,8 +551,14 @@ for (const message of [
   'Review and apply changes in Final configuration.',
   'Replace program',
   'Review program detection in Compatibility.',
-  'Supported release families',
-  'Knowledge digest',
+  'About compatibility',
+  'Supported versions',
+  'Configuration check',
+  'Your changes are not applied yet.',
+  'Configuration is up to date.',
+  'The program could not use these changes.',
+  'Information for support',
+  'This setting changed in two places. Choose which value to use.',
   'This program cannot perform the required checks. Choose another build.',
   'This version is outside the supported range. Choose a newer program.',
   'This program version is not supported yet.',
@@ -802,8 +809,8 @@ const configurationSchemaError = errorInfoOf({
   code: 'CONFIGURATION_SCHEMA_INVALID',
   message: 'Program could not generate a configuration schema',
 });
-assert.equal(configurationSchemaError.title, 'Program schema unavailable');
-assert.match(configurationSchemaError.suggestion, /schema command/);
+assert.equal(configurationSchemaError.title, 'Suggestions unavailable');
+assert.match(configurationSchemaError.suggestion, /keep editing/);
 const wrappedAdmissionError = configurationErrorInfo(
   new Error(JSON.stringify({
     code: 'UNSUPPORTED_BINARY',
