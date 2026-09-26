@@ -48,6 +48,8 @@ Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listene
 
 ### 架构
 
+冲突在最终配置编辑器内逐项对比“最新设置”和“我的修改”，并可直接选择或手工合并。删除的字段定位到最近存在的父级，错误选择可用编辑器撤销／重做恢复；重试沿用原请求，避免重复修改。
+
 项目由领域核心、授权核心、桌面集成和 Svelte 管理界面组成。Program Controller 负责单个程序的状态机；每种具体程序类型拥有独立模块，其 Adapter 只生成执行计划；平台层负责进程、文件系统和系统集成。
 
 参考文档：
@@ -194,6 +196,8 @@ For Mihomo, mappings merge recursively; later sources replace same-name `proxies
 The same external executable can be referenced by only one Program Profile. Managed Profiles use independent copies and may run multiple instances when the target program supports it.
 
 ### Architecture
+
+Conflicts are compared inside the Final configuration editor as “Updated configuration” and “Your edit.” Users can choose either value or merge there. A deleted field anchors to its nearest existing parent. Editor undo and redo restore a choice, and retry uses the original request to avoid duplicate changes.
 
 The project is organized into domain core, licensing core, desktop integration and the Svelte management UI. The Program Controller owns the state machine for one program. Each concrete program type has its own module; its Adapter only produces execution plans. Platform modules own process, filesystem and operating-system integration.
 

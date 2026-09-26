@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+#[cfg(test)]
+use camellia_nexus_core::FinalConflictResolution;
 use camellia_nexus_core::{
     CamelliaNexusError, CandidateValidationStatus, ConfigurationCandidate, ConfigurationConflict,
     ConfigurationDiagnostic, ConfigurationFormat, ConfigurationIssueScope,
@@ -7,9 +9,9 @@ use camellia_nexus_core::{
     ConfigurationRevision, ConfigurationState, ConfigurationStateView,
     ConfigurationWorkspaceSnapshot, ConflictSeverity, CoreAdmissionReport, CoreAdmissionStatus,
     CoreCompatibilityProfile, CoreTargetIdentity, CoreValidationEvidence, ErrorCode,
-    FinalConflictResolution, FinalEditorSession, ProgramId, ProgramManager, ProgramSpec, Result,
-    ShareImportPreview, SourceFreshness, SourceSnapshot, SourceStatus,
-    refresh_final_editor_conflicts, resolve_final_editor_conflict,
+    FinalEditorSession, ProgramId, ProgramManager, ProgramSpec,
+    ResolveConfigurationConflictRequest, Result, ShareImportPreview, SourceFreshness,
+    SourceSnapshot, SourceStatus, refresh_final_editor_conflicts,
 };
 use serde_json::Value;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
@@ -212,6 +214,7 @@ impl ConfigurationCoordinator {
             self.store
                 .save_configuration_state(id, &state, Some(previous_state_revision))
                 .await?;
+            state = self.load_or_initialize(manager, id).await?;
         }
         Ok((spec, state))
     }
@@ -284,16 +287,6 @@ impl ConfigurationCoordinator {
         input: &[u8],
     ) -> Result<ShareImportPreview> {
         camellia_nexus_core::preview_share_import_for_version(input, target)
-    }
-
-    async fn get_final_editor_session_with_lease(
-        &self,
-        manager: &ProgramManager,
-        id: &ProgramId,
-        _lease: &ConfigurationLease,
-    ) -> Result<FinalEditorSession> {
-        let (_, state) = self.load_current(manager, id).await?;
-        Ok(final_editor_session_for_state(&state))
     }
 
     pub(crate) async fn update_final_configuration_draft_with_lease(
@@ -421,58 +414,25 @@ impl ConfigurationCoordinator {
         self.load_workspace_with_lease(manager, id, lease).await
     }
 
-    pub(crate) async fn resolve_final_draft_conflict_with_lease(
+    pub(crate) async fn resolve_configuration_conflict_with_lease(
         &self,
         manager: &ProgramManager,
         id: &ProgramId,
-        conflict_id: String,
-        resolution: FinalConflictResolution,
-        expected_revision: u64,
-        lease: &ConfigurationLease,
-    ) -> Result<ConfigurationWorkspaceSnapshot> {
-        let (_spec, state) = self.load_current(manager, id).await?;
-        let mut draft = self
-            .store
-            .load_final_editor_draft(id)
-            .await?
-            .ok_or_else(|| {
-                CamelliaNexusError::new(
-                    ErrorCode::NotFound,
-                    "Final configuration draft was not found",
-                )
-            })?;
-        if draft.based_on_candidate_generation != state.generation
-            || draft.base_content != state.desired.content
-        {
-            return Err(CamelliaNexusError::new(
-                ErrorCode::ConfigConflict,
-                "Configuration changed; rebase the draft before resolving conflicts",
-            )
-            .with_message_key("CONFIGURATION_DRAFT_STALE"));
-        }
-        resolve_final_editor_conflict(&mut draft, state.format, &conflict_id, resolution)?;
-        draft.draft_revision = draft.draft_revision.saturating_add(1);
-        draft.updated_unix_ms = now_unix_ms();
-        self.store
-            .save_final_editor_draft(id, &draft, Some(expected_revision))
-            .await?;
-        self.load_workspace_with_lease(manager, id, lease).await
-    }
-
-    pub(crate) async fn resolve_final_configuration_conflict_with_lease(
-        &self,
-        manager: &ProgramManager,
-        id: &ProgramId,
-        conflict_id: String,
-        resolution: FinalConflictResolution,
-        expected_generation: u64,
+        request: ResolveConfigurationConflictRequest,
         lease: &ConfigurationLease,
     ) -> Result<ConfigurationWorkspaceSnapshot> {
         let (_spec, mut state) = self.load_current(manager, id).await?;
-        ensure_generation(&state, expected_generation)?;
-        let previous_state_revision = state.state_revision;
-        state.resolve_final_conflict(&conflict_id, resolution, now_unix_ms())?;
-        self.persist_candidate(manager, id, state, previous_state_revision)
+        let previous_revision = state.state_revision;
+        if !state.resolve_configuration_conflict(request.clone(), now_unix_ms())? {
+            return self.load_workspace_with_lease(manager, id, lease).await;
+        }
+        self.store
+            .save_configuration_conflict_state(
+                id,
+                &state,
+                previous_revision,
+                request.expected_draft_revision,
+            )
             .await?;
         self.load_workspace_with_lease(manager, id, lease).await
     }
@@ -1098,14 +1058,7 @@ impl ConfigurationCoordinator {
         self.store
             .save_configuration_state(id, &state, Some(previous_state_revision))
             .await?;
-        Ok(ConfigurationWorkspaceSnapshot {
-            state: view_for_spec(&spec, &state)?,
-            editor_session: Some(
-                self.get_final_editor_session_with_lease(manager, id, _lease)
-                    .await?,
-            ),
-            operation_result: None,
-        })
+        self.load_workspace_with_lease(manager, id, _lease).await
     }
 
     pub(crate) async fn sync_managed_dashboard(
@@ -1200,6 +1153,7 @@ impl ConfigurationCoordinator {
         self.store
             .save_configuration_state(id, &state, Some(expected_state_revision))
             .await?;
+        let state = self.load_or_initialize(manager, id).await?;
         view_for_spec(&spec, &state)
     }
 
@@ -1898,7 +1852,7 @@ mod tests {
     workspace_mutations! {
         set_guided => set_guided_with_lease(setting: String, value: Option<Value>, generation: u64);
         update_final_configuration_draft => update_final_configuration_draft_with_lease(draft: FinalEditorSession, revision: u64);
-        resolve_final_draft_conflict => resolve_final_draft_conflict_with_lease(conflict: String, resolution: FinalConflictResolution, revision: u64);
+        resolve_configuration_conflict => resolve_configuration_conflict_with_lease(request: ResolveConfigurationConflictRequest);
     }
 
     #[cfg(unix)]
@@ -3086,13 +3040,32 @@ esac
             stale.message_key.as_deref(),
             Some("CONFIGURATION_DRAFT_STALE")
         );
+        let reference = latest
+            .state
+            .workspace
+            .editor
+            .conflicts
+            .iter()
+            .find(|item| {
+                item.reference.origin == camellia_nexus_core::ConfigurationConflictOrigin::Draft
+            })
+            .unwrap()
+            .reference
+            .clone();
         let resolved = coordinator
-            .resolve_final_draft_conflict(
+            .resolve_configuration_conflict(
                 &manager,
                 &id,
-                session.conflicts[0].conflict_id.clone(),
-                FinalConflictResolution::KeepMine,
-                session.draft_revision,
+                ResolveConfigurationConflictRequest {
+                    operation_id: Uuid::new_v4().to_string(),
+                    expected_state_revision: latest.state.state_revision,
+                    editor_session_id: Some(session.session_id.clone()),
+                    expected_draft_revision: Some(session.draft_revision),
+                    action: camellia_nexus_core::ConfigurationConflictAction::Resolve {
+                        reference,
+                        resolution: FinalConflictResolution::KeepMine,
+                    },
+                },
             )
             .await
             .unwrap();
@@ -3113,6 +3086,126 @@ esac
             saved.state.applied_revision,
             original.state.applied_revision
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn conflict_choice_commits_with_draft_and_receipt_or_rolls_back_together() {
+        for committed in [false, true] {
+            let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+            let initial = coordinator.load_workspace(&manager, &id).await.unwrap();
+            let mut draft = initial.editor_session.unwrap();
+            draft.working_content = r#"{"log":{"loglevel":"debug"}}"#.into();
+            let generation = if committed {
+                coordinator
+                    .update_final_configuration_draft(&manager, &id, draft.clone(), 0)
+                    .await
+                    .unwrap();
+                coordinator
+                    .save_configuration_candidate(&manager, &id)
+                    .await
+                    .unwrap()
+                    .state
+                    .generation
+            } else {
+                initial.state.generation
+            };
+            let updated = coordinator
+                .set_guided(
+                    &manager,
+                    &id,
+                    "logging.level".into(),
+                    Some(Value::from("error")),
+                    generation,
+                )
+                .await
+                .unwrap();
+            let pending = if committed {
+                updated.clone()
+            } else {
+                coordinator
+                    .update_final_configuration_draft(&manager, &id, draft, 0)
+                    .await
+                    .unwrap()
+            };
+            let conflict = pending
+                .state
+                .workspace
+                .editor
+                .conflicts
+                .iter()
+                .find(|item| {
+                    item.reference.origin
+                        == if committed {
+                            camellia_nexus_core::ConfigurationConflictOrigin::Candidate
+                        } else {
+                            camellia_nexus_core::ConfigurationConflictOrigin::Draft
+                        }
+                })
+                .unwrap();
+            let session = pending.editor_session.as_ref().unwrap();
+            let request = ResolveConfigurationConflictRequest {
+                operation_id: Uuid::new_v4().to_string(),
+                expected_state_revision: pending.state.state_revision,
+                editor_session_id: (session.draft_revision > 0).then(|| session.session_id.clone()),
+                expected_draft_revision: (session.draft_revision > 0)
+                    .then_some(session.draft_revision),
+                action: camellia_nexus_core::ConfigurationConflictAction::Resolve {
+                    reference: conflict.reference.clone(),
+                    resolution: FinalConflictResolution::KeepMine,
+                },
+            };
+            let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+            store.fail_next_configuration_write();
+            assert_eq!(
+                coordinator
+                    .resolve_configuration_conflict(&manager, &id, request.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Storage
+            );
+            assert_eq!(
+                store.load_configuration_state(&id).await.unwrap().unwrap(),
+                before
+            );
+            let resolved = coordinator
+                .resolve_configuration_conflict(&manager, &id, request.clone())
+                .await
+                .unwrap();
+            assert!(
+                resolved
+                    .editor_session
+                    .as_ref()
+                    .unwrap()
+                    .unresolved_conflict_ids
+                    .is_empty()
+            );
+            assert!(
+                resolved
+                    .editor_session
+                    .as_ref()
+                    .unwrap()
+                    .working_content
+                    .contains("debug")
+            );
+            assert_eq!(
+                resolved.state.applied_revision,
+                updated.state.applied_revision
+            );
+            let replay = coordinator
+                .resolve_configuration_conflict(&manager, &id, request)
+                .await
+                .unwrap();
+            assert_eq!(resolved.state.state_revision, replay.state.state_revision);
+            assert_eq!(
+                resolved.state.workspace.editor,
+                replay.state.workspace.editor
+            );
+            if !committed {
+                assert_eq!(resolved.editor_session, replay.editor_session);
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -3761,8 +3854,10 @@ esac
                         if calls.fetch_add(1, Ordering::SeqCst) == final_authorization {
                             if change == "draft" {
                                 let mut draft = coordinator
-                                    .get_final_editor_session_with_lease(&manager, &id, &lease)
-                                    .await?;
+                                    .load_workspace_with_lease(&manager, &id, &lease)
+                                    .await?
+                                    .editor_session
+                                    .expect("workspace includes its editor session");
                                 let revision = draft.draft_revision;
                                 draft.working_content = r#"{"log":{"loglevel":"warning"}}"#.into();
                                 store

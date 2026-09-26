@@ -4329,19 +4329,11 @@ pub async fn rebase_final_configuration_draft(
         .await
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolveFinalDraftConflictCommand {
-    pub conflict_id: String,
-    pub resolution: camellia_nexus_core::FinalConflictResolution,
-    pub expected_revision: u64,
-}
-
 #[tauri::command]
-pub async fn resolve_final_draft_conflict(
+pub async fn resolve_configuration_conflict(
     state: State<'_, AppState>,
     program_id: String,
-    request: ResolveFinalDraftConflictCommand,
+    request: camellia_nexus_core::ResolveConfigurationConflictRequest,
 ) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
     let program_id = id(program_id)?;
     let lease = state
@@ -4352,48 +4344,7 @@ pub async fn resolve_final_draft_conflict(
         authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
     state
         .configuration_state
-        .resolve_final_draft_conflict_with_lease(
-            &state.manager,
-            &program_id,
-            request.conflict_id,
-            request.resolution,
-            request.expected_revision,
-            &lease,
-        )
-        .await
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolveFinalConfigurationConflictCommand {
-    pub conflict_id: String,
-    pub resolution: camellia_nexus_core::FinalConflictResolution,
-    pub expected_generation: u64,
-}
-
-#[tauri::command]
-pub async fn resolve_final_configuration_conflict(
-    state: State<'_, AppState>,
-    program_id: String,
-    request: ResolveFinalConfigurationConflictCommand,
-) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
-    let program_id = id(program_id)?;
-    let lease = state
-        .configuration_state
-        .acquire_lease(&state.manager, &program_id)
-        .await?;
-    let _operation =
-        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
-    state
-        .configuration_state
-        .resolve_final_configuration_conflict_with_lease(
-            &state.manager,
-            &program_id,
-            request.conflict_id,
-            request.resolution,
-            request.expected_generation,
-            &lease,
-        )
+        .resolve_configuration_conflict_with_lease(&state.manager, &program_id, request, &lease)
         .await
 }
 

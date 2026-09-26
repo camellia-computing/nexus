@@ -117,6 +117,8 @@ const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
 const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
 const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
 const finalMergeConflictPreview = previewParameters.has('__ui_final_merge_conflict');
+let conflictWriteFailurePending = previewParameters.has('__ui_conflict_fail_once');
+let conflictResponseFailurePending = previewParameters.has('__ui_conflict_response_lost');
 const guidedFinalEditPreview = previewParameters.has('__ui_guided_final_edit');
 const requestedTeamRole = previewParameters.get('__ui_team_role');
 const previewWorkspaceRole: WorkspaceRole = teamMemberPreview
@@ -980,6 +982,12 @@ const previewUpstreamContributions = new Map<string, {
   writes: Array<{ owner: string; change: FinalChangeProjection }>;
 }>();
 const previewFinalDrafts = new Map<string, FinalEditorSession>();
+const previewConflictOperations = new Map<string, {
+  serialized: string;
+  conflict: FinalConflictProjection;
+  resolution: import('../types').FinalConflictResolution;
+  undone: boolean;
+}>();
 const previewConfigurationOperations = new Map<string, {
   request: ConfigurationMutationContext;
   result: ConfigurationOperationResult;
@@ -1096,6 +1104,7 @@ function configurationState(programId: string): ConfigurationStateView {
       : [{ kind: 'key' as const, key: 'log-level' }];
   const finalPreviewConflict: FinalConflictProjection = {
     conflictId: `preview-final-conflict-${programId}`,
+    reference: { origin: 'candidate', conflictId: `preview-final-conflict-${programId}`, fingerprint: `preview-${programId}-initial` },
     semanticPath: kind === 'xray' ? '/log/loglevel' : kind === 'singBox' ? '/log/level' : '/log-level',
     segments: finalPreviewPath,
     kind: 'modifyVsModify',
@@ -1246,6 +1255,35 @@ function configurationState(programId: string): ConfigurationStateView {
       },
     },
   };
+  if (previewParameters.has('__ui_deleted_final_edit') && programId === 'xray-primary') {
+    state.workspace.editor.changes.push({
+      editId: 'preview-deleted-log-timestamp',
+      semanticPath: '/log/timestamp',
+      segments: [{ kind: 'key', key: 'log' }, { kind: 'key', key: 'timestamp' }],
+      kind: 'deleted',
+      upstreamValue: { state: 'present', value: true },
+      finalValue: { state: 'missing' },
+      issues: [],
+    });
+  }
+  if (previewParameters.has('__ui_two_final_conflicts') && programId === 'xray-primary') {
+    const second: FinalConflictProjection = {
+      ...finalPreviewConflict,
+      conflictId: 'preview-final-conflict-route',
+      reference: { origin: 'candidate', conflictId: 'preview-final-conflict-route', fingerprint: 'preview-route-initial' },
+      semanticPath: '/route/final',
+      segments: [{ kind: 'key', key: 'route' }, { kind: 'key', key: 'final' }],
+      baseValue: { state: 'present', value: 'original-route' },
+      upstreamValue: { state: 'present', value: 'proxy-sg' },
+      userValue: { state: 'present', value: 'mine-route' },
+    };
+    state.workspace.editor.conflicts.push(second);
+    state.desired.conflicts.push({
+      ...finalCandidateConflict,
+      semanticPath: second.semanticPath,
+      scope: { surface: 'configuration', ownerId: second.conflictId },
+    });
+  }
   previewUpstreamDocuments.set(programId, upstreamContent);
   previewUpstreamContributions.set(programId, { source: upstreamContent, writes: [] });
   refreshPreviewWorkspaceGates(state);
@@ -1494,7 +1532,23 @@ function configurationWorkspaceSnapshot(programId: string): {
     });
     return { ...integration, settings, status: settings.some((setting) => setting.canUseSavedValue) ? 'latestSettings' : integration.status };
   });
-  return { state, editorSession: finalEditorSession(programId) };
+  const editorSession = finalEditorSession(programId);
+  const unresolved = new Set(editorSession.unresolvedConflictIds);
+  state.workspace.editor.conflicts.push(...editorSession.conflicts
+    .filter((item) => unresolved.has(item.conflictId))
+    .map((item) => ({
+      ...item,
+      reference: {
+        origin: 'draft' as const,
+        conflictId: item.conflictId,
+        fingerprint: JSON.stringify(item),
+      },
+    })));
+  state.workspace.editor.conflicts = state.workspace.editor.conflicts.map((conflict) => ({
+    ...conflict,
+    conflictId: `${conflict.reference.origin}:${conflict.reference.conflictId}`,
+  }));
+  return { state, editorSession };
 }
 
 function refreshPreviewUnresolvedConflicts(draft: FinalEditorSession): void {
@@ -3129,49 +3183,112 @@ export function installMockBackend() {
         previewFinalDrafts.set(programId, structuredClone(draft));
         return configurationWorkspaceSnapshot(programId);
       }
-      case 'resolve_final_draft_conflict': {
+      case 'resolve_configuration_conflict': {
         const programId = stringArg(args, 'programId');
-        const request = objectArgs(args).request as {
-          conflictId?: string;
-          resolution?: FinalEditorSession['resolutions'][string];
-        } | undefined;
-        const draft = finalEditorSession(programId);
-        const conflict = draft.conflicts.find((item) => item.conflictId === request?.conflictId);
-        if (!conflict || !request?.resolution) {
-          throw { code: 'NOT_FOUND', message: 'Preview configuration conflict was not found' };
+        const request = objectArgs(args).request as import('../types').ResolveConfigurationConflictRequest;
+        const receiptKey = `${programId}:${request.operationId}`;
+        const prior = previewConflictOperations.get(receiptKey);
+        if (prior) {
+          if (prior.serialized !== JSON.stringify(request)) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH' };
+          return configurationWorkspaceSnapshot(programId);
         }
-        const document = JSON.parse(draft.workingContent) as unknown;
-        updatePreviewConflictPath(
-          document,
-          conflict.segments,
-          previewConflictResolutionValue(conflict, request.resolution),
-        );
-        draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
-        draft.resolutions[conflict.conflictId] = request.resolution;
-        refreshPreviewUnresolvedConflicts(draft);
-        draft.draftRevision += 1;
-        draft.updatedUnixMs = Date.now();
-        previewFinalDrafts.set(programId, structuredClone(draft));
-        return configurationWorkspaceSnapshot(programId);
-      }
-      case 'resolve_final_configuration_conflict': {
-        const programId = stringArg(args, 'programId');
-        const request = objectArgs(args).request as {
-          conflictId?: string;
-          resolution?: import('../types').FinalConflictResolution;
-          expectedGeneration?: number;
-        } | undefined;
         const current = configurationState(programId);
-        if (request?.expectedGeneration !== current.generation) {
-          throw { code: 'CONFIG_CONFLICT', message: 'Preview candidate generation is stale' };
+        if (request.expectedStateRevision !== current.stateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE' };
         }
-        const conflict = current.workspace.editor.conflicts.find(
-          (item) => item.conflictId === request?.conflictId,
-        );
-        if (!conflict || !request?.resolution) {
-          throw { code: 'NOT_FOUND', message: 'Preview final configuration conflict was not found' };
+        if (conflictWriteFailurePending) {
+          conflictWriteFailurePending = false;
+          throw { code: 'STORAGE', message: 'Injected conflict write failure' };
         }
-        const resolution = request.resolution;
+        if (request.action.kind !== 'resolve') {
+          const original = previewConflictOperations.get(`${programId}:${request.action.resolutionOperationId}`);
+          if (!original || original.undone === (request.action.kind === 'undo')) {
+            throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+          }
+          const { conflict: previousConflict, resolution: previousResolution } = original;
+          if (request.action.kind === 'undo') {
+            if (previousConflict.reference.origin === 'draft') {
+              const draft = finalEditorSession(programId);
+              const document = JSON.parse(draft.workingContent) as unknown;
+              updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, 'acceptUpstream'));
+              draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
+              draft.conflicts.push(structuredClone(previousConflict));
+              delete draft.resolutions[previousConflict.conflictId];
+              draft.unresolvedConflictIds.push(previousConflict.conflictId);
+              draft.draftRevision += 1;
+              current.stateRevision += 1;
+              draft.basedOnStateRevision = current.stateRevision;
+              previewFinalDrafts.set(programId, structuredClone(draft));
+              previewConfigurationStates.set(programId, structuredClone(current));
+            } else {
+              updateConfigurationState(programId, (state) => {
+                const document = JSON.parse(state.desired.content) as unknown;
+                updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, 'acceptUpstream'));
+                state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+                state.workspace.editor.conflicts.push(structuredClone(previousConflict));
+                state.workspace.editor.changes = state.workspace.editor.changes.filter((item) => item.semanticPath !== previousConflict.semanticPath);
+                state.desired.conflicts.push({ semanticPath: previousConflict.semanticPath, reason: 'A final edit needs a choice', severity: 'error', messageKey: 'FINAL_EDIT_CONFLICT', scope: { surface: 'configuration', ownerId: previousConflict.conflictId } });
+              });
+            }
+          } else {
+            const document = JSON.parse(previousConflict.reference.origin === 'draft' ? finalEditorSession(programId).workingContent : current.desired.content) as unknown;
+            updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, previousResolution));
+            if (previousConflict.reference.origin === 'draft') {
+              const draft = finalEditorSession(programId);
+              draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
+              draft.resolutions[previousConflict.conflictId] = previousResolution;
+              refreshPreviewUnresolvedConflicts(draft);
+              draft.draftRevision += 1;
+              current.stateRevision += 1;
+              draft.basedOnStateRevision = current.stateRevision;
+              previewFinalDrafts.set(programId, structuredClone(draft));
+              previewConfigurationStates.set(programId, structuredClone(current));
+            } else {
+              updateConfigurationState(programId, (state) => {
+                state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+                state.workspace.editor.conflicts = state.workspace.editor.conflicts.filter((item) => item.conflictId !== previousConflict.conflictId);
+                state.desired.conflicts = state.desired.conflicts.filter((item) => item.scope?.ownerId !== previousConflict.conflictId);
+              });
+            }
+          }
+          original.undone = request.action.kind === 'undo';
+          previewConflictOperations.set(receiptKey, { ...original, serialized: JSON.stringify(request) });
+          return configurationWorkspaceSnapshot(programId);
+        }
+        const { reference, resolution } = request.action;
+        const draft = finalEditorSession(programId);
+        if (request.expectedDraftRevision !== undefined && request.expectedDraftRevision !== draft.draftRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE' };
+        }
+        if (reference.origin === 'draft') {
+          const conflict = draft.conflicts.find((item) => item.conflictId === reference.conflictId);
+          if (!conflict || JSON.stringify(conflict) !== reference.fingerprint) {
+            throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+          }
+          const document = JSON.parse(draft.workingContent) as unknown;
+          updatePreviewConflictPath(document, conflict.segments, previewConflictResolutionValue(conflict, resolution));
+          draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
+          draft.resolutions[conflict.conflictId] = resolution;
+          refreshPreviewUnresolvedConflicts(draft);
+          draft.draftRevision += 1;
+          draft.updatedUnixMs = Date.now();
+          current.stateRevision += 1;
+          draft.basedOnStateRevision = current.stateRevision;
+          previewConfigurationStates.set(programId, structuredClone(current));
+          previewFinalDrafts.set(programId, structuredClone(draft));
+          previewConflictOperations.set(receiptKey, { serialized: JSON.stringify(request), conflict: {
+            ...conflict, reference,
+          }, resolution, undone: false });
+          if (conflictResponseFailurePending) {
+            conflictResponseFailurePending = false;
+            throw { code: 'UNKNOWN', message: 'Conflict response unavailable' };
+          }
+          return configurationWorkspaceSnapshot(programId);
+        }
+        const conflict = current.workspace.editor.conflicts.find((item) => item.conflictId === reference.conflictId);
+        if (!conflict || JSON.stringify(conflict.reference) !== JSON.stringify(reference)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+        }
         updateConfigurationState(programId, (state) => {
           const selected = resolution === 'acceptUpstream'
             ? conflict.upstreamValue
@@ -3195,8 +3312,8 @@ export function installMockBackend() {
               || JSON.stringify(selected.value) === JSON.stringify(
                 conflict.upstreamValue.state === 'present' ? conflict.upstreamValue.value : undefined,
               ))
-            ? []
-            : [{
+            ? state.workspace.editor.changes.filter((item) => item.semanticPath !== conflict.semanticPath)
+            : [...state.workspace.editor.changes.filter((item) => item.semanticPath !== conflict.semanticPath), {
                 editId: `preview-final-edit-${programId}`,
                 semanticPath: conflict.semanticPath,
                 segments: conflict.segments,
@@ -3209,6 +3326,11 @@ export function installMockBackend() {
           state.desired.validationEvidence = undefined;
           state.workspace.editor.candidateStatus = 'unsaved';
         });
+        previewConflictOperations.set(receiptKey, { serialized: JSON.stringify(request), conflict, resolution, undone: false });
+        if (conflictResponseFailurePending) {
+          conflictResponseFailurePending = false;
+          throw { code: 'UNKNOWN', message: 'Conflict response unavailable' };
+        }
         return configurationWorkspaceSnapshot(programId);
       }
       case 'discard_final_configuration_draft': {

@@ -370,6 +370,20 @@ export function configurationErrorInfo(
   const base = errorInfoOf(error);
   if (base.messageKey && admissionMessages[base.messageKey]) return base;
   const contextTitle = configurationContextLabels[context].title;
+  if (base.messageKey === 'CONFIGURATION_CONFLICT_STALE') return {
+    ...base,
+    title: 'Setting changed',
+    message: 'This setting changed. Review the latest values before choosing again.',
+    fallbackMessage: '此设置已更新。请查看最新值后重新选择。',
+    suggestion: '',
+  };
+  if (base.messageKey === 'CONFIGURATION_OPERATION_PENDING') return {
+    ...base,
+    title: 'Choice still pending',
+    message: 'Retry the earlier choice to confirm its result.',
+    fallbackMessage: '请重试先前的选择以确认结果。',
+    suggestion: '',
+  };
   if (base.messageKey && sourceMessages[base.messageKey]) return { ...base, title: contextTitle };
   const assessmentMessage = coreAssessmentMessage(base.messageKey);
   if (assessmentMessage) {

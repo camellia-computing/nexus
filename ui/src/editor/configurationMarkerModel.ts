@@ -1,7 +1,7 @@
-import type { SemanticPathSegment } from '../types';
+import type { FinalConflictProjection, FinalConflictResolution, SemanticPathSegment } from '../types';
 
 export type ConfigurationEditorMarkerKind = 'conflict' | 'validation' | 'warning' | 'source';
-export type ConfigurationEditorMarkerResolution = 'keepMine' | 'acceptUpstream';
+export type ConfigurationEditorMarkerResolution = FinalConflictResolution;
 
 export interface ConfigurationEditorMarker {
   id: string;
@@ -12,11 +12,15 @@ export interface ConfigurationEditorMarker {
   segments: SemanticPathSegment[];
   documentPath?: string[];
   resolvable?: boolean;
+  pending?: boolean;
   canCombine?: boolean;
   changeKind?: 'added' | 'modified' | 'deleted';
   messageKey?: string;
   sourceIds?: string[];
   issueIds?: string[];
+  conflict?: FinalConflictProjection;
+  actionError?: string;
+  retryable?: boolean;
 }
 
 export function semanticPathSegments(path: string): SemanticPathSegment[] {

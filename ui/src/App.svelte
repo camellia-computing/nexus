@@ -110,6 +110,8 @@
     ConfigurationStateView,
     ConfigurationWorkspaceSnapshot,
     FinalConflictResolution,
+    FinalConflictProjection,
+    ResolveConfigurationConflictRequest,
     ConfigurationSchemaDocument,
     ConfigSource,
     CoreTargetIdentity,
@@ -393,6 +395,24 @@
   let finalEditorInputBaseContent: string | null = null;
   let focusSemanticPath = '';
   let selectedEditorPath = '';
+  let selectedEditorConflictId = '';
+  let conflictActionError: { conflictId: string; message: string } | null = null;
+  let pendingConflictRequest: ResolveConfigurationConflictRequest | null = null;
+  const conflictErrorsByProgram = new Map<string, { conflictId: string; message: string }>();
+  const pendingConflictsByProgram = new Map<string, ResolveConfigurationConflictRequest>();
+  const conflictHistoryRecords = new Map<string, FinalConflictProjection>();
+  $: pendingConflictProjection = pendingConflictRequest
+    ? conflictHistoryRecords.get(pendingConflictRequest.action.kind === 'resolve'
+      ? pendingConflictRequest.operationId : pendingConflictRequest.action.resolutionOperationId) ?? null
+    : null;
+  let conflictStateProgramId = '';
+  $: if (selectedId !== conflictStateProgramId) {
+    conflictStateProgramId = selectedId;
+    conflictActionError = conflictErrorsByProgram.get(selectedId) ?? null;
+    pendingConflictRequest = pendingConflictsByProgram.get(selectedId) ?? null;
+    selectedEditorConflictId = '';
+  }
+  let recentConflictChoice: { programId: string; operationId: string; undone: boolean } | null = null;
   let pathFocusMessage = '';
   let configEditorDirty = false;
   let configSaveRequiresRestart = false;
@@ -404,6 +424,9 @@
     configurationState,
     finalEditorSession,
     $uiLanguage,
+    conflictActionError,
+    pendingConflictRequest,
+    pendingConflictProjection,
   );
   $: managedIntegrationById = new Map(
     (configurationState?.managedIntegrations ?? []).map((projection) => [projection.integrationId, projection]),
@@ -418,23 +441,24 @@
     ))) {
     selectedEditorPath = '';
   }
-  $: activeFinalMarkerId = selectedEditorPath
-    ? finalEditorDraftConflicts.find((conflict) => (
-        conflict.semanticPath === selectedEditorPath
-      ))?.conflictId
-      ?? configurationState?.workspace.editor.conflicts.find(
+  $: activeFinalMarkerId = pendingConflictProjection && conflictActionError
+    ? pendingConflictProjection.conflictId
+    : selectedEditorConflictId && configurationState?.workspace.editor.conflicts.some((conflict) => conflict.conflictId === selectedEditorConflictId)
+    ? selectedEditorConflictId
+    : selectedEditorPath
+    ? configurationState?.workspace.editor.conflicts.find(
         (conflict) => conflict.semanticPath === selectedEditorPath,
       )?.conflictId
       ?? configurationState?.workspace.editor.changes.find(
         (change) => change.semanticPath === selectedEditorPath,
       )?.editId
       ?? ''
-    : finalEditorDraftConflicts[0]?.conflictId
-      ?? configurationState?.workspace.editor.conflicts[0]?.conflictId
+    : configurationState?.workspace.editor.conflicts[0]?.conflictId
       ?? '';
 
   $: finalEditorTextChanged = !!finalEditorSession && configContent !== finalEditorSession.workingContent;
-  $: if (!finalEditorAutosavePaused && busy !== 'save-candidate' && busy !== 'apply' && finalEditorSession && selectedId
+  $: if (!finalEditorAutosavePaused && !pendingConflictRequest && busy !== 'save-candidate' && busy !== 'apply'
+    && busy !== 'resolve-configuration-conflict' && !busy.startsWith('history-configuration-conflict') && finalEditorSession && selectedId
     && (configEditorDirty || (finalEditorSession.conflicts.length > 0 && finalEditorTextChanged))
     && finalEditorAutosaveContent !== configContent) {
     finalEditorAutosaveContent = configContent;
@@ -630,33 +654,30 @@
 
   function buildConfigurationEditorMarkers(
     state: ConfigurationStateView | null,
-    draft: FinalEditorSession | null,
+    _draft: FinalEditorSession | null,
     _language: string,
+    actionError: { conflictId: string; message: string } | null,
+    pendingRequest: ResolveConfigurationConflictRequest | null,
+    pendingProjection: FinalConflictProjection | null,
   ): ConfigurationEditorMarker[] {
     const editorMarkers: ConfigurationEditorMarker[] = [];
-    for (const conflict of unresolvedDraftConflicts(draft)) {
+    const conflicts = [...(state?.workspace.editor.conflicts ?? [])];
+    if (pendingProjection && !conflicts.some((item) => item.conflictId === pendingProjection.conflictId)) conflicts.push(pendingProjection);
+    for (const conflict of conflicts) {
       editorMarkers.push({
         id: conflict.conflictId,
         kind: 'conflict',
-        severity: 'error',
-        message: translate('Resolve this edit conflict before continuing.'),
-        semanticPath: conflict.semanticPath,
-        segments: conflict.segments,
-        resolvable: true,
-        canCombine: conflict.canMerge,
-      });
-    }
-    for (const conflict of (state?.workspace.editor.conflicts ?? [])) {
-      editorMarkers.push({
-        id: conflict.conflictId,
-        kind: 'conflict',
-        severity: 'error',
+        severity: 'warning',
         messageKey: 'FINAL_EDIT_CONFLICT',
         message: translate('The upstream configuration and your edit changed the same path.'),
         semanticPath: conflict.semanticPath || '/',
         segments: conflict.segments,
         resolvable: true,
         canCombine: conflict.canMerge,
+        conflict,
+        actionError: actionError?.conflictId === conflict.conflictId ? translate(actionError.message) : undefined,
+        retryable: !!pendingRequest && pendingProjection?.conflictId === conflict.conflictId,
+        pending: !!pendingRequest,
       });
     }
     for (const change of (state?.workspace.editor.changes ?? [])) {
@@ -878,6 +899,7 @@
     && configDiagnosticStatus?.language === configDocument?.language
     && configDiagnosticStatus.errorCount > 0;
   $: configurationActivationBlocked = !!busy
+    || !!pendingConflictRequest
     || !canEditConfigurationByLicense
     || !canRunDiagnosticsByLicense
     || !configurationState
@@ -889,6 +911,8 @@
     || configurationSyntaxInvalid;
   $: configurationActivationReason = !canEditConfigurationByLicense || !canRunDiagnosticsByLicense
     ? licenseActionHint
+    : pendingConflictRequest
+      ? 'Retry the pending choice before continuing.'
     : busy
       ? 'Another configuration operation is running.'
       : coreAdmissionRejected || configurationStateLoadError
@@ -3321,50 +3345,172 @@
     );
   }
 
-  async function resolveFinalEditorConflict(event: CustomEvent<{ conflictId: string; resolution: FinalConflictResolution }>) {
-    if (!selectedId) return;
-    const id = selectedId;
-    clearConfigurationError();
-    await mutateConfiguration(
-      id,
-      'resolve-final-editor-conflict',
-      async () => {
-        await finalEditorSavePromises.get(id);
-        const snapshot = await api.resolveConfigurationConflict(
-          id,
-          event.detail.conflictId,
-          event.detail.resolution,
-          finalEditorSession?.draftRevision ?? 0,
-        );
-        await adoptConfigurationWorkspace(id, snapshot);
-      },
-      async (error) => {
-        reportConfigError(error, 'final-editor-draft', async () => { await resolveFinalEditorConflict(event); });
-      },
-    );
-  }
+  const resolvingConflictIds = new Set<string>();
 
-  async function resolveFinalConflict(
+  async function resolveConfigurationConflict(
     event: CustomEvent<{ conflictId: string; resolution: FinalConflictResolution }>,
   ) {
+    if (!selectedId || !configurationState || resolvingConflictIds.has(event.detail.conflictId)) return;
+    const id = selectedId;
+    const conflictId = event.detail.conflictId;
+    const observed = configurationState.workspace.editor.conflicts.find((item) => item.conflictId === conflictId)?.reference
+      ?? (pendingConflictProjection?.conflictId === conflictId ? pendingConflictProjection.reference : undefined);
+    resolvingConflictIds.add(conflictId);
+    try {
+      await mutateConfiguration(id, 'resolve-configuration-conflict', async () => {
+        const pending = pendingConflictsByProgram.get(id);
+        if (pending && (pending.action.kind !== 'resolve'
+          || pending.action.reference.conflictId !== observed?.conflictId
+          || pending.action.reference.origin !== observed?.origin
+          || JSON.stringify(pending.action.resolution) !== JSON.stringify(event.detail.resolution)
+        )) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_PENDING' };
+        if (!pending) await flushFinalEditorDraftBeforeUpstreamMutation(id);
+        if (selectedId !== id) return;
+        const conflict = configurationState?.workspace.editor.conflicts.find((item) => item.conflictId === conflictId);
+        if (!pending && (!conflict || !configurationState || conflict.reference.fingerprint !== observed?.fingerprint)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+        }
+        const request: ResolveConfigurationConflictRequest = pending ?? {
+              operationId: crypto.randomUUID(),
+              expectedStateRevision: configurationState!.stateRevision,
+              ...(finalEditorSession && finalEditorSession.draftRevision > 0 ? {
+                editorSessionId: finalEditorSession.sessionId,
+                expectedDraftRevision: finalEditorSession.draftRevision,
+              } : {}),
+              action: { kind: 'resolve', reference: conflict!.reference, resolution: event.detail.resolution },
+            };
+        pendingConflictRequest = request;
+        if (conflict) conflictHistoryRecords.set(request.operationId, conflict);
+        pendingConflictsByProgram.set(id, request);
+        const submittedContent = configContent;
+        const snapshot = await api.resolveConfigurationConflict(id, request);
+        pendingConflictsByProgram.delete(id);
+        conflictErrorsByProgram.delete(id);
+        if (selectedId !== id) return;
+        pendingConflictRequest = null;
+        conflictActionError = null;
+        await adoptConfigurationWorkspace(id, snapshot, configContent === submittedContent ? 'authoritative' : 'preserveTyping');
+        if (selectedId === id) {
+          recentConflictChoice = { programId: id, operationId: request.operationId, undone: false };
+          selectedEditorConflictId = snapshot.state.workspace.editor.conflicts[0]?.conflictId ?? '';
+          selectedEditorPath = snapshot.state.workspace.editor.conflicts[0]?.semanticPath ?? '';
+        }
+      }, async (error) => {
+        if (selectedId !== id) return;
+        const pending = pendingConflictsByProgram.get(id);
+        if (pending?.action.kind === 'resolve'
+          && ['CONFIGURATION_STATE_STALE', 'CONFIGURATION_DRAFT_STALE'].includes(errorInfoOf(error).messageKey ?? '')) {
+          try {
+            const reference = pending.action.reference;
+            const latest = await api.getConfigurationWorkspace(id);
+            const same = latest.state.workspace.editor.conflicts.find((item) =>
+              item.reference.origin === reference.origin
+              && item.reference.conflictId === reference.conflictId
+              && item.reference.fingerprint === reference.fingerprint);
+            await adoptConfigurationWorkspace(id, latest, 'preserveTyping');
+            if (same) {
+              const retry: ResolveConfigurationConflictRequest = {
+                ...pending,
+                operationId: crypto.randomUUID(),
+                expectedStateRevision: latest.state.stateRevision,
+                ...(latest.editorSession && latest.editorSession.draftRevision > 0 ? {
+                  editorSessionId: latest.editorSession.sessionId,
+                  expectedDraftRevision: latest.editorSession.draftRevision,
+                } : { editorSessionId: undefined, expectedDraftRevision: undefined }),
+              };
+              pendingConflictRequest = retry;
+              conflictHistoryRecords.set(retry.operationId, same);
+              pendingConflictsByProgram.set(id, retry);
+              const submittedContent = configContent;
+              const resolved = await api.resolveConfigurationConflict(id, retry);
+              pendingConflictsByProgram.delete(id);
+              conflictErrorsByProgram.delete(id);
+              if (selectedId !== id) return;
+              pendingConflictRequest = null;
+              conflictActionError = null;
+              await adoptConfigurationWorkspace(id, resolved, configContent === submittedContent ? 'authoritative' : 'preserveTyping');
+              recentConflictChoice = { programId: id, operationId: retry.operationId, undone: false };
+              selectedEditorConflictId = resolved.state.workspace.editor.conflicts[0]?.conflictId ?? '';
+              selectedEditorPath = resolved.state.workspace.editor.conflicts[0]?.semanticPath ?? '';
+              return;
+            }
+            pendingConflictRequest = null;
+            pendingConflictsByProgram.delete(id);
+          } catch (retryError) {
+            error = retryError;
+          }
+        }
+        if (errorInfoOf(error).messageKey === 'CONFIGURATION_CONFLICT_STALE') {
+          pendingConflictsByProgram.delete(id);
+          pendingConflictRequest = null;
+          const latest = await api.getConfigurationWorkspace(id);
+          await adoptConfigurationWorkspace(id, latest, 'preserveTyping');
+        }
+        conflictActionError = { conflictId, message: configurationErrorInfo(error, 'configuration-rebase').message };
+        conflictErrorsByProgram.set(id, conflictActionError);
+      });
+    } finally {
+      resolvingConflictIds.delete(conflictId);
+    }
+  }
+
+  async function retryConfigurationConflict(conflictId: string) {
+    const request = pendingConflictRequest;
+    if (request && request.action.kind !== 'resolve') {
+      await historyConfigurationConflict(request.action.kind, request.action.resolutionOperationId);
+      return;
+    }
+    if (!request || request.action.kind !== 'resolve'
+      || `${request.action.reference.origin}:${request.action.reference.conflictId}` !== conflictId) return;
+    await resolveConfigurationConflict(new CustomEvent('resolve', {
+      detail: { conflictId, resolution: request.action.resolution },
+    }));
+  }
+
+  async function historyConfigurationConflict(kind: 'undo' | 'redo', operationId: string) {
     if (!selectedId || !configurationState) return;
     const id = selectedId;
-    await mutateConfiguration(
-      id,
-      'resolve-final-conflict',
-      async () => {
-        const snapshot = await api.resolveFinalConflict(
-          id,
-          event.detail.conflictId,
-          event.detail.resolution,
-          configurationState?.generation ?? 0,
-        );
-        await adoptConfigurationWorkspace(id, snapshot);
-      },
-      async (error) => {
-        reportConfigError(error, 'configuration-rebase', async () => { await resolveFinalConflict(event); });
-      },
-    );
+    await mutateConfiguration(id, `history-configuration-conflict-${kind}`, async () => {
+      if (!pendingConflictsByProgram.has(id)) await flushFinalEditorDraftBeforeUpstreamMutation(id);
+      if (selectedId !== id || !configurationState) return;
+      const pending = pendingConflictsByProgram.get(id);
+      if (pending && (pending.action.kind !== kind || !('resolutionOperationId' in pending.action)
+        || pending.action.resolutionOperationId !== operationId)) {
+        throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_PENDING' };
+      }
+      const request: ResolveConfigurationConflictRequest = pending ?? {
+      operationId: crypto.randomUUID(),
+      expectedStateRevision: configurationState.stateRevision,
+      ...(finalEditorSession && finalEditorSession.draftRevision > 0 ? {
+        editorSessionId: finalEditorSession.sessionId,
+        expectedDraftRevision: finalEditorSession.draftRevision,
+      } : {}),
+      action: { kind, resolutionOperationId: operationId },
+      };
+      pendingConflictsByProgram.set(id, request);
+      pendingConflictRequest = request;
+      const submittedContent = configContent;
+      const snapshot = await api.resolveConfigurationConflict(id, request);
+      pendingConflictsByProgram.delete(id);
+      conflictErrorsByProgram.delete(id);
+      if (selectedId !== id) return;
+      pendingConflictRequest = null;
+      conflictActionError = null;
+      await adoptConfigurationWorkspace(id, snapshot, configContent === submittedContent ? 'authoritative' : 'preserveTyping');
+      if (selectedId === id) {
+        selectedEditorConflictId = snapshot.state.workspace.editor.conflicts[0]?.conflictId ?? '';
+        selectedEditorPath = snapshot.state.workspace.editor.conflicts[0]?.semanticPath ?? '';
+      }
+    }, async (error) => {
+      const conflict = conflictHistoryRecords.get(operationId);
+      if (!conflict) return;
+      const failure = { conflictId: conflict.conflictId, message: configurationErrorInfo(error, 'configuration-rebase').message };
+      conflictErrorsByProgram.set(id, failure);
+      if (selectedId === id) {
+        conflictActionError = failure;
+        selectedEditorConflictId = conflict.conflictId;
+      }
+    });
   }
 
   async function discardFinalEditorDraft() {
@@ -6001,13 +6147,13 @@
                 workspace={configurationState.workspace}
                 draft={finalEditorSession}
                 selectedPath={selectedEditorPath}
+                selectedConflictId={activeFinalMarkerId}
                 disabled={!!busy || !canEditConfigurationByLicense}
                 draftDirty={configEditorDirty}
                 syntaxInvalid={configurationSyntaxInvalid}
                 editorHasErrors={configurationEditorHasErrors}
                 on:focusPath={(event) => { void focusFinalConfigurationPath(event.detail.path); }}
-                on:resolveConflict={resolveFinalConflict}
-                on:resolveDraftConflict={resolveFinalEditorConflict}
+                on:selectConflict={(event) => { selectedEditorConflictId = event.detail.conflictId; void focusFinalConfigurationPath(event.detail.path); }}
                 on:rebaseDraft={() => void rebaseFinalEditorDraft()}
                 on:resumeDraft={resumeFinalEditorDraft}
                 on:discardDraft={() => void discardFinalEditorDraft()}
@@ -6044,13 +6190,16 @@
                       activeMarkerId={activeFinalMarkerId}
                       focusSemanticPath={focusSemanticPath}
                       markerActionsDisabled={!!busy || !canEditConfigurationByLicense}
+                      conflictResolutionId={recentConflictChoice?.programId === selectedId ? recentConflictChoice.operationId : ''}
                       on:retrySchema={retryConfigurationSchema}
                       on:save={saveConfigurationFromEditor}
                       on:syntaxStatus={(event) => { configSyntaxStatus = event.detail; }}
                       on:diagnosticStatus={(event) => { configDiagnosticStatus = event.detail; }}
-                      on:resolveMarker={resolveFinalEditorConflict}
-                      on:pathFocus={(event) => { pathFocusMessage = event.detail.found ? '' : 'Unable to locate this semantic path in the current document.'; }}
-                      on:markerPathSelected={(event) => { selectedEditorPath = event.detail.path; void focusFinalConfigurationPath(event.detail.path); }}
+                      on:resolveMarker={resolveConfigurationConflict}
+                      on:retryMarker={(event) => void retryConfigurationConflict(event.detail.conflictId)}
+                      on:historyConflict={(event) => void historyConfigurationConflict(event.detail.kind, event.detail.operationId)}
+                      on:pathFocus={(event) => { pathFocusMessage = event.detail.found ? '' : 'Fix the document format to locate this setting.'; }}
+                      on:markerPathSelected={(event) => { selectedEditorConflictId = event.detail.conflictId; selectedEditorPath = event.detail.path; void focusFinalConfigurationPath(event.detail.path); }}
                     />
                   {/if}
                   <ResizeSeparator label={$t('Resize panel')} value={detailConfigHeight ?? 720} min={detailPaneResizeMinHeight} max={detailPaneResizeMaxHeight} onPointerDown={(event) => beginResizeFromHandle(event, 'detail:config')} onKeyDown={(event) => handleResizeKeydown(event, 'detail:config')} />

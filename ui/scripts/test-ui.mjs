@@ -149,16 +149,23 @@ for (const [language, content, expected] of [
 ]) {
   const range = resolveConfigurationMarkerRange(language, content, [], ['outbounds', '1', 'server']);
   assert.equal(content.slice(range.from, range.to), expected);
-  assert.equal(range.exact, true);
-  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '9', 'server']).exact, false);
-  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '01', 'server']).exact, false);
+  assert.equal(range.status, 'exact');
+  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '9', 'server']).status, 'parentAnchor');
+  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '01', 'server']).status, 'parentAnchor');
 }
 const nestedMarker = '{"a":{"value":1},"b":{"value":2},"literal[key]":3,"0":4}';
 for (const [path, expected] of [[['b', 'value'], '2'], [['literal[key]'], '3'], [['0'], '4']]) {
   const range = resolveConfigurationMarkerRange('jsonc', nestedMarker, [], path);
   assert.equal(nestedMarker.slice(range.from, range.to), expected);
-  assert.equal(range.exact, true);
+  assert.equal(range.status, 'exact');
 }
+const deletedJson = '{"log":{"level":"info"}}';
+const deletedRange = resolveConfigurationMarkerRange('jsonc', deletedJson, [], ['log', 'timestamp']);
+assert.equal(deletedRange.status, 'parentAnchor');
+assert.equal(deletedJson.slice(deletedRange.from, deletedRange.to), '}');
+assert.equal(resolveConfigurationMarkerRange('jsonc', '{"log":', [], ['log', 'timestamp']).status, 'documentUnavailable');
+assert.equal(resolveConfigurationMarkerRange('jsonc', '{"outbounds":[{"tag":"edge"},{"tag":"edge"}]}', identityMarkerPath).status, 'documentUnavailable');
+assert.equal(resolveConfigurationMarkerRange('yaml', 'outbounds:\n  - tag: edge\n  - tag: edge\n', identityMarkerPath).status, 'documentUnavailable');
 const markerYamlRange = resolveConfigurationMarkerRange('yaml', markerYaml, identityMarkerPath);
 assert.equal(markerYaml.slice(markerYamlRange.from, markerYamlRange.to), 'edge.example');
 assert.deepEqual(
@@ -533,6 +540,21 @@ globalThis.localStorage = {
 globalThis.document = { documentElement: { lang: '' } };
 const { hasChineseTranslation } = await import('../src/i18n.ts');
 for (const message of [
+  'setting needs a choice',
+  'settings need a choice',
+  'Updated configuration',
+  'Your edit',
+  'Original value',
+  'Accept updated',
+  'Keep mine',
+  'Merge manually',
+  'Merged JSON value',
+  'Merged YAML value',
+  'Enter a valid JSON value for this path.',
+  'Enter a valid YAML value for this path.',
+  'This field was deleted.',
+  'Retry the pending choice before continuing.',
+  'Fix the document format to locate this setting.',
   'Check completed.',
   'The program reported an unsupported field. Review this configuration.',
   'The program reported a value with the wrong type.',

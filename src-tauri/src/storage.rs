@@ -133,6 +133,12 @@ struct ConfigurationWorkspaceTransactionMarker {
 }
 
 #[derive(Clone)]
+enum EditorCommit {
+    Rebase,
+    Consume(u64),
+    Replace(Option<u64>),
+}
+
 pub struct FileStore {
     root: Arc<PathBuf>,
     configuration_writes: Arc<tokio::sync::Mutex<()>>,
@@ -281,7 +287,7 @@ impl FileStore {
         state: &ConfigurationState,
         expected_state_revision: Option<u64>,
     ) -> Result<()> {
-        self.save_configuration_workspace(id, state, expected_state_revision, None)
+        self.save_configuration_workspace(id, state, expected_state_revision, EditorCommit::Rebase)
             .await
     }
 
@@ -297,7 +303,23 @@ impl FileStore {
             id,
             state,
             Some(expected_state_revision),
-            expected_draft_revision,
+            expected_draft_revision.map_or(EditorCommit::Rebase, EditorCommit::Consume),
+        )
+        .await
+    }
+
+    pub async fn save_configuration_conflict_state(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+        expected_state_revision: u64,
+        expected_draft_revision: Option<u64>,
+    ) -> Result<()> {
+        self.save_configuration_workspace(
+            id,
+            state,
+            Some(expected_state_revision),
+            EditorCommit::Replace(expected_draft_revision),
         )
         .await
     }
@@ -307,7 +329,7 @@ impl FileStore {
         id: &ProgramId,
         state: &ConfigurationState,
         expected_state_revision: Option<u64>,
-        consume_draft_revision: Option<u64>,
+        editor_commit: EditorCommit,
     ) -> Result<()> {
         let _write = self.configuration_writes.lock().await;
         let path = self.configuration_state_path(id);
@@ -325,30 +347,36 @@ impl FileStore {
             {
                 return Err(configuration_state_stale());
             }
-            state.editor_session = current
+            let current_draft = current
                 .as_ref()
                 .and_then(|state| state.editor_session.clone());
-            if let Some(expected) = consume_draft_revision {
-                if state
-                    .editor_session
-                    .as_ref()
-                    .map(|draft| draft.draft_revision)
-                    != Some(expected)
-                {
-                    return Err(configuration_draft_stale());
+            match editor_commit {
+                EditorCommit::Replace(expected) => {
+                    if current_draft.as_ref().map(|draft| draft.draft_revision) != expected {
+                        return Err(configuration_draft_stale());
+                    }
                 }
-                state.editor_session = None;
-            } else if let Some(draft) = state.editor_session.as_mut() {
-                let before = draft.clone();
-                camellia_nexus_core::rebase_final_editor_session(
-                    draft,
-                    state.format,
-                    &state.desired.content,
-                    state.state_revision,
-                    state.generation,
-                )?;
-                if *draft != before {
-                    draft.draft_revision = before.draft_revision.saturating_add(1);
+                EditorCommit::Consume(expected) => {
+                    if current_draft.as_ref().map(|draft| draft.draft_revision) != Some(expected) {
+                        return Err(configuration_draft_stale());
+                    }
+                    state.editor_session = None;
+                }
+                EditorCommit::Rebase => {
+                    state.editor_session = current_draft;
+                    if let Some(draft) = state.editor_session.as_mut() {
+                        let before = draft.clone();
+                        camellia_nexus_core::rebase_final_editor_session(
+                            draft,
+                            state.format,
+                            &state.desired.content,
+                            state.state_revision,
+                            state.generation,
+                        )?;
+                        if *draft != before {
+                            draft.draft_revision = before.draft_revision.saturating_add(1);
+                        }
+                    }
                 }
             }
             fs::create_dir_all(&sidecar_root)?;

@@ -3,8 +3,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+mod conflict_operations;
 mod operations;
 mod upstream;
+pub use conflict_operations::*;
 pub use operations::*;
 pub use upstream::{SourceUpdateKind, UpstreamState};
 
@@ -3552,6 +3554,8 @@ pub struct ConfigurationState {
     pub upstream: UpstreamState,
     pub final_edit: FinalEditState,
     pub operation_receipts: Vec<ConfigurationOperationReceipt>,
+    #[serde(default)]
+    pub conflict_operations: Vec<ConfigurationConflictReceipt>,
     pub desired: ConfigurationCandidate,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editor_session: Option<FinalEditorSession>,
@@ -3606,6 +3610,7 @@ impl ConfigurationState {
             upstream,
             final_edit: FinalEditState::default(),
             operation_receipts: Vec::new(),
+            conflict_operations: Vec::new(),
             desired: candidate,
             editor_session: None,
             applied: None,
@@ -4134,6 +4139,28 @@ fn build_configuration_workspace(state: &ConfigurationState) -> ConfigurationWor
         &final_conflicts,
     );
     let candidate_saved = state.candidate_is_saved();
+    let draft_needs_choice = state
+        .editor_session
+        .as_ref()
+        .is_some_and(|draft| draft.rebase_required || !draft.unresolved_conflict_ids.is_empty());
+    if draft_needs_choice {
+        blockers.push(ConfigurationGateBlocker {
+            code: "FINAL_EDIT_CONFLICT".into(),
+            details: None,
+            message_key: "FINAL_EDIT_CONFLICT".into(),
+            scope: ConfigurationIssueScope {
+                surface: ConfigurationSurface::Configuration,
+                owner_id: None,
+            },
+            semantic_path: None,
+            blocks: vec![
+                ConfigurationGate::Save,
+                ConfigurationGate::Validate,
+                ConfigurationGate::Apply,
+            ],
+            recovery_action: ConfigurationRecoveryAction::OpenFinalConfiguration,
+        });
+    }
     if !candidate_saved
         && !blockers
             .iter()
@@ -4191,13 +4218,14 @@ fn build_configuration_workspace(state: &ConfigurationState) -> ConfigurationWor
         .conflicts
         .iter()
         .any(|conflict| conflict.severity == ConflictSeverity::Error);
-    let edit_status = if has_blocking_conflict || !state.final_edit.conflicts.is_empty() {
-        FinalEditStatus::Conflict
-    } else if state.final_edit.edits.is_empty() {
-        FinalEditStatus::Clean
-    } else {
-        FinalEditStatus::Modified
-    };
+    let edit_status =
+        if draft_needs_choice || has_blocking_conflict || !state.final_edit.conflicts.is_empty() {
+            FinalEditStatus::Conflict
+        } else if state.final_edit.edits.is_empty() {
+            FinalEditStatus::Clean
+        } else {
+            FinalEditStatus::Modified
+        };
     let applied_matches = state.applied.as_ref().is_some_and(|applied| {
         applied.revision.content_hash == state.desired.revision.content_hash
             && applied.compatibility_profile_hash == state.desired.compatibility_profile_hash
@@ -4271,16 +4299,23 @@ fn build_configuration_workspace(state: &ConfigurationState) -> ConfigurationWor
         .final_edit
         .conflicts
         .iter()
-        .map(|conflict| FinalConflictProjection {
-            conflict_id: conflict.conflict_id.clone(),
-            semantic_path: display_semantic_path(&conflict.path),
-            segments: conflict.path.clone(),
-            kind: conflict.kind,
-            base_value: conflict.base_value.clone(),
-            upstream_value: conflict.upstream_value.clone(),
-            user_value: conflict.user_value.clone(),
-            can_merge: conflict.can_merge,
+        .map(|conflict| {
+            project_configuration_conflict(ConfigurationConflictOrigin::Candidate, conflict)
         })
+        .chain(state.editor_session.iter().flat_map(|draft| {
+            draft
+                .conflicts
+                .iter()
+                .filter(|conflict| {
+                    !draft.rebase_required
+                        && draft
+                            .unresolved_conflict_ids
+                            .contains(&conflict.conflict_id)
+                })
+                .map(|conflict| {
+                    project_configuration_conflict(ConfigurationConflictOrigin::Draft, conflict)
+                })
+        }))
         .collect();
     let editor = ConfigurationEditorView {
         document: ConfigurationEditorDocument {
@@ -4847,6 +4882,7 @@ pub struct FinalChangeProjection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FinalConflictProjection {
+    pub reference: ConfigurationConflictReference,
     pub conflict_id: String,
     pub semantic_path: String,
     pub segments: SemanticPath,
@@ -6647,6 +6683,51 @@ mod tests {
 
         let original = conflicted_state();
         let conflict_id = original.final_edit.conflicts[0].conflict_id.clone();
+        let mut mixed = original.clone();
+        let conflict = mixed.final_edit.conflicts[0].clone();
+        mixed.editor_session = Some(FinalEditorSession {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            draft_revision: 1,
+            based_on_state_revision: mixed.state_revision,
+            based_on_candidate_generation: mixed.generation,
+            base_content: mixed.desired.content.clone(),
+            working_content: mixed.desired.content.clone(),
+            conflicts: vec![conflict.clone()],
+            resolutions: BTreeMap::new(),
+            unresolved_conflict_ids: vec![conflict.conflict_id.clone()],
+            rebase_required: false,
+            updated_unix_ms: 1,
+        });
+        let projected = mixed.view().workspace.editor.conflicts;
+        assert_eq!(projected.len(), 2);
+        assert_ne!(projected[0].conflict_id, projected[1].conflict_id);
+        assert_eq!(
+            projected[0].reference.conflict_id,
+            projected[1].reference.conflict_id
+        );
+        let session = mixed.editor_session.as_ref().unwrap();
+        let draft_request = ResolveConfigurationConflictRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            expected_state_revision: mixed.state_revision,
+            editor_session_id: Some(session.session_id.clone()),
+            expected_draft_revision: Some(session.draft_revision),
+            action: ConfigurationConflictAction::Resolve {
+                reference: projected[1].reference.clone(),
+                resolution: FinalConflictResolution::KeepMine,
+            },
+        };
+        mixed
+            .resolve_configuration_conflict(draft_request, 4)
+            .unwrap();
+        assert_eq!(mixed.final_edit.conflicts.len(), 1);
+        assert!(
+            mixed
+                .editor_session
+                .as_ref()
+                .unwrap()
+                .unresolved_conflict_ids
+                .is_empty()
+        );
         let unchanged = original.clone();
         assert_eq!(original, unchanged, "Cancel performs no Core transaction");
 
@@ -6685,6 +6766,92 @@ mod tests {
                 .expect("merged");
         assert_eq!(merged_value["route"]["final"], "merged");
         assert_eq!(merged_value["log"]["loglevel"], "debug");
+
+        let mut transactional = conflicted_state();
+        let conflict = transactional.final_edit.conflicts[0].clone();
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let request = ResolveConfigurationConflictRequest {
+            operation_id: operation_id.clone(),
+            expected_state_revision: transactional.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            action: ConfigurationConflictAction::Resolve {
+                reference: ConfigurationConflictReference::new(
+                    ConfigurationConflictOrigin::Candidate,
+                    &conflict,
+                ),
+                resolution: FinalConflictResolution::KeepMine,
+            },
+        };
+        assert!(
+            transactional
+                .resolve_configuration_conflict(request.clone(), 5)
+                .unwrap()
+        );
+        let committed = transactional.clone();
+        assert!(
+            !transactional
+                .resolve_configuration_conflict(request.clone(), 6)
+                .unwrap()
+        );
+        assert_eq!(transactional, committed);
+        let mut mismatched = request;
+        mismatched.action = ConfigurationConflictAction::Resolve {
+            reference: ConfigurationConflictReference::new(
+                ConfigurationConflictOrigin::Candidate,
+                &conflict,
+            ),
+            resolution: FinalConflictResolution::AcceptUpstream,
+        };
+        assert_eq!(
+            transactional
+                .resolve_configuration_conflict(mismatched, 6)
+                .unwrap_err()
+                .message_key
+                .as_deref(),
+            Some("CONFIGURATION_OPERATION_MISMATCH"),
+        );
+        let undo = ResolveConfigurationConflictRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            expected_state_revision: transactional.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            action: ConfigurationConflictAction::Undo {
+                resolution_operation_id: operation_id.clone(),
+            },
+        };
+        assert!(
+            transactional
+                .resolve_configuration_conflict(undo, 7)
+                .unwrap()
+        );
+        assert_eq!(transactional.final_edit.conflicts.len(), 1);
+        assert_eq!(
+            transactional.final_edit.conflicts[0].semantic_path,
+            conflict.semantic_path
+        );
+        let redo = ResolveConfigurationConflictRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            expected_state_revision: transactional.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            action: ConfigurationConflictAction::Redo {
+                resolution_operation_id: operation_id,
+            },
+        };
+        assert!(
+            transactional
+                .resolve_configuration_conflict(redo, 8)
+                .unwrap()
+        );
+        assert!(transactional.final_edit.conflicts.is_empty());
+        let output = parse_semantic_document(
+            transactional.format,
+            transactional.desired.content.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(output["route"]["final"], "mine");
+        assert_eq!(output["log"]["loglevel"], "debug");
     }
 
     #[test]

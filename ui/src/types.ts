@@ -306,7 +306,7 @@ export interface FinalEditorSession {
   basedOnCandidateGeneration: number;
   baseContent: string;
   workingContent: string;
-  conflicts: FinalConflictProjection[];
+  conflicts: FinalMergeConflict[];
   resolutions: Record<string, FinalConflictResolution>;
   unresolvedConflictIds: string[];
   rebaseRequired: boolean;
@@ -437,7 +437,7 @@ export interface FinalChangeProjection {
   issues: ConfigurationEditorIssue[];
 }
 export type FinalMergeConflictKind = 'addVsAdd' | 'modifyVsModify' | 'deleteVsModify' | 'modifyVsDelete' | 'sequence';
-export interface FinalConflictProjection {
+export interface FinalMergeConflict {
   conflictId: string;
   semanticPath: string;
   segments: SemanticPathSegment[];
@@ -446,6 +446,24 @@ export interface FinalConflictProjection {
   upstreamValue: SemanticValue;
   userValue: SemanticValue;
   canMerge: boolean;
+}
+export interface ConfigurationConflictReference {
+  origin: 'candidate' | 'draft';
+  conflictId: string;
+  fingerprint: string;
+}
+export interface FinalConflictProjection extends FinalMergeConflict {
+  reference: ConfigurationConflictReference;
+}
+export type ConfigurationConflictAction =
+  | { kind: 'resolve'; reference: ConfigurationConflictReference; resolution: FinalConflictResolution }
+  | { kind: 'undo' | 'redo'; resolutionOperationId: string };
+export interface ResolveConfigurationConflictRequest {
+  operationId: string;
+  expectedStateRevision: number;
+  editorSessionId?: string;
+  expectedDraftRevision?: number;
+  action: ConfigurationConflictAction;
 }
 export interface ConfigurationEditorView {
   document: { content: string; revision: ConfigurationRevision };

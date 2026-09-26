@@ -323,20 +323,8 @@ export const api = {
     }),
   rebaseConfigurationDraft: (programId: string, expectedRevision: number) =>
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('rebase_final_configuration_draft', { programId, expectedRevision }),
-  resolveConfigurationConflict: (programId: string, conflictId: string, resolution: import('./types').FinalConflictResolution, expectedRevision: number) =>
-    invoke<import('./types').ConfigurationWorkspaceSnapshot>('resolve_final_draft_conflict', {
-      programId,
-      request: { conflictId, resolution, expectedRevision },
-    }),
-  resolveFinalConflict: (
-    programId: string,
-    conflictId: string,
-    resolution: import('./types').FinalConflictResolution,
-    expectedGeneration: number,
-  ) => invoke<import('./types').ConfigurationWorkspaceSnapshot>('resolve_final_configuration_conflict', {
-    programId,
-    request: { conflictId, resolution, expectedGeneration },
-  }),
+  resolveConfigurationConflict: (programId: string, request: import('./types').ResolveConfigurationConflictRequest) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('resolve_configuration_conflict', { programId, request }),
   discardConfigurationDraft: (programId: string, expectedRevision: number) =>
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('discard_final_configuration_draft', {
       programId,

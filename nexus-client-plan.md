@@ -204,12 +204,21 @@ Apply marker 的 `Prepared` 和 `Committed` 阶段由 Controller 的稳定结果
 2. 一个主状态：Clean、Modified、Conflict、Ready to apply 或 Applied；
 3. 仅在真实问题存在时显示的紧凑摘要；
 4. 唯一最终候选 CodeEditor；
-5. 仅在选择改动或冲突路径时展开的路径检查器；
+5. 编辑器内仅展开一处冲突对比块；普通改动选中后才显示简短路径详情；
 6. `More`、`Revert` 和唯一主按钮 `Apply changes / Apply and restart`。
 
 普通 Upstream 字段不显示徽章。用户编辑使用低干扰 gutter 标记；merge conflict 使用琥珀色 marker；
-静态或 native 错误使用红色 marker。路径检查器中的技术 basis、hash、source id 和 native output 默认
-折叠。错误结构固定为简短结论、影响、一个恢复动作以及可折叠技术详情。
+静态或 native 错误使用红色 marker。顶部冲突摘要仅显示数量与前后导航。选中的冲突在编辑器内并排
+显示“更新后的配置”和“我的修改”，窄屏改为上下排列；接受更新、保留修改和手工合并均在这一处完成。
+空手工输入不代表删除，删除字段使用明确按钮。正常删除定位到父节点锚点，不报告路径定位故障。
+路径索引在同一文档投影中复用；只有当前展开的冲突生成值对比。技术 basis、hash、source id 和
+native output 默认折叠。错误结构固定为简短结论、影响、一个恢复动作以及可折叠技术详情。
+
+草稿和已保存编辑的冲突投影均携带内部归属、稳定冲突标识、内容指纹与预期 revision。行内按钮、导航
+和键盘使用同一个 `resolve_configuration_conflict` 入口。事务在程序配置 lease 中核对冲突与 CAS，
+原子保存候选、草稿和操作回执，再回投完整快照。相同请求重试返回已提交结果；同一个操作标识携带
+不同内容时拒绝。撤销与重做仅处理所选语义路径，最新上游改变时要求重新查看值。请求错误只显示在
+对应对比块，成功回投立即清除；其他校验错误保持独立。
 
 Compatibility 自动展示当前程序和已识别的稳定版本，不接受参考基线输入。默认只显示一个简洁结论和一个主操作：
 

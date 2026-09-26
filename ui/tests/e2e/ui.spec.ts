@@ -3213,7 +3213,7 @@ test('Final merge conflicts stay in Configuration while Intent controls remain r
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   const finalConfiguration = page.locator('.final-editor-workspace');
   await expect(finalConfiguration).toBeVisible();
-  await expect(finalConfiguration.getByText('Conflict', { exact: true }).first()).toBeVisible();
+  await expect(finalConfiguration.locator('.merge-summary')).toContainText('settings need a choice');
   await expect(finalConfiguration).toContainText('/log/loglevel');
   await expect(page.getByText('Saved candidate is ready to apply.', { exact: true })).toHaveCount(0);
   await expect(page.locator('.config-save')).toBeDisabled();
@@ -3228,12 +3228,78 @@ test('Final configuration can accept the updated upstream value without reopenin
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   const panel = page.locator('.final-editor-workspace');
-  await expect(panel.locator('.path-inspector')).toContainText('/log/loglevel');
-  await panel.locator('.path-inspector').getByRole('button', { name: 'Accept updated', exact: true }).click();
-  await expect(panel.getByText('Conflict', { exact: true })).toHaveCount(0);
+  const block = panel.locator('.cm-configuration-conflict-widget.expanded');
+  await expect(block).toContainText('/log/loglevel');
+  await block.getByRole('button', { name: 'Accept updated', exact: true }).click();
+  await expect(panel.locator('.merge-summary')).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"loglevel": "info"');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await expect(page.locator('#program-panel-intent').getByText('FINAL_EDIT_CONFLICT', { exact: true })).toHaveCount(0);
+});
+
+test('an inline conflict failure stays beside its choice and clears after retry', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_conflict_fail_once');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(block.getByRole('alert')).toBeVisible();
+  await expect(page.locator('#program-panel-configuration > .error-notice')).toHaveCount(0);
+  await block.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(block).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"loglevel": "debug"');
+  await expect(page.locator('#program-panel-configuration [role="alert"]')).toHaveCount(0);
+});
+
+test('a deleted final field locates its parent without a false missing path error', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_deleted_final_edit');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await page.locator('.cm-configuration-marker-line.cm-configuration-marker-source').click();
+  const inspector = page.locator('.path-inspector');
+  await expect(inspector).toContainText('/log/timestamp');
+  await inspector.getByRole('button', { name: 'Locate in editor' }).click();
+  await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
+  await expect(page.locator('.cm-configuration-source-widget')).toHaveCount(0);
+});
+
+test('a lost conflict response retries the committed request without another choice', async ({ page }) => {
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_conflict_response_lost');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(block.getByRole('alert')).toBeVisible();
+  await block.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(block).toHaveCount(0);
+  await expect(page.locator('.config-editor-resize .cm-content')).toContainText('debug');
+  await expect(page.locator('.cm-configuration-inline-error')).toHaveCount(0);
+});
+
+test('two conflict choices undo and redo in editor history order', async ({ page }) => {
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_two_final_conflicts');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const workspace = page.locator('.final-editor-workspace');
+  const block = workspace.locator('.cm-configuration-conflict-widget.expanded');
+  const shell = page.locator('.code-editor-shell');
+  await expect(workspace.locator('.merge-summary')).toContainText('2 settings need a choice');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await expect(block).toContainText('/route/final');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toHaveCount(0);
+  await shell.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await expect(block).toContainText('/route/final');
+  await shell.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('2 settings need a choice');
+  await shell.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await shell.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toHaveCount(0);
 });
 
 test('Final configuration keeps the effective document and merge resolution in one editor', async ({ page }) => {
@@ -3246,8 +3312,8 @@ test('Final configuration keeps the effective document and merge resolution in o
   await expect(workspace.getByRole('heading', { name: 'Final configuration', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Final configuration', exact: true })).toHaveCount(1);
   await expect(page.locator('.generated-config-note, .trace-table')).toHaveCount(0);
-  await expect(workspace.getByText('Conflict', { exact: true }).first()).toBeVisible();
-  await expect(workspace.locator('.path-inspector')).toContainText('/log/loglevel');
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('/log/loglevel');
   await expect(workspace.getByText('Save candidate, then validate before applying', { exact: true })).toHaveCount(0);
   const editor = page.getByRole('textbox', { name: 'Configuration editor' });
   const editorShell = page.locator('.code-editor-shell');
@@ -3256,11 +3322,11 @@ test('Final configuration keeps the effective document and merge resolution in o
   await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
     .toHaveCount(1);
 
-  await page.locator('.path-inspector').getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await workspace.locator('.cm-configuration-conflict-widget.expanded').getByRole('button', { name: 'Keep mine', exact: true }).click();
   await expect(workspace.getByText('Modified', { exact: true })).toBeVisible();
   await expect(editor).toContainText('"loglevel": "debug"');
   await expect(workspace.locator('.path-inspector')).toHaveCount(0);
-  await editorShell.locator('.cm-configuration-source-widget .cm-configuration-conflict-label').click();
+  await editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-source').click();
   await expect(workspace).toContainText('Upstream value');
   await expect(workspace).toContainText('Final value');
   await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
@@ -3273,20 +3339,17 @@ test('Final configuration keeps the effective document and merge resolution in o
 test('switching programs clears the previous editor path and location notice', async ({ page }) => {
   await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict');
   const editor = await openProgramConfiguration(page, 'xray-primary');
-  const inspector = page.locator('.final-editor-workspace .path-inspector');
-  await expect(inspector).toContainText('/log/loglevel');
+  const conflictBlock = page.locator('.final-editor-workspace .cm-configuration-conflict-widget.expanded');
+  await expect(conflictBlock).toContainText('/log/loglevel');
   await editor.fill('{"inbounds":[],"outbounds":[]}');
-  await inspector.getByRole('button', { name: 'Locate in editor' }).click();
-  await expect(page.locator('.config-path-focus-notice')).toContainText(
-    'Unable to locate this semantic path in the current document',
-  );
+  await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
 
   await page.locator('.program-item[data-program-id="sing-box-edge"]').click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
-  await expect(page.locator('.final-editor-workspace .path-inspector')).toContainText('/log/level');
-  await expect(page.locator('.final-editor-workspace .path-inspector')).not.toContainText('/log/loglevel');
+  await expect(page.locator('.final-editor-workspace .cm-configuration-conflict-widget.expanded')).toContainText('/log/level');
+  await expect(page.locator('.final-editor-workspace .cm-configuration-conflict-widget.expanded')).not.toContainText('/log/loglevel');
 });
 
 test('Final configuration manual merge starts with valid JSON and resolves through the selected editor path', async ({ page }) => {
@@ -3297,29 +3360,27 @@ test('Final configuration manual merge starts with valid JSON and resolves throu
 
   const workspace = page.locator('.final-editor-workspace');
   const editorShell = page.locator('.code-editor-shell');
-  const inspector = workspace.locator('.path-inspector');
-  const manualValue = inspector.getByLabel('Merge manually');
+  const block = workspace.locator('.cm-configuration-conflict-widget.expanded');
+  const manualValue = block.getByLabel('Merged JSON value');
   await expect(manualValue).toHaveCount(0);
-  await inspector.getByRole('button', { name: 'Merge manually', exact: true }).click();
+  await block.getByRole('button', { name: 'Merge manually', exact: true }).click();
   await expect(manualValue).toHaveValue('"debug"');
   await manualValue.fill('"warn"');
-  await inspector.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(workspace.getByRole('status').getByText('Conflict', { exact: true })).toBeVisible();
-  await inspector.getByRole('button', { name: 'Merge manually', exact: true }).click();
+  await block.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await block.getByRole('button', { name: 'Merge manually', exact: true }).click();
   await expect(manualValue).toHaveValue('"debug"');
-  await inspector.getByRole('button', { name: 'Locate in editor', exact: true }).click();
   await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
     .toHaveCount(1);
 
-  await inspector.getByRole('button', { name: 'Use merged value', exact: true }).click();
+  await manualValue.fill('"warn"');
+  await block.getByRole('button', { name: 'Use merged value', exact: true }).click();
   await expect(workspace.getByText('Modified', { exact: true })).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Configuration editor' }))
-    .toContainText('"loglevel": "debug"');
-  await expect(inspector).toContainText('Upstream value');
-  await expect(inspector).toContainText('Final value');
-  await expect(inspector.locator('.inline-error')).toHaveCount(0);
-  await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
-    .toHaveCount(1);
+    .toContainText('"loglevel": "warn"');
+  await expect(block).toHaveCount(0);
+  await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-conflict'))
+    .toHaveCount(0);
 });
 
 test('Final configuration keeps validation behind one Apply action', async ({ page }) => {
@@ -3354,8 +3415,27 @@ test('Final configuration editor remains reachable from compact mobile to wide d
     await expect(workspace).toBeVisible();
     await expect(editorShell).toBeVisible();
     await expectNoViewportOverflow(page);
+    const overflowingTabs = await page.locator('.program-tabs button').evaluateAll((buttons) => buttons
+      .filter((button) => Array.from(button.children).some((child) => {
+        if (getComputedStyle(child).display === 'none') return false;
+        const parent = button.getBoundingClientRect();
+        const bounds = child.getBoundingClientRect();
+        return bounds.left < parent.left - 1 || bounds.right > parent.right + 1;
+      }))
+      .map((button) => button.getAttribute('aria-label')));
+    expect(overflowingTabs).toEqual([]);
     const editorWidth = await editorShell.evaluate((element) => element.getBoundingClientRect().width);
     expect(editorWidth).toBeGreaterThan(0);
+    const mergeBounds = await workspace.locator('.cm-configuration-conflict-widget.expanded').evaluate((element) => {
+      const parent = element.closest('.code-editor-shell')!.getBoundingClientRect();
+      const children = [element, ...element.querySelectorAll('button, textarea, .cm-configuration-compare, pre')];
+      return children.map((child) => {
+        const rect = child.getBoundingClientRect();
+        return { tag: child.tagName, className: child.className, left: rect.left, right: rect.right, parentLeft: parent.left, parentRight: parent.right,
+          inside: rect.left >= parent.left - 1 && rect.right <= parent.right + 1 };
+      });
+    });
+    expect(mergeBounds.filter((item) => !item.inside)).toEqual([]);
     if (width <= 680) {
       const navigationBar = page.locator('.mobile-nav-bar');
       await expect(navigationBar).toBeVisible();
@@ -3396,11 +3476,11 @@ test('Final configuration and Compatibility validation rerender fully in Chinese
 
   const workspace = page.locator('.final-editor-workspace');
   await expect(workspace.getByRole('heading', { name: '最终配置', exact: true })).toBeVisible();
-  await expect(workspace).toContainText('存在冲突');
+  await expect(workspace.locator('.merge-summary')).toContainText('处设置需要选择');
   await expect(workspace).toContainText('更新后的配置');
   await expect(workspace).toContainText('你的修改');
   await expect(workspace).toContainText('手工合并');
-  await expect(workspace.locator('.inspector-summary')).toContainText('上游配置和你的修改同时更改了此路径');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toBeVisible();
   await expect(workspace).not.toContainText('Merge manually');
   await expect(workspace).not.toContainText('The updated configuration and your edit changed the same path');
   await page.getByRole('tab', { name: '兼容性', exact: true }).click();
@@ -3479,11 +3559,11 @@ test('Final editor continuously rebases latest upstream changes and conflicts on
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
 
   const workspace = page.locator('.final-editor-workspace');
-  await expect(workspace.getByText('Conflict', { exact: true }).first()).toBeVisible();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
   await expect(editor).toContainText('"level": "fatal"');
   await expect(editor).toContainText('"manual_extension"');
-  await expect(workspace.locator('.path-inspector')).toContainText('/log/level');
-  await expect(workspace.locator('.path-inspector')).toContainText('debug');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('/log/level');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('debug');
   await expect(page.locator('.config-save')).toBeDisabled();
   await expectNoViewportOverflow(page);
 });
@@ -3784,21 +3864,21 @@ test('a committed Final edit conflicts only when upstream changes the same path'
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await page.getByLabel('Log level').selectOption('error');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
-  await expect(page.locator('.final-editor-workspace').getByText('Conflict', { exact: true }).first()).toBeVisible();
+  await expect(page.locator('.final-editor-workspace .merge-summary')).toContainText('1 setting needs a choice');
   await expect(editor).toContainText('"loglevel": "error"');
-  await expect(page.locator('.path-inspector')).toContainText('Your edit');
-  await expect(page.locator('.path-inspector')).toContainText('debug');
+  await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('Your edit');
+  await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('debug');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await page.getByLabel('Domain strategy').selectOption('AsIs');
   await page.getByLabel('Log level').selectOption('info');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toContainText('"loglevel": "info"');
-  const inspector = page.locator('.path-inspector');
-  await expect(inspector).toContainText('debug');
-  await inspector.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await expect(block).toContainText('debug');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
   await expect(editor).toContainText('"loglevel": "debug"');
   await expect(editor).toContainText('"domainStrategy": "AsIs"');
-  await expect(page.locator('.final-editor-workspace').getByText('Conflict', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.final-editor-workspace .merge-summary')).toHaveCount(0);
 });
 
 test('managed Dashboard ownership stays in Details and never leaks container conflicts into Intent', async ({ page }) => {
@@ -4054,9 +4134,9 @@ test('redundant draft cleanup reloads a concurrently changed conflict instead of
   const editor = await openProgramConfiguration(page, 'xray-primary');
   const workspace = page.locator('.final-editor-workspace');
 
-  await expect(workspace.getByText('Conflict', { exact: true }).first()).toBeVisible();
-  await expect(workspace.locator('.path-inspector')).toContainText('/log/loglevel');
-  await expect(workspace.locator('.path-inspector')).toContainText('Your edit');
+  await expect(workspace.locator('.merge-summary')).toBeVisible();
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('/log/loglevel');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('Your edit');
   await expect(editor).toContainText('"loglevel": "warning"');
   await expect(page.getByRole('button', { name: 'Apply and restart', exact: true })).toBeDisabled();
 });
@@ -4068,18 +4148,16 @@ test('Final draft conflict markers resolve inline and stay coherent across edito
   const shell = page.locator('.code-editor-shell');
   const widget = shell.locator('.cm-configuration-conflict-widget');
 
-  await expect(page.locator('.path-inspector')).toContainText('Conflict');
-  await expect(page.locator('.path-inspector').getByText(/\/route\/final/)).toBeVisible();
+  await expect(widget).toContainText('/route/final');
   await expect(shell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
     .toHaveCount(1);
-  await expect(widget).toContainText('Conflict: /route/final');
-  await expect(widget.getByRole('button', { name: 'Keep Mine', exact: true })).toBeVisible();
+  await expect(widget.getByRole('button', { name: 'Keep mine', exact: true })).toBeVisible();
   await expect(widget.getByRole('button', { name: 'Accept updated', exact: true })).toBeVisible();
   await expect(editor).toContainText('source-route');
   await expectAccessible(page, '.code-editor-shell');
 
-  await widget.getByRole('button', { name: 'Keep Mine', exact: true }).click();
-  await expect(page.locator('.path-inspector')).toHaveCount(0);
+  await widget.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(widget).toHaveCount(0);
   await expect(editor).toContainText('mine-route');
   const undo = shell.getByRole('button', { name: 'Undo', exact: true });
   const redo = shell.getByRole('button', { name: 'Redo', exact: true });
@@ -4087,13 +4165,13 @@ test('Final draft conflict markers resolve inline and stay coherent across edito
 
   await undo.click();
   await expect(editor).toContainText('source-route');
-  await expect(page.locator('.path-inspector')).toContainText('Conflict');
+  await expect(page.locator('.merge-summary')).toBeVisible();
   await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(1);
 
   await expect(redo).toBeEnabled();
   await redo.click();
   await expect(editor).toContainText('mine-route');
-  await expect(page.locator('.path-inspector')).toHaveCount(0);
+  await expect(page.locator('.merge-summary')).toHaveCount(0);
   await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(0);
   await shell.screenshot({ path: testInfo.outputPath('configuration-final-draft-conflict-inline.png') });
 });
