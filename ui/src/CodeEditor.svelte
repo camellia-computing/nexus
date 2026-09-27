@@ -273,12 +273,18 @@
         const fit = () => {
           if (!container.isConnected) return;
           container.style.transform = '';
-          const left = container.getBoundingClientRect().left;
           const bounds = shell.getBoundingClientRect();
-          container.style.transform = `translateX(-${Math.max(0, left - bounds.left - 16)}px)`;
+          const gutterRight = shell.querySelector<HTMLElement>('.cm-gutters')?.getBoundingClientRect().right ?? bounds.left;
+          const targetLeft = Math.max(bounds.left + 8, gutterRight + 6);
+          const width = Math.min(720, Math.max(80, bounds.right - targetLeft - 10));
+          container.style.width = `${width}px`;
+          container.style.maxWidth = `${width}px`;
+          container.style.transform = `translateX(${targetLeft - container.getBoundingClientRect().left}px)`;
         };
         this.resizeObserver = new ResizeObserver(fit);
         this.resizeObserver.observe(shell);
+        const gutter = shell.querySelector<HTMLElement>('.cm-gutters');
+        if (gutter) this.resizeObserver.observe(gutter);
         fit();
       });
       const heading = document.createElement('strong');
@@ -334,7 +340,13 @@
         editorManualMergeValues.set(this.marker.id, this.marker.conflict?.userValue.state === 'present'
           ? (language === 'yaml' ? stringifyYaml(this.marker.conflict.userValue.value) : JSON.stringify(this.marker.conflict.userValue.value, null, 2) ?? 'null') : '');
         synchronizeActiveMarker();
+        requestAnimationFrame(() => {
+          const input = view?.dom.querySelector<HTMLTextAreaElement>('.cm-configuration-conflict-widget.expanded .cm-configuration-merge-input');
+          input?.focus({ preventScroll: true });
+          input?.scrollIntoView({ block: 'center', inline: 'nearest' });
+        });
       });
+      manual.classList.add('cm-configuration-merge-toggle');
       choices.append(manual);
       container.append(choices);
       if (editorManualMergeOpen.has(this.marker.id)) {
@@ -365,6 +377,9 @@
             editorManualMergeOpen.delete(this.marker.id);
             editorManualMergeValues.delete(this.marker.id);
             synchronizeActiveMarker();
+            requestAnimationFrame(() => {
+              view?.dom.querySelector<HTMLButtonElement>('.cm-configuration-conflict-widget.expanded .cm-configuration-merge-toggle')?.focus({ preventScroll: true });
+            });
           }),
         );
         container.append(input, error, actions);

@@ -3365,8 +3365,15 @@ test('Final configuration manual merge starts with valid JSON and resolves throu
   await expect(manualValue).toHaveCount(0);
   await block.getByRole('button', { name: 'Merge manually', exact: true }).click();
   await expect(manualValue).toHaveValue('"debug"');
+  await expect(manualValue).toBeFocused();
+  expect(await manualValue.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const scroller = element.closest('.cm-scroller')!.getBoundingClientRect();
+    return bounds.top >= scroller.top && bounds.bottom <= scroller.bottom;
+  })).toBe(true);
   await manualValue.fill('"warn"');
   await block.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(block.getByRole('button', { name: 'Merge manually', exact: true })).toBeFocused();
   await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
   await block.getByRole('button', { name: 'Merge manually', exact: true }).click();
   await expect(manualValue).toHaveValue('"debug"');
@@ -3428,14 +3435,17 @@ test('Final configuration editor remains reachable from compact mobile to wide d
     expect(editorWidth).toBeGreaterThan(0);
     const mergeBounds = await workspace.locator('.cm-configuration-conflict-widget.expanded').evaluate((element) => {
       const parent = element.closest('.code-editor-shell')!.getBoundingClientRect();
+      const gutter = element.closest('.code-editor-shell')!.querySelector('.cm-gutters')!.getBoundingClientRect();
       const children = [element, ...element.querySelectorAll('button, textarea, .cm-configuration-compare, pre')];
       return children.map((child) => {
         const rect = child.getBoundingClientRect();
         return { tag: child.tagName, className: child.className, left: rect.left, right: rect.right, parentLeft: parent.left, parentRight: parent.right,
-          inside: rect.left >= parent.left - 1 && rect.right <= parent.right + 1 };
+          inside: rect.left >= parent.left - 1 && rect.right <= parent.right + 1,
+          clearsGutter: rect.left >= gutter.right + 1 };
       });
     });
     expect(mergeBounds.filter((item) => !item.inside)).toEqual([]);
+    expect(mergeBounds.filter((item) => !item.clearsGutter)).toEqual([]);
     if (width <= 680) {
       const navigationBar = page.locator('.mobile-nav-bar');
       await expect(navigationBar).toBeVisible();
