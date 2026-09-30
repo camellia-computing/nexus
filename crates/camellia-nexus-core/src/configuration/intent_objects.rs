@@ -628,7 +628,7 @@ pub fn project_intent_objects(
             !protocols.is_empty() && !descriptor.protocols.is_empty()
         };
         descriptor.fields.retain_mut(|field| {
-            if matches!(field.key.as_str(), "protocol" | "username" | "password") {
+            if field.key == "protocol" {
                 return true;
             }
             let mut values = object_probe_values(descriptor.kind, &descriptor.protocols);
@@ -664,6 +664,8 @@ pub fn project_intent_objects(
                     "timeout" => json!(5000),
                     "serverPort" => json!(53),
                     "port" => json!(7890),
+                    "username" => json!("intent-probe"),
+                    "password" => json!("intent-probe-password"),
                     "value" => json!("example.invalid"),
                     "target" => json!("intent-probe"),
                     _ => json!(true),
@@ -674,6 +676,13 @@ pub fn project_intent_objects(
                 .filter(|sample| {
                     let mut probe = values.clone();
                     probe.insert(field.key.clone(), sample.clone());
+                    if descriptor.kind == IntentObjectKind::Listener
+                        && (matches!(field.key.as_str(), "username" | "password")
+                            || (field.key == "access" && sample == &json!("lan")))
+                    {
+                        probe.insert("username".into(), json!("intent-probe"));
+                        probe.insert("password".into(), json!("intent-probe-password"));
+                    }
                     compile_object(profile, descriptor.kind, &probe, None).is_ok()
                 })
                 .collect::<Vec<_>>();

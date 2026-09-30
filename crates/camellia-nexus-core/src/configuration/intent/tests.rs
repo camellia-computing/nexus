@@ -33,6 +33,42 @@ fn latest(program: ProgramKind) -> CoreCapabilityProfile {
 }
 
 #[test]
+fn listener_access_and_authentication_options_use_complete_capability_probes() {
+    let knowledge = embedded_core_knowledge().unwrap();
+    for kind in [ProgramKind::SingBox, ProgramKind::Xray, ProgramKind::Mihomo] {
+        for release in &knowledge.program(kind).unwrap().releases {
+            let profile = profile(kind, &release.version);
+            let state = state(&profile, json!({}));
+            let mut view = state.view();
+            project_intent_objects(&profile, &state, &mut view).unwrap();
+            let listener = view
+                .intent_object_descriptors
+                .iter()
+                .find(|descriptor| descriptor.kind == IntentObjectKind::Listener)
+                .unwrap();
+            let access = listener
+                .fields
+                .iter()
+                .find(|field| field.key == "access")
+                .unwrap();
+            assert_eq!(
+                access.allowed_values,
+                ["local", "lan"],
+                "{kind:?} {}",
+                release.version
+            );
+            for key in ["username", "password"] {
+                assert!(
+                    listener.fields.iter().any(|field| field.key == key),
+                    "{kind:?} {} {key}",
+                    release.version
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn listener_authentication_edits_preserve_other_accounts_and_custom_fields() {
     for kind in [ProgramKind::SingBox, ProgramKind::Xray] {
         let profile = latest(kind);
