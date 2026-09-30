@@ -694,6 +694,7 @@
   }
 
   let pathIndex: { language: ConfigurationLanguage; content: string; locate: ReturnType<typeof createConfigurationPathIndex> } | undefined;
+  let markerRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   function configurationPathIndex(sourceLanguage: ConfigurationLanguage, content: string) {
     if (!pathIndex || pathIndex.language !== sourceLanguage || pathIndex.content !== content) {
       pathIndex = { language: sourceLanguage, content, locate: createConfigurationPathIndex(sourceLanguage, content) };
@@ -706,8 +707,10 @@
     sourceLanguage: ConfigurationLanguage,
     editorMarkers: ConfigurationEditorMarker[],
   ): Diagnostic[] {
+    const diagnosticMarkers = editorMarkers.filter((marker) => marker.kind === 'validation' || marker.kind === 'warning');
+    if (!diagnosticMarkers.length) return [];
     const locate = configurationPathIndex(sourceLanguage, content);
-    return editorMarkers.filter((marker) => marker.kind === 'validation' || marker.kind === 'warning').map((marker) => {
+    return diagnosticMarkers.map((marker) => {
       const range = locate(marker.segments, marker.documentPath);
       return {
         ...range,
@@ -725,6 +728,7 @@
   }
 
   function markerDecorationSet(editor: EditorView): DecorationSet {
+    if (!markers.length) return Decoration.none;
     const content = editor.state.doc.toString();
     const locate = configurationPathIndex(language, content);
     const decorations: Range<Decoration>[] = [];
@@ -784,6 +788,10 @@
   }
 
   function synchronizeMarkerDecorations(editor: EditorView, revealActive: boolean) {
+    if (markerRefreshTimer !== undefined) {
+      clearTimeout(markerRefreshTimer);
+      markerRefreshTimer = undefined;
+    }
     editor.dispatch({
       effects: replaceMarkerDecorations.of(markerDecorationSet(editor)),
     });
@@ -837,13 +845,8 @@
   }
 
   function updateScrollableRegionAccessibility(editor: EditorView) {
-    if (searchPanelOpen(editor.state)) {
-      editor.scrollDOM.tabIndex = 0;
-      editor.scrollDOM.setAttribute('aria-label', translate('Configuration document'));
-    } else {
-      editor.scrollDOM.tabIndex = -1;
-      editor.scrollDOM.removeAttribute('aria-label');
-    }
+    editor.scrollDOM.tabIndex = 0;
+    editor.scrollDOM.setAttribute('aria-label', translate('Configuration document'));
   }
 
   function runEditorCommand(command: Command) {
@@ -1080,9 +1083,13 @@
               externalValue = update.state.doc.toString();
               value = externalValue;
               const editor = update.view;
-              queueMicrotask(() => {
-                if (view === editor) synchronizeMarkerDecorations(editor, false);
-              });
+              if (markers.length) {
+                if (markerRefreshTimer !== undefined) clearTimeout(markerRefreshTimer);
+                markerRefreshTimer = setTimeout(() => {
+                  markerRefreshTimer = undefined;
+                  if (view === editor) synchronizeMarkerDecorations(editor, false);
+                }, 140);
+              }
             }
             updateEditorStatus(update.state);
             updateScrollableRegionAccessibility(update.view);
@@ -1096,6 +1103,7 @@
     forceLinting(view);
     return () => {
       mounted = false;
+      if (markerRefreshTimer !== undefined) clearTimeout(markerRefreshTimer);
       if (formatStatusTimeout) clearTimeout(formatStatusTimeout);
       languageService?.dispose();
       languageService = undefined;

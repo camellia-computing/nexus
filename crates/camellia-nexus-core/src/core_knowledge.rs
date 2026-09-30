@@ -187,6 +187,38 @@ pub enum KnowledgeValueConstraint {
         values: Vec<String>,
         allow_null: bool,
     },
+    Platform {
+        condition: String,
+        activation: KnowledgeValueActivation,
+    },
+    Requires {
+        when_value: serde_json::Value,
+        sibling: String,
+        value: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KnowledgeValueActivation {
+    Enabled,
+    NonEmpty,
+    NonZero,
+    Positive,
+}
+
+impl KnowledgeValueActivation {
+    pub fn is_active(self, value: &serde_json::Value) -> bool {
+        if value.is_null() {
+            return false;
+        }
+        match self {
+            Self::Enabled => value.as_bool().unwrap_or(true),
+            Self::NonEmpty => value.as_str().is_none_or(|value| !value.is_empty()),
+            Self::NonZero => value.as_f64().is_none_or(|value| value != 0.0),
+            Self::Positive => value.as_f64().is_none_or(|value| value > 0.0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,11 +236,21 @@ pub struct KnowledgeSemanticRule {
     pub declaration: String,
     pub field: String,
     pub field_hash: String,
+    pub message_key: String,
     pub constraint: KnowledgeValueConstraint,
     pub default_value: serde_json::Value,
     pub default_when: Vec<KnowledgeDefaultCondition>,
     pub build_constraint: String,
-    pub evidence: KnowledgeBehaviorEvidence,
+    pub when: Vec<KnowledgeFieldPredicate>,
+    pub evidence: Vec<KnowledgeBehaviorEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeFieldPredicate {
+    pub sibling: String,
+    pub values: Vec<serde_json::Value>,
+    pub allow_missing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -717,19 +759,42 @@ impl CoreKnowledgeCatalog {
             let mut rule_bindings = HashSet::new();
             for variant in &program.semantic_rules {
                 let rule = &variant.rule;
-                validate_source_references(program, &variant.releases, [&rule.evidence.source])?;
-                let KnowledgeValueConstraint::Enum { values, .. } = &rule.constraint;
+                validate_source_references(
+                    program,
+                    &variant.releases,
+                    rule.evidence.iter().map(|evidence| &evidence.source),
+                )?;
+                let valid_constraint = match &rule.constraint {
+                    KnowledgeValueConstraint::Enum { values, .. } => !values.is_empty(),
+                    KnowledgeValueConstraint::Platform { condition, .. } => {
+                        !condition.is_empty() && condition.len() <= 1024
+                    }
+                    KnowledgeValueConstraint::Requires { sibling, .. } => {
+                        !sibling.is_empty() && sibling.len() <= 256
+                    }
+                };
                 if rule.id.is_empty()
+                    || rule.message_key.is_empty()
                     || rule.path.is_empty()
                     || rule.path.len() > 64
-                    || values.is_empty()
+                    || !valid_constraint
                     || variant.releases.is_empty()
-                    || rule.evidence.body_hash.len() != 64
-                    || !rule
-                        .evidence
-                        .body_hash
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    || rule.when.len() > 16
+                    || rule.when.iter().any(|predicate| {
+                        predicate.sibling.is_empty()
+                            || predicate.sibling.len() > 256
+                            || predicate.values.is_empty()
+                            || predicate.values.len() > 32
+                    })
+                    || rule.evidence.is_empty()
+                    || rule.evidence.len() > 32
+                    || rule.evidence.iter().any(|evidence| {
+                        evidence.body_hash.len() != 64
+                            || !evidence
+                                .body_hash
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
                 {
                     return Err(invalid_knowledge(
                         "Semantic rule has invalid evidence or constraints",

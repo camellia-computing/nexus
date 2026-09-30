@@ -19,7 +19,7 @@ import {
 } from '../src/programs/shared/configuration.ts';
 import { applySingBoxDashboardChange } from '../src/programs/sing-box/dashboard-state.ts';
 import { mihomoProgram } from '../src/programs/mihomo/index.ts';
-import { configurationErrorInfo, errorInfoOf, sourceIssueMessage } from '../src/errors.ts';
+import { configurationErrorInfo, configurationNoticeDuration, errorInfoOf, sourceIssueMessage, TRANSIENT_ERROR_DISMISS_MS } from '../src/errors.ts';
 import {
   clientVersionAdvisory,
   compareCanonicalSemVer,
@@ -65,7 +65,7 @@ const validJsonAnalysis = analyzeConfiguration(
   '{"log":{"level":"info"},"outbounds":[{"tag":"direct"}]}',
 );
 assert.deepEqual(validJsonAnalysis.diagnostics, []);
-const invalidJsonAnalysis = analyzeConfiguration('jsonc', '{"log": {"level": "info",}}');
+const invalidJsonAnalysis = analyzeConfiguration('jsonc', '{"log": {"level": "info",,}}');
 assert.equal(
   invalidJsonAnalysis.diagnostics.some((diagnostic) => diagnostic.severity === 'error'),
   true,
@@ -74,13 +74,19 @@ assert.equal(
   invalidJsonAnalysis.diagnostics.some((diagnostic) => diagnostic.code === 'json.PropertyNameExpected'),
   true,
 );
+const validJsonc = '{/* comment */"mode":"rule",}';
 assert.equal(
-  analyzeConfiguration('jsonc', '{/* comment */"mode":"rule"}').diagnostics.some(
-    (diagnostic) => diagnostic.code === 'json.InvalidCommentToken',
+  analyzeConfiguration('jsonc', validJsonc).diagnostics.some(
+    (diagnostic) => diagnostic.severity === 'error',
   ),
-  true,
-  'native JSON configuration must not silently accept JSONC comments',
+  false,
+  'editor syntax must match the configuration Core JSONC parser',
 );
+assert.equal(
+  resolveConfigurationMarkerRange('jsonc', validJsonc, [], ['mode']).status,
+  'exact',
+);
+assert.equal(formatConfiguration('jsonc', validJsonc).content.includes('/* comment */'), true);
 const duplicateJson = '{"route":{"final":"direct","final":"proxy"}}';
 const duplicateJsonResult = formatConfiguration('jsonc', duplicateJson);
 assert.equal(
@@ -560,6 +566,9 @@ for (const message of [
   'The program reported a value with the wrong type.',
   'The program could not parse this configuration.',
   'The program reported an invalid port.',
+  'The program could not enable automatic traffic redirection. Check the TUN auto_redirect setting.',
+  'This setting is not available on this program’s platform. Disable or remove it.',
+  'Turn on automatic routing before enabling automatic redirection.',
   'The program could not read a required file.',
   'Program needs recovery',
   'The program replacement could not be restored automatically.',
@@ -571,6 +580,9 @@ for (const message of [
   'Retry detection',
   'Program detection needs attention.',
   'Review and apply changes in Final configuration.',
+  'Checking this program. You can review the configuration now.',
+  'Checking the current program before applying.',
+  'Check the program in Compatibility before applying.',
   'Replace program',
   'Review program detection in Compatibility.',
   'About compatibility',
@@ -614,6 +626,10 @@ for (const message of [
   'Retry to check the result of this request.',
   'Submitted changes saved.',
   'Configuration source needs attention',
+  'These sources set different values. Review one, then pause or edit it and save.',
+  'Review source',
+  'affected setting',
+  'affected settings',
   ...['SOURCE_URL_INVALID', 'SOURCE_FILE_NOT_FOUND', 'SOURCE_READ_FAILED', 'SOURCE_CHANGED',
     'SOURCE_TOO_LARGE', 'SOURCE_ACCESS_DENIED', 'SOURCE_TIMEOUT', 'SOURCE_DOWNLOAD_FAILED',
     'SOURCE_CREDENTIALS_UNAVAILABLE', 'SOURCE_INVALID', 'SOURCE_REFRESH_FAILED', 'CORE_TARGET_SOURCE_REJECTED']
@@ -1201,7 +1217,7 @@ const catalog = { version: 1, order: ['alpha', 'beta', 'gamma'] };
 assert.deepEqual(moveCatalogItem(catalog, 'gamma', 'beta').order, ['alpha', 'gamma', 'beta']);
 assert.deepEqual(moveCatalogItem(catalog, 'alpha').order, ['beta', 'gamma', 'alpha']);
 
-for (const messageKey of ['CONFIGURATION_VALUE_NOT_ALLOWED', 'CONFIGURATION_ASSESSMENT_LIMIT', 'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED', 'CORE_NATIVE_FIELD_REJECTED', 'CORE_NATIVE_TYPE_REJECTED', 'CORE_NATIVE_SYNTAX_REJECTED', 'CORE_NATIVE_PORT_REJECTED', 'CORE_NATIVE_RESOURCE_UNAVAILABLE']) {
+for (const messageKey of ['CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_AUTO_ROUTE_REQUIRED', 'CONFIGURATION_VALUE_NOT_ALLOWED', 'CONFIGURATION_ASSESSMENT_LIMIT', 'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED', 'CORE_NATIVE_FIELD_REJECTED', 'CORE_NATIVE_TYPE_REJECTED', 'CORE_NATIVE_SYNTAX_REJECTED', 'CORE_NATIVE_PORT_REJECTED', 'CORE_NATIVE_AUTO_REDIRECT_REJECTED', 'CORE_NATIVE_RESOURCE_UNAVAILABLE']) {
   const error = configurationErrorInfo({ code: 'CONFIG_INVALID', messageKey, message: 'Internal source implementation', details: 'rule: bounded-details' }, 'configuration-apply');
   assert.equal(error.title, 'Configuration needs attention');
   assert.equal(error.suggestion, '');
@@ -1222,5 +1238,20 @@ for (const messageKey of ['CORE_VERSION_TOO_OLD', 'CORE_VERSION_NOT_MAINTAINED',
   assert.equal(error.suggestion, '');
   assert.doesNotMatch(error.message, /Internal admission/);
 }
+
+for (const [context, code, key, duration] of [
+  ['configuration-load', 'NETWORK', undefined, 0],
+  ['sources-refresh', 'TIMEOUT', undefined, TRANSIENT_ERROR_DISMISS_MS],
+  ['sources-save', 'CONFIG_INVALID', undefined, TRANSIENT_ERROR_DISMISS_MS],
+  ['configuration-apply', 'CONFIG_INVALID', 'CONFIGURATION_PLATFORM_UNSUPPORTED', TRANSIENT_ERROR_DISMISS_MS],
+  ['configuration-apply', 'TIMEOUT', undefined, 0],
+  ['sources-save', 'NETWORK', undefined, 0],
+  ['final-editor-draft', 'CONFIG_CONFLICT', 'CONFIGURATION_DRAFT_STALE', 0],
+  ['configuration-load', 'STORAGE', 'CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED', 0],
+  ['configuration-apply', 'INVALID_STATE', 'CONFIGURATION_OPERATION_PENDING', 0],
+]) {
+  assert.equal(configurationNoticeDuration(configurationErrorInfo({code, messageKey: key}, context), context), duration);
+}
+assert.equal(configurationNoticeDuration(configurationErrorInfo({code: 'NETWORK'}, 'configuration-load'), 'configuration-load', true), TRANSIENT_ERROR_DISMISS_MS);
 
 console.log('Frontend utility tests passed.');

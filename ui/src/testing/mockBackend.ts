@@ -1,5 +1,6 @@
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { parse as parseYaml } from 'yaml';
+import { parse as parseJsonc, type ParseError } from 'jsonc-parser';
 import { emit } from '@tauri-apps/api/event';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { installPreviewInvokeTransport } from '../api';
@@ -50,6 +51,13 @@ import type {
 } from '../types';
 
 const nowSeconds = Math.floor(Date.now() / 1_000);
+
+function parsePreviewJsonc(content: string): unknown {
+  const errors: ParseError[] = [];
+  const value = parseJsonc(content, errors, { allowTrailingComma: true, disallowComments: false });
+  if (errors.length || value === undefined) throw new SyntaxError('Invalid JSON configuration');
+  return value;
+}
 const entitlement: EntitlementSnapshot = {
   generation: 1,
   entitlementState: {
@@ -116,8 +124,11 @@ const removedLicensePreview = previewParameters.has('__ui_removed_license');
 const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
 const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
 const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
+const platformIssuePreview = previewParameters.has('__ui_platform_issue');
 const finalMergeConflictPreview = previewParameters.has('__ui_final_merge_conflict');
 let conflictWriteFailurePending = previewParameters.has('__ui_conflict_fail_once');
+let adoptWriteFailurePending = previewParameters.has('__ui_adopt_fail_once');
+let conflictChoiceRejectedPending = previewParameters.has('__ui_conflict_rejected_once');
 let conflictResponseFailurePending = previewParameters.has('__ui_conflict_response_lost');
 const guidedFinalEditPreview = previewParameters.has('__ui_guided_final_edit');
 const requestedTeamRole = previewParameters.get('__ui_team_role');
@@ -776,7 +787,12 @@ const specs: Record<string, ProgramSpec> = {
     executable: managedExecutable('bin/xray/xray', 'xray', 'Xray 25.6.8'),
     type: { kind: 'xray', extraArgs: ['run'] },
     managedConfig: {
-      sources: [{ mode: 'local', id: 'primary', name: 'Production routing', enabled: true, path: 'profiles/xray.json' }],
+      sources: [
+        { mode: 'local', id: 'primary', name: 'Production routing', enabled: true, path: 'profiles/xray.json' },
+        ...(configurationSourcePreview === 'conflict'
+          ? [{ mode: 'inline' as const, id: 'alternate', name: 'Alternative routing', enabled: true, content: '{"log":{"loglevel":"debug"}}' }]
+          : []),
+      ],
       xrayDashboard: { apiPort: 10085, metricsPort: 11111 },
     },
     workingDirectory: 'bin/xray',
@@ -988,6 +1004,7 @@ const previewConflictOperations = new Map<string, {
   resolution: import('../types').FinalConflictResolution;
   undone: boolean;
 }>();
+const previewAdoptedChanges = new Map<string, string>();
 const previewConfigurationOperations = new Map<string, {
   request: ConfigurationMutationContext;
   result: ConfigurationOperationResult;
@@ -1069,7 +1086,8 @@ function configurationState(programId: string): ConfigurationStateView {
   const evidenceMismatch = coreEvidencePreview === 'profile-mismatch';
   const sourceBlocked = configurationSourcePreview === 'invalid'
     || configurationSourcePreview === 'unavailable';
-  const candidateNeedsAttention = evidenceStale || evidenceMismatch || sourceBlocked;
+  const sourceConflict = configurationSourcePreview === 'conflict' && programId === 'xray-primary';
+  const candidateNeedsAttention = evidenceStale || evidenceMismatch || sourceBlocked || sourceConflict;
   let desiredHash = candidateNeedsAttention
     ? 'preview-pending-desired-hash'
     : 'preview-desired-hash';
@@ -1126,7 +1144,7 @@ function configurationState(programId: string): ConfigurationStateView {
   let upstreamContent = document.content;
   let effectiveContent = document.content;
   if (guidedFinalEditPreview && kind === 'singBox' && format === 'jsonc') {
-    const upstreamDocument = JSON.parse(document.content) as unknown;
+    const upstreamDocument = parsePreviewJsonc(document.content);
     setPreviewGuidedPath(upstreamDocument, ['log', 'level'], 'fatal');
     upstreamContent = `${JSON.stringify(upstreamDocument, null, 2)}\n`;
     const finalDocument = structuredClone(upstreamDocument);
@@ -1143,7 +1161,7 @@ function configurationState(programId: string): ConfigurationStateView {
     }
   }
   if (finalMergeConflictPreview && format === 'jsonc') {
-    const effectiveDocument = JSON.parse(document.content) as unknown;
+    const effectiveDocument = parsePreviewJsonc(document.content);
     updatePreviewConflictPath(effectiveDocument, finalPreviewPath, {
       present: true,
       value: 'info',
@@ -1208,7 +1226,17 @@ function configurationState(programId: string): ConfigurationStateView {
         },
       } : {}),
       diagnostics,
-      conflicts: finalMergeConflictPreview ? [finalCandidateConflict] : [],
+      conflicts: finalMergeConflictPreview ? [finalCandidateConflict] : sourceConflict ? [{
+        semanticPath: '/log/loglevel',
+        reason: 'Two sources provide different values',
+        severity: 'error',
+        sourceIds: ['primary', 'alternate'],
+        messageKey: 'SOURCE_VALUE_CONFLICT',
+        scope: { surface: 'sources', ownerId: 'alternate' },
+        sourceValue: 'info',
+        userValue: 'debug',
+        effectiveValue: 'info',
+      }] : [],
     },
     appliedRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
     lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
@@ -1248,6 +1276,7 @@ function configurationState(programId: string): ConfigurationStateView {
         candidateStatus: finalMergeConflictPreview ? 'unsaved' : candidateNeedsAttention ? 'invalid' : 'applied',
         changes: [],
         conflicts: finalMergeConflictPreview ? [finalPreviewConflict] : [],
+        diagnostics: [],
         blockers: [],
         canSave: !finalMergeConflictPreview,
         canValidate: !finalMergeConflictPreview,
@@ -1399,7 +1428,7 @@ function rebasePreviewFinalEditorSession(
   let mine: unknown;
   let updated: unknown;
   try {
-    const parse = (content: string): unknown => state.format === 'yaml' ? parseYaml(content) : JSON.parse(content);
+    const parse = (content: string): unknown => state.format === 'yaml' ? parseYaml(content) : parsePreviewJsonc(content);
     base = parse(draft.baseContent);
     updated = parse(state.desired.content);
     if (previewSemanticEqual(base, updated)) {
@@ -1519,7 +1548,7 @@ function configurationWorkspaceSnapshot(programId: string): {
       let effectiveValue: import('../types').SemanticValue = { state: 'missing' };
       try {
         const content = previewUpstreamDocuments.get(programId) ?? state.desired.content;
-        const document: unknown = state.format === 'yaml' ? parseYaml(content) : JSON.parse(content);
+        const document: unknown = state.format === 'yaml' ? parseYaml(content) : parsePreviewJsonc(content);
         const found = previewConflictPathValue(document, setting.segments);
         if (found.present) {
           const value = setting.settingId.endsWith('Port') && typeof found.value === 'string'
@@ -1548,13 +1577,31 @@ function configurationWorkspaceSnapshot(programId: string): {
     ...conflict,
     conflictId: `${conflict.reference.origin}:${conflict.reference.conflictId}`,
   }));
+  // This fixture exercises authoritative diagnostics without mirroring source capability rules.
+  if (platformIssuePreview && programId === 'sing-box-edge') {
+    try {
+      const content = editorSession.draftRevision > 0 && !editorSession.rebaseRequired
+        ? editorSession.workingContent : state.desired.content;
+      const document = parsePreviewJsonc(content) as { inbounds?: { auto_redirect?: boolean }[] };
+      if (document.inbounds?.[0]?.auto_redirect === true) {
+        const code = 'CONFIGURATION_PLATFORM_UNSUPPORTED';
+        const location = { semanticPath: '/inbounds/0/auto_redirect', documentPath: ['inbounds', '0', 'auto_redirect'] };
+        state.workspace.editor.diagnostics.push({ code, message: code, messageKey: code, location, scope: { surface: 'configuration' } });
+        state.workspace.editor.blockers.push({ code, messageKey: code, semanticPath: location.semanticPath,
+          scope: { surface: 'configuration' }, blocks: ['validate', 'apply'], recoveryAction: 'reviewCandidate' });
+        state.workspace.editor.candidateStatus = 'invalid';
+        state.workspace.editor.canValidate = false;
+        state.workspace.editor.canApply = false;
+      }
+    } catch { /* Incomplete text is handled by editor syntax diagnostics. */ }
+  }
   return { state, editorSession };
 }
 
 function refreshPreviewUnresolvedConflicts(draft: FinalEditorSession): void {
   let document: unknown;
   try {
-    document = JSON.parse(draft.workingContent);
+    document = parsePreviewJsonc(draft.workingContent);
   } catch {
     draft.unresolvedConflictIds = draft.conflicts.map((conflict) => conflict.conflictId);
     return;
@@ -1697,7 +1744,7 @@ function previewManagedIntegrationContent(
   if (spec.type.kind === 'generic') return fallback;
   let document: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(fallback) as unknown;
+    const parsed = parsePreviewJsonc(fallback);
     document = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : {};
@@ -1833,7 +1880,7 @@ function previewInlineSourceContent(spec: ProgramSpec): string | null {
     }
     return structuredClone(next);
   };
-  for (const source of inline) merged = merge(merged, JSON.parse(source.content));
+  for (const source of inline) merged = merge(merged, parsePreviewJsonc(source.content));
   return `${JSON.stringify(merged, null, 2)}\n`;
 }
 
@@ -1845,7 +1892,7 @@ function recordPreviewContributions(programId: string, owner: string, changes: F
       || !change.segments.every((segment, index) => previewSemanticEqual(segment, write.change.segments[index])));
     contributions.writes.push({ owner, change: structuredClone(change) });
   }
-  let document: unknown = JSON.parse(contributions.source);
+  let document: unknown = parsePreviewJsonc(contributions.source);
   const source: unknown = structuredClone(document);
   for (const { owner, change } of contributions.writes) {
     const value = owner === 'sources'
@@ -1895,8 +1942,8 @@ function previewManagedUpdate(previous: ProgramSpec, next: ProgramSpec, current:
   const after = previewManagedIntegrationContent(next, current);
   const changes = previewFinalChanges(before, after);
   for (const setting of previewManagedSettingPaths(next).filter((setting) => claimedSettings.includes(setting.settingId))) {
-    const upstream = previewConflictPathValue(JSON.parse(current), setting.segments);
-    const final = previewConflictPathValue(JSON.parse(after), setting.segments);
+    const upstream = previewConflictPathValue(parsePreviewJsonc(current), setting.segments);
+    const final = previewConflictPathValue(parsePreviewJsonc(after), setting.segments);
     if (!final.present || previewSemanticEqual(upstream, final)) continue;
     changes.push({ editId: `preview-details:${setting.settingId}`, semanticPath: setting.path, segments: setting.segments,
       kind: 'modified', upstreamValue: upstream.present ? { state: 'present', value: upstream.value } : { state: 'missing' },
@@ -1912,8 +1959,8 @@ function previewFinalChanges(
   let upstream: unknown;
   let finalValue: unknown;
   try {
-    upstream = JSON.parse(upstreamContent);
-    finalValue = JSON.parse(finalContent);
+    upstream = parsePreviewJsonc(upstreamContent);
+    finalValue = parsePreviewJsonc(finalContent);
   } catch {
     return [];
   }
@@ -2044,6 +2091,7 @@ function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
 }
 
 function syncPreviewEditor(state: ConfigurationStateView): void {
+  state.workspace.editor.diagnostics = structuredClone(state.desired.diagnostics);
   state.workspace.editor.document = {
     content: state.desired.content,
     revision: structuredClone(state.desired.revision),
@@ -2146,7 +2194,7 @@ function updatePreviewUpstream(
     next.workspace.editor.conflicts = existingConflicts;
     next.workspace.editor.changes = previewFinalChanges(content, nextContent);
     if (next.format === 'jsonc') {
-      const upstream = JSON.parse(content);
+      const upstream = parsePreviewJsonc(content);
       next.guidedProjection = next.guidedProjection.map((projection) => {
         const path = previewGuidedPath(next.kind, projection.settingId);
         if (!path) return projection;
@@ -2208,7 +2256,7 @@ function configDocument(programId: string) {
   const singBox = specs[programId]?.type.kind === 'singBox';
   return {
     content: saved?.content ?? (singBox
-      ? '{\n  "log": { "level": "info" },\n  "outbounds": [\n    { "type": "direct", "tag": "direct" },\n    { "type": "socks", "tag": "proxy-sg", "server": "127.0.0.1", "server_port": 1080 }\n  ],\n  "route": { "final": "proxy-sg" }\n}\n'
+      ? (platformIssuePreview ? '{\n  "inbounds": [{ "type": "tun", "tag": "tun-in", "auto_route": true, "auto_redirect": true }]\n}\n' : '{\n  "log": { "level": "info" },\n  "outbounds": [\n    { "type": "direct", "tag": "direct" },\n    { "type": "socks", "tag": "proxy-sg", "server": "127.0.0.1", "server_port": 1080 }\n  ],\n  "route": { "final": "proxy-sg" }\n}\n')
       : '{\n  "log": { "loglevel": "warning" },\n  "route": { "final": "proxy-sg" }\n}\n'),
     baseHash: saved?.baseHash ?? 'preview-hash',
     language: 'jsonc',
@@ -2228,6 +2276,11 @@ const singBoxConfigurationSchema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
   type: 'object',
   properties: {
+    inbounds: {
+      type: 'array', items: { type: 'object', properties: {
+        type: { type: 'string' }, tag: { type: 'string' }, auto_route: { type: 'boolean' }, auto_redirect: { type: 'boolean' },
+      }, additionalProperties: false },
+    },
     log: {
       type: 'object',
       properties: {
@@ -3064,6 +3117,9 @@ export function installMockBackend() {
         }
         return document;
       }
+      case 'get_configuration_workspace_preview': {
+        return configurationWorkspaceSnapshot(stringArg(args, 'programId'));
+      }
       case 'get_configuration_workspace': {
         if (new URLSearchParams(window.location.search).has('__ui_identity_read_error') && !identityReadReady) {
           throw new Error(JSON.stringify({
@@ -3076,6 +3132,9 @@ export function installMockBackend() {
         configurationWorkspaceReads += 1;
         if (previewParameters.has('__ui_slow_workspace_after_first') && configurationWorkspaceReads > 1) {
           return new Promise((resolve) => window.setTimeout(() => resolve(snapshot), 2500));
+        }
+        if (previewParameters.has('__ui_slow_verified_workspace')) {
+          return new Promise((resolve) => window.setTimeout(() => resolve(snapshot), 1800));
         }
         return snapshot;
       }
@@ -3183,6 +3242,41 @@ export function installMockBackend() {
         previewFinalDrafts.set(programId, structuredClone(draft));
         return configurationWorkspaceSnapshot(programId);
       }
+      case 'adopt_upstream_change': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as import('../types').AdoptUpstreamChangeRequest;
+        const key = `${programId}:${request.operationId}`;
+        const previous = previewAdoptedChanges.get(key);
+        if (previous !== undefined) {
+          if (previous !== JSON.stringify(request)) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH' };
+          return configurationWorkspaceSnapshot(programId);
+        }
+        const current = configurationState(programId);
+        if (current.stateRevision !== request.expectedStateRevision) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE' };
+        if (adoptWriteFailurePending) {
+          adoptWriteFailurePending = false;
+          throw { code: 'STORAGE', message: 'Injected adoption write failure' };
+        }
+        const draft = previewFinalDrafts.get(programId);
+        if (draft && (draft.sessionId !== request.editorSessionId || draft.draftRevision !== request.expectedDraftRevision)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE' };
+        }
+        if (draft && (draft.rebaseRequired || draft.workingContent !== current.desired.content)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_UNCOMMITTED' };
+        }
+        const edit = current.workspace.editor.changes.find((item) => item.editId === request.editId && JSON.stringify(item.segments) === JSON.stringify(request.path));
+        if (!edit) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE' };
+        updateConfigurationState(programId, (state) => {
+          const document = parsePreviewJsonc(state.desired.content);
+          updatePreviewConflictPath(document, edit.segments, edit.upstreamValue.state === 'missing'
+            ? { present: false }
+            : { present: true, value: edit.upstreamValue.value });
+          state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+          state.workspace.editor.changes = state.workspace.editor.changes.filter((item) => item.editId !== edit.editId);
+        });
+        previewAdoptedChanges.set(key, JSON.stringify(request));
+        return configurationWorkspaceSnapshot(programId);
+      }
       case 'resolve_configuration_conflict': {
         const programId = stringArg(args, 'programId');
         const request = objectArgs(args).request as import('../types').ResolveConfigurationConflictRequest;
@@ -3200,6 +3294,10 @@ export function installMockBackend() {
           conflictWriteFailurePending = false;
           throw { code: 'STORAGE', message: 'Injected conflict write failure' };
         }
+        if (conflictChoiceRejectedPending) {
+          conflictChoiceRejectedPending = false;
+          throw { code: 'CONFIG_INVALID', message: 'The selected value cannot be used' };
+        }
         if (request.action.kind !== 'resolve') {
           const original = previewConflictOperations.get(`${programId}:${request.action.resolutionOperationId}`);
           if (!original || original.undone === (request.action.kind === 'undo')) {
@@ -3209,7 +3307,7 @@ export function installMockBackend() {
           if (request.action.kind === 'undo') {
             if (previousConflict.reference.origin === 'draft') {
               const draft = finalEditorSession(programId);
-              const document = JSON.parse(draft.workingContent) as unknown;
+              const document = parsePreviewJsonc(draft.workingContent);
               updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, 'acceptUpstream'));
               draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
               draft.conflicts.push(structuredClone(previousConflict));
@@ -3222,7 +3320,7 @@ export function installMockBackend() {
               previewConfigurationStates.set(programId, structuredClone(current));
             } else {
               updateConfigurationState(programId, (state) => {
-                const document = JSON.parse(state.desired.content) as unknown;
+                const document = parsePreviewJsonc(state.desired.content);
                 updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, 'acceptUpstream'));
                 state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
                 state.workspace.editor.conflicts.push(structuredClone(previousConflict));
@@ -3231,7 +3329,7 @@ export function installMockBackend() {
               });
             }
           } else {
-            const document = JSON.parse(previousConflict.reference.origin === 'draft' ? finalEditorSession(programId).workingContent : current.desired.content) as unknown;
+            const document = parsePreviewJsonc(previousConflict.reference.origin === 'draft' ? finalEditorSession(programId).workingContent : current.desired.content);
             updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, previousResolution));
             if (previousConflict.reference.origin === 'draft') {
               const draft = finalEditorSession(programId);
@@ -3265,7 +3363,7 @@ export function installMockBackend() {
           if (!conflict || JSON.stringify(conflict) !== reference.fingerprint) {
             throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
           }
-          const document = JSON.parse(draft.workingContent) as unknown;
+          const document = parsePreviewJsonc(draft.workingContent);
           updatePreviewConflictPath(document, conflict.segments, previewConflictResolutionValue(conflict, resolution));
           draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
           draft.resolutions[conflict.conflictId] = resolution;
@@ -3295,7 +3393,7 @@ export function installMockBackend() {
             : resolution === 'keepMine'
               ? conflict.userValue
               : resolution.manualEdit.value;
-          const document = JSON.parse(state.desired.content) as unknown;
+          const document = parsePreviewJsonc(state.desired.content);
           updatePreviewConflictPath(document, conflict.segments, {
             present: selected.state === 'present',
             ...(selected.state === 'present' ? { value: selected.value } : {}),
@@ -3399,7 +3497,7 @@ export function installMockBackend() {
         }
         let committedContent = draft.workingContent;
         if (currentState.format === 'jsonc') {
-          committedContent = `${JSON.stringify(JSON.parse(draft.workingContent), null, 2)}\n`;
+          committedContent = `${JSON.stringify(parsePreviewJsonc(draft.workingContent), null, 2)}\n`;
         }
         const contentChanged = committedContent !== currentState.desired.content;
         const upstreamContent = previewUpstreamDocuments.get(programId)
@@ -3460,7 +3558,7 @@ export function installMockBackend() {
         }
         let upstreamDocument: unknown;
         try {
-          upstreamDocument = JSON.parse(
+          upstreamDocument = parsePreviewJsonc(
             previewUpstreamDocuments.get(programId) ?? current.workspace.editor.document.content,
           );
         } catch {
@@ -3532,7 +3630,7 @@ export function installMockBackend() {
           };
         }
         if (draft.draftRevision > 0) {
-          const committedContent = `${JSON.stringify(JSON.parse(draft.workingContent), null, 2)}\n`;
+          const committedContent = `${JSON.stringify(parsePreviewJsonc(draft.workingContent), null, 2)}\n`;
           const upstreamContent = previewUpstreamDocuments.get(programId)
             ?? current.desired.content;
           current = updateConfigurationState(programId, (state) => {
@@ -3691,6 +3789,11 @@ export function installMockBackend() {
             freshness: source.enabled ? 'fresh' : 'disabled',
             ...(source.enabled ? { snapshotHash: previewContentHash(sourceContent ?? source.id) } : {}),
           }));
+          if (!spec?.managedConfig?.sources.some((source) => source.id === 'alternate' && source.enabled)) {
+            state.desired.conflicts = state.desired.conflicts.filter(
+              (conflict) => !(conflict.messageKey === 'SOURCE_VALUE_CONFLICT' && conflict.scope?.ownerId === 'alternate'),
+            );
+          }
         };
         if (spec && sourceContent) {
           const upstream = previewSourceUpdate(programId, sourceContent, command === 'update_configuration_sources');

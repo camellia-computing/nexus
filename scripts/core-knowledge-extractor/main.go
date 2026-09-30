@@ -278,14 +278,17 @@ func extractModule(files []sourceFile, modulePath string) (inventory, error) {
 				continue
 			}
 			group, ok := item.(*ast.GenDecl)
-			if ok && group.Tok == token.VAR {
+			if ok && (group.Tok == token.VAR || group.Tok == token.CONST) {
 				for _, spec := range group.Specs {
 					value := spec.(*ast.ValueSpec)
 					if len(value.Names) != len(value.Values) {
 						continue
 					}
 					for i, name := range value.Names {
-						if _, ok := value.Values[i].(*ast.SelectorExpr); !ok {
+						_, selector := value.Values[i].(*ast.SelectorExpr)
+						identifier, literal := value.Values[i].(*ast.Ident)
+						boolean := literal && (identifier.Name == "true" || identifier.Name == "false")
+						if !selector && !boolean {
 							continue
 						}
 						body, err := expression(token.NewFileSet(), value.Values[i])

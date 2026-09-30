@@ -810,12 +810,7 @@ impl ProgramManager {
         let spec = handle.spec().await;
         let current: ExecutableMetadata = self.program_store.executable_metadata(&spec).await?;
         let unchanged = spec.executable.metadata().is_some_and(|metadata| {
-            metadata.fingerprint == current.fingerprint
-                && (spec.program_type.kind() == crate::ProgramKind::Generic
-                    || metadata
-                        .probe
-                        .as_ref()
-                        .is_some_and(|probe| probe.revision == crate::CORE_BINARY_PROBE_REVISION))
+            metadata.observations_match(&current, spec.program_type.kind())
         });
         drop(lease);
         if unchanged {

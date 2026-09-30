@@ -229,6 +229,10 @@ Apply, start, autostart, restart, and executable updates use the same backend ad
 Changed binaries invalidate evidence. A running process is not terminated merely because its
 installed executable no longer qualifies. Stop, inspection, export, and replacement remain possible.
 
+Retained identity observations are validated as bounded data independently of current admission.
+File identity, probe implementation and knowledge must all match before observations can be reused.
+Profile refresh invalidates candidate acceptance without changing Applied or Last Known Good.
+
 Identity reports retain numeric version components and separate prerelease/build-metadata flags.
 Arbitrary banners and qualifier text are not stored or displayed. Prereleases remain inadmissible;
 build metadata does not establish official origin or additional capabilities.
@@ -240,6 +244,9 @@ pipes. A subsequent check can acquire the released slot.
 登记和更换在提交前拒绝范围外或身份不明的程序。应用、启动、自动启动、重启和程序更新共用后端
 准入规则。二进制变化使证据失效，不因安装文件不再合格而自动终止已运行进程；停止、查看、导出和
 更换程序保持可用。
+
+持久化身份观察只校验有界数据结构，当前准入独立判断。仅文件身份、探测实现与知识目录全部匹配时
+才复用观察结果；能力档案更新使候选检查结果失效，不修改已应用配置与最近可用配置。
 
 身份报告只保留版本数字以及独立的预发布、构建元数据标记，不保存或展示任意横幅和附注原文。
 预发布仍拒绝准入，构建元数据不构成官方来源或额外能力证明。
@@ -267,6 +274,39 @@ workspace rollback boundary.
 重新刷新不会覆盖新编辑。来源列表变更在工作区回滚边界内使用相同的最终授权检查。
 
 ## Presentation and acceptance / 展示与验收
+
+Platform rules are candidate checks, separate from source-file build selection. They bind the wire
+field, activation value, object discriminator, parser/constructor and platform implementation to
+each stable patch. Disabled options do not require the corresponding capability. Unknown binary
+platform metadata remains unconfirmed; it is never replaced with the desktop's platform. Rules
+can require another setting, and can cite dependency functions and platform constants. A changed
+body, field shape, import binding or build condition requires review before regeneration succeeds.
+
+平台规则属于候选检查，独立于源码文件的构建选择。每个稳定补丁分别绑定配置字段、启用条件、对象类型、
+解析/构造入口和平台实现。关闭的选项不要求相应能力；二进制缺少平台信息时保持未确认，不用客户端平台
+代替。规则可以声明依赖设置，并引用依赖库函数和平台常量；函数体、字段结构、导入或构建条件变化后，
+必须审查才能重新生成目录。
+
+The editor assesses both the candidate and valid unfinished edits from retained identity observations
+without executing the program or hashing its file on each keystroke. Diagnostics and action blockers
+come from the same snapshot and clear when the setting is corrected. Application still verifies the
+current file, assesses structure and reviewed semantics, and runs the exact binary's bounded native
+check. Native acceptance does not establish that a silently ignored setting will work. Structural
+coverage, reviewed semantic coverage, and native acceptance remain distinct evidence boundaries.
+
+编辑器根据已读取的身份信息检查候选与格式有效的未完成编辑，不在每次输入时执行程序或重新哈希文件。
+诊断和操作门禁来自同一快照，设置修正后清除。应用时仍核对当前文件、检查结构和已审查的语义规则，
+并执行当前精确二进制的有界原生检查。原生接受不能证明被静默忽略的设置会生效；结构覆盖、语义规则
+覆盖与原生接受保持独立。
+
+Success feedback expires after six seconds. Read/refresh failures with usable state and confirmed
+rejections expire after twelve seconds; hovering or focusing a notice pauses dismissal. Repeated
+events restart the timer. Unconfirmed writes, unsaved draft failures, unavailable workspaces and
+recovery states retain their retry action. Authoritative configuration blockers remain until fixed.
+
+成功反馈显示六秒；仍有可用状态的读取/刷新失败和已确认拒绝的操作提示显示十二秒。鼠标停留或键盘聚焦时
+暂停关闭，重复触发重新计时。写入结果未确认、草稿未保存、工作区无法加载及恢复状态保留重试入口；
+权威配置阻塞问题持续显示，直到修正。
 
 Show one conclusion and one recovery action. Baselines are detected, never manually overridden.
 Source identities, hashes, and build tags belong in collapsed details. Native check diagnostics contain

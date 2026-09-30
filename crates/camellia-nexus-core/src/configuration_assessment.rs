@@ -168,6 +168,36 @@ impl CoreCapabilityProfile {
                     == Some(crate::ConfigurationFormat::Jsonc),
             )?;
             for (path, value) in selected {
+                let case_insensitive = self.program == ProgramKind::Xray;
+                let parent = value_at_path(document, &path[..path.len().saturating_sub(1)]);
+                let sibling_value = |name: &str| {
+                    parent.and_then(|parent| {
+                        object_fields(parent, name, case_insensitive)
+                            .next()
+                            .map(|(_, value)| value)
+                    })
+                };
+                if !rule
+                    .when
+                    .iter()
+                    .all(|predicate| match sibling_value(&predicate.sibling) {
+                        Some(value) => predicate.values.contains(value),
+                        None => predicate.allow_missing,
+                    })
+                {
+                    continue;
+                }
+                let evidence = rule.evidence.first().ok_or_else(stale_profile)?;
+                if let KnowledgeValueConstraint::Platform { activation, .. } = &rule.constraint
+                    && !activation.is_active(value)
+                {
+                    continue;
+                }
+                if let KnowledgeValueConstraint::Requires { when_value, .. } = &rule.constraint
+                    && value != when_value
+                {
+                    continue;
+                }
                 match evaluate_build_condition(
                     self.program,
                     self.build.as_ref(),
@@ -181,28 +211,48 @@ impl CoreCapabilityProfile {
                             "CORE_BUILD_CAPABILITY_UNCONFIRMED",
                             path,
                             rule.id.clone(),
-                            &rule.evidence,
+                            evidence,
                         )?;
                         continue;
                     }
                     BuildCondition::Satisfied => {}
                 }
-                let invalid = match &rule.constraint {
+                let code = match &rule.constraint {
                     KnowledgeValueConstraint::Enum { values, allow_null } => {
-                        !(value.is_null() && *allow_null)
+                        let invalid = !(value.is_null() && *allow_null)
                             && !value
                                 .as_str()
-                                .is_some_and(|value| values.iter().any(|allowed| allowed == value))
+                                .is_some_and(|value| values.iter().any(|allowed| allowed == value));
+                        invalid.then_some("CONFIGURATION_VALUE_NOT_ALLOWED")
                     }
+                    KnowledgeValueConstraint::Platform { condition, .. } => {
+                        match evaluate_build_condition(
+                            self.program,
+                            self.build.as_ref(),
+                            condition,
+                            &reported_tags,
+                        ) {
+                            BuildCondition::Satisfied => None,
+                            BuildCondition::Excluded => Some("CONFIGURATION_PLATFORM_UNSUPPORTED"),
+                            BuildCondition::Unconfirmed => {
+                                Some("CORE_BUILD_CAPABILITY_UNCONFIRMED")
+                            }
+                        }
+                    }
+                    KnowledgeValueConstraint::Requires {
+                        when_value,
+                        sibling,
+                        value: required,
+                    } => (value == when_value && sibling_value(sibling) != Some(required))
+                        .then_some("CONFIGURATION_SETTING_REQUIRED"),
                 };
-                if invalid {
-                    push_issue(
-                        &mut issues,
-                        "CONFIGURATION_VALUE_NOT_ALLOWED",
-                        path,
-                        rule.id.clone(),
-                        &rule.evidence,
-                    )?;
+                if let Some(code) = code {
+                    push_issue(&mut issues, code, path, rule.id.clone(), evidence)?;
+                    if code != "CORE_BUILD_CAPABILITY_UNCONFIRMED"
+                        && let Some(issue) = issues.last_mut()
+                    {
+                        issue.message_key = rule.message_key.clone();
+                    }
                 }
             }
         }
@@ -314,6 +364,17 @@ impl CoreCapabilityProfile {
     }
 }
 
+fn value_at_path<'a>(mut value: &'a Value, path: &[String]) -> Option<&'a Value> {
+    for segment in path {
+        value = if let Some(array) = value.as_array() {
+            array.get(segment.parse::<usize>().ok()?)?
+        } else {
+            value.get(segment)?
+        };
+    }
+    Some(value)
+}
+
 fn push_issue(
     issues: &mut Vec<ConfigurationAssessmentIssue>,
     code: &str,
@@ -403,6 +464,157 @@ fn stale_profile() -> CamelliaNexusError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn platform_profile(program: ProgramKind, version: &str, os: &str) -> CoreCapabilityProfile {
+        let output = match program {
+            ProgramKind::SingBox => format!(
+                "sing-box version {version}\nEnvironment: go1.26.0 {os}/amd64\nTags: with_gvisor,with_quic"
+            ),
+            ProgramKind::Mihomo => {
+                format!("Mihomo Meta v{version} {os} amd64 with go1.26.0\nUse tags: with_gvisor")
+            }
+            ProgramKind::Xray => format!(
+                "Xray {version} (Xray, Penetrates Everything.) Custom (go1.26.0 {os}/amd64)"
+            ),
+            ProgramKind::Generic => unreachable!(),
+        };
+        CoreCapabilityProfile::resolve(
+            program,
+            &CoreProbeReport::from_program_output(program, &output),
+            &CoreBinaryFingerprint {
+                sha256: "a".repeat(64),
+                size: 1,
+                modified_unix_ms: 1,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn platform_rules_cover_each_maintained_patch_without_claiming_disabled_features() {
+        let knowledge = embedded_core_knowledge().unwrap();
+        for program in [ProgramKind::SingBox, ProgramKind::Mihomo, ProgramKind::Xray] {
+            let descriptor = knowledge.program(program).unwrap();
+            for release in &descriptor.releases {
+                let (candidate, inactive) = match program {
+                    ProgramKind::SingBox => (
+                        json!({"inbounds":[{"type":"tun","auto_route":true,"auto_redirect":true}]}),
+                        json!({"inbounds":[{"type":"tun","auto_redirect":false}]}),
+                    ),
+                    ProgramKind::Mihomo => (json!({"tproxy-port":12345}), json!({"tproxy-port":0})),
+                    ProgramKind::Xray => (
+                        json!({"outbounds":[{"streamSettings":{"sockopt":{"mark":123}}}]}),
+                        json!({"outbounds":[{"streamSettings":{"sockopt":{"mark":0}}}]}),
+                    ),
+                    _ => unreachable!(),
+                };
+                let windows = platform_profile(program, &release.version, "windows");
+                let issues = windows.assess(&candidate).unwrap().issues;
+                assert_eq!(issues.len(), 1, "{program:?} {}", release.tag);
+                assert_eq!(issues[0].code, "CONFIGURATION_PLATFORM_UNSUPPORTED");
+                assert!(windows.assess(&inactive).unwrap().issues.is_empty());
+                assert!(
+                    platform_profile(program, &release.version, "linux")
+                        .assess(&candidate)
+                        .unwrap()
+                        .issues
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn redirect_checks_require_an_enabled_tun_and_preserve_unknown_platform_evidence() {
+        let knowledge = embedded_core_knowledge().unwrap();
+        for program in [ProgramKind::SingBox, ProgramKind::Mihomo] {
+            let descriptor = knowledge.program(program).unwrap();
+            for release in &descriptor.releases {
+                let declared = descriptor.semantic_rules.iter().any(|variant| {
+                    variant.releases.contains(&release.tag)
+                        && variant.rule.id.ends_with("auto-redirect.platform")
+                });
+                if !declared {
+                    continue;
+                }
+                let candidate = if program == ProgramKind::SingBox {
+                    json!({"inbounds":[{"type":"tun","auto_route":false,"auto_redirect":true}]})
+                } else {
+                    json!({"tun":{"enable":true,"auto-route":false,"auto-redirect":true}})
+                };
+                let linux = platform_profile(program, &release.version, "linux");
+                let issues = linux.assess(&candidate).unwrap().issues;
+                assert_eq!(issues.len(), 1, "{}", release.tag);
+                assert_eq!(issues[0].message_key, "CONFIGURATION_AUTO_ROUTE_REQUIRED");
+                let windows = platform_profile(program, &release.version, "windows");
+                let issues = windows.assess(&candidate).unwrap().issues;
+                assert_eq!(issues.len(), 1);
+                assert_eq!(issues[0].message_key, "CONFIGURATION_PLATFORM_UNSUPPORTED");
+                let inactive = if program == ProgramKind::SingBox {
+                    json!({"inbounds":[{"type":"direct","auto_redirect":true}]})
+                } else {
+                    json!({"tun":{"enable":false,"auto-redirect":true}})
+                };
+                assert!(windows.assess(&inactive).unwrap().issues.is_empty());
+                let mut unknown = windows.clone();
+                unknown.build.as_mut().unwrap().operating_system = None;
+                unknown.profile_hash = unknown.compute_hash().unwrap();
+                let unknown_issues = unknown.assess(&candidate).unwrap().issues;
+                assert_eq!(unknown_issues[0].code, "CORE_BUILD_CAPABILITY_UNCONFIRMED");
+                assert_eq!(
+                    unknown_issues[0].message_key,
+                    "CORE_BUILD_CAPABILITY_UNCONFIRMED"
+                );
+                let disabled = if program == ProgramKind::SingBox {
+                    json!({"inbounds":[{"type":"tun","auto_redirect":false}]})
+                } else {
+                    json!({"tun":{"enable":true,"auto-redirect":false}})
+                };
+                assert!(unknown.assess(&disabled).unwrap().issues.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn xray_socket_rules_distinguish_freebsd_support_and_inactive_numbers() {
+        let knowledge = embedded_core_knowledge().unwrap();
+        for release in &knowledge.program(ProgramKind::Xray).unwrap().releases {
+            let candidate = json!({"inbounds":[{"streamSettings":{"sockopt":{
+                "mark":1,"tcpMaxSeg":1200,"tcpCongestion":"bbr","tcpUserTimeout":1000,"tcpWindowClamp":65535}}}]});
+            assert_eq!(
+                platform_profile(ProgramKind::Xray, &release.version, "windows")
+                    .assess(&candidate)
+                    .unwrap()
+                    .issues
+                    .len(),
+                5
+            );
+            assert_eq!(
+                platform_profile(ProgramKind::Xray, &release.version, "freebsd")
+                    .assess(&candidate)
+                    .unwrap()
+                    .issues
+                    .len(),
+                4
+            );
+            assert!(
+                platform_profile(ProgramKind::Xray, &release.version, "linux")
+                    .assess(&candidate)
+                    .unwrap()
+                    .issues
+                    .is_empty()
+            );
+            let inactive = json!({"inbounds":[{"streamSettings":{"sockopt":{
+                "mark":0,"tcpMaxSeg":-1,"tcpCongestion":"","tcpUserTimeout":0,"tcpWindowClamp":-1}}}]});
+            assert!(
+                platform_profile(ProgramKind::Xray, &release.version, "windows")
+                    .assess(&inactive)
+                    .unwrap()
+                    .issues
+                    .is_empty()
+            );
+        }
+    }
 
     fn profile() -> CoreCapabilityProfile {
         let knowledge = embedded_core_knowledge().unwrap();

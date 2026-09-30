@@ -1,11 +1,14 @@
 <script lang="ts">
+  import { createEventDispatcher } from 'svelte';
   import { t } from './i18n';
   import { coreAssessmentMessage } from './errors';
-  import type { ConfigurationStateView, ConfigurationSurface } from './types';
+  import type { ConfigurationConflict, ConfigurationStateView, ConfigurationSurface } from './types';
 
   export let state: ConfigurationStateView | null = null;
   export let surface: ConfigurationSurface;
   export let includeAll = false;
+
+  const dispatch = createEventDispatcher<{ reviewSource: { sourceId: string } }>();
 
   const diagnosticMessages: Record<string, string> = {
     SOURCE_INVALID: 'Fix or disable this source before continuing.',
@@ -76,6 +79,31 @@
     (issue) => owns(issue) && !hasSourceStatusFor(issue.messageKey ?? issue.code),
   );
   $: conflicts = (state?.desired.conflicts ?? []).filter(owns);
+  $: sourceConflictGroups = surface === 'sources' && !includeAll
+    ? [...conflicts.filter((conflict) => conflict.messageKey === 'SOURCE_VALUE_CONFLICT')
+      .reduce((groups, conflict) => {
+        const sourceId = conflict.scope?.ownerId ?? '';
+        const existing = groups.get(sourceId);
+        if (existing) existing.push(conflict);
+        else groups.set(sourceId, [conflict]);
+        return groups;
+      }, new Map<string, typeof conflicts>()).entries()]
+    : [];
+  $: otherConflicts = surface === 'sources' && !includeAll
+    ? conflicts.filter((conflict) => conflict.messageKey !== 'SOURCE_VALUE_CONFLICT')
+    : conflicts;
+
+  function sourceName(sourceId: string): string {
+    return state?.sourceStatuses.find((source) => source.sourceId === sourceId)?.sourceName ?? sourceId;
+  }
+
+  function otherSourceIds(items: ConfigurationConflict[], sourceId: string): string[] {
+    return [...new Set(items.flatMap((item) => item.sourceIds ?? []).filter((id) => id !== sourceId))];
+  }
+
+  function reviewSource(sourceId: string | undefined): void {
+    if (sourceId) dispatch('reviewSource', { sourceId });
+  }
 </script>
 
 {#if diagnostics.length > 0 || conflicts.length > 0}
@@ -84,10 +112,28 @@
       <article>
         <div><strong>{$t(diagnosticTitles[diagnostic.messageKey ?? diagnostic.code] ?? diagnosticTitles[diagnostic.code] ?? 'Configuration issue')}</strong></div>
         <p>{$t(diagnosticMessage(diagnostic.code, diagnostic.messageKey))}</p>
+        {#if surface === 'sources' && diagnostic.scope?.ownerId}
+          <button type="button" on:click={() => reviewSource(diagnostic.scope?.ownerId)}>{$t('Review source')}</button>
+        {/if}
         <details><summary>{$t('Information for support')}</summary><code>{diagnostic.code}</code>{#if diagnostic.scope?.ownerId}<code>{diagnostic.scope.ownerId}</code>{/if}{#if diagnostic.details}<pre>{diagnostic.details}</pre>{/if}</details>
       </article>
     {/each}
-    {#each conflicts as conflict, index (`conflict-${conflict.semanticPath}-${index}`)}
+    {#each sourceConflictGroups as [sourceId, items] (sourceId)}
+      {@const others = otherSourceIds(items, sourceId)}
+      <article>
+        <div><strong>{$t('Source values conflict')}</strong><span>{[sourceName(sourceId), ...others.map(sourceName)].join(' · ')}</span></div>
+        <p>{$t('These sources set different values. Review one, then pause or edit it and save.')}</p>
+        <div class="source-review-actions">
+          {#each [sourceId, ...others].filter(Boolean) as id (id)}
+            <button type="button" on:click={() => reviewSource(id)}>{$t('Review source')}: {sourceName(id)}</button>
+          {/each}
+        </div>
+        <details><summary>{items.length} {$t(items.length === 1 ? 'affected setting' : 'affected settings')}</summary>
+          {#each items as item, index (`${item.semanticPath}-${index}`)}<code>{item.semanticPath}{#if others.length > 1} · {(item.sourceIds ?? []).map(sourceName).join(' · ')}{/if}</code>{/each}
+        </details>
+      </article>
+    {/each}
+    {#each otherConflicts as conflict, index (`conflict-${conflict.semanticPath}-${index}`)}
       <article>
         <div><strong>{$t('Configuration conflict')}</strong><code>{conflict.semanticPath}</code></div>
         <p>{$t(conflictMessage(conflict.messageKey))}</p>
@@ -102,9 +148,13 @@
   article { display: grid; gap: 4px; min-width: 0; }
   article + article { padding-top: 7px; border-top: 1px solid rgba(127,127,127,.18); }
   article > div { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+  article > button { justify-self: start; width: auto; max-width: 100%; min-width: 0; min-height: 30px; padding: 4px 8px; white-space: normal; text-align: left; overflow-wrap: anywhere; }
+  .source-review-actions { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+  .source-review-actions button { width: auto; max-width: 100%; min-width: 0; min-height: 30px; padding: 4px 8px; white-space: normal; text-align: left; overflow-wrap: anywhere; }
   p { margin: 0; font-size: .84rem; line-height: 1.4; }
   code { max-width: 100%; overflow-wrap: anywhere; font-size: .76rem; opacity: .78; }
   details { min-width: 0; font-size: .78rem; }
   details code + code { margin-left: 7px; }
+  details code { display: block; }
   pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

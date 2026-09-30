@@ -111,6 +111,14 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
   JSON, YAML, and proxy tags. Rules cite immutable source commits and symbols. Track structural and
   semantic coverage separately; do not convert unknown behavior into a support claim. Knowledge
   revisions are content hashes, and implementation revisions derive from build information.
+- Platform rules bind configured activation, object context, source/dependency behavior and build
+  conditions per stable patch. Retained binary observations support editor feedback; the desktop's
+  own platform never substitutes for missing binary metadata. Application verifies the current file
+  and native result independently. Preserve off/empty semantics instead of warning about unused options.
+- Persisted identity observations are bounded data, not current capability authority. A knowledge
+  update must not prevent profile loading, stopping, inspection or executable replacement. Reuse
+  observations only while file identity, probe implementation and reviewed target remain current;
+  rebuild the candidate profile and require fresh acceptance before activation.
 - Configuration contributions follow explicit semantic-path write order across Sources, Intent,
   and Details. An explicit edit changes only its touched paths; background Source refresh never
   reclaims paths from later user settings. Final editor text is three-way merged with this latest

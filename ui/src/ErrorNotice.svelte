@@ -14,6 +14,7 @@
 
   let dismissTimer: number | undefined;
   let scheduledKey = '';
+  let scheduledError: ErrorInfo | null = null;
   let pointerPaused = false;
   let focusPaused = false;
 
@@ -31,7 +32,8 @@
     const nextKey = autoDismissMs > 0
       ? `${error.code ?? ''}\u0000${error.title}\u0000${error.message}\u0000${autoDismissMs}`
       : '';
-    if (nextKey !== scheduledKey) {
+    if (nextKey !== scheduledKey || error !== scheduledError) {
+      scheduledError = error;
       scheduledKey = nextKey;
       scheduleDismiss();
     }

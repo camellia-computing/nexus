@@ -133,6 +133,19 @@ func TestCallableAliasesKeepImportIdentityAndMutuallyExclusiveBuildBranches(t *t
 	}
 }
 
+func TestPlatformConstantsBindValueAndBuildBranch(t *testing.T) {
+	result, err := extract([]sourceFile{
+		{"feature/redirect_linux.go", "package feature\nconst support = true"},
+		{"feature/redirect_stub.go", "//go:build !linux\npackage feature\nconst support = false"},
+	})
+	if err != nil || len(result.Functions) != 2 {
+		t.Fatalf("missing conditions: %+v / %v", result, err)
+	}
+	if result.Functions[0].BodyHash == result.Functions[1].BodyHash || result.Functions[0].BuildConstraint != "linux" || result.Functions[1].BuildConstraint != "(!linux)" {
+		t.Fatalf("unbound platform behavior: %+v", result.Functions)
+	}
+}
+
 func TestSchemaAnnotationsAreSeparateFromWireTags(t *testing.T) {
 	result, err := extract([]sourceFile{{"option/value.go", "package option\ntype Options struct { Level string `json:\"level,omitempty\" enum:\"debug,info\" default:\"info\" reference:\"outbound\"` }"}})
 	if err != nil {

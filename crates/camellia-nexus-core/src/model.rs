@@ -109,6 +109,23 @@ pub struct ExecutableMetadata {
     pub core_target: Option<crate::CoreTargetIdentity>,
 }
 
+impl ExecutableMetadata {
+    pub(crate) fn observations_match(&self, current: &Self, program: ProgramKind) -> bool {
+        self.fingerprint == current.fingerprint
+            && (program == ProgramKind::Generic
+                || self
+                    .probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.revision == crate::CORE_BINARY_PROBE_REVISION)
+                    && self.core_target.as_ref().is_some_and(|target| {
+                        target.program == program
+                            && target.fingerprint_sha256.as_deref()
+                                == Some(&self.fingerprint.sha256)
+                            && target.validate().is_ok()
+                    }))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProgramKind {
@@ -514,7 +531,7 @@ impl ProgramSpec {
                     ));
                 }
                 (Some(target), _) => {
-                    target.validate()?;
+                    target.validate_observation()?;
                     if target.fingerprint_sha256.as_deref()
                         != Some(metadata.fingerprint.sha256.as_str())
                     {

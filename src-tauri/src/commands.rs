@@ -4209,6 +4209,19 @@ pub struct ConfigurationSourcesCommand {
 }
 
 #[tauri::command]
+pub async fn get_configuration_workspace_preview(
+    state: State<'_, AppState>,
+    program_id: String,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    authorize_safety(&state, SafetyOperation::View)?;
+    let program_id = id(program_id)?;
+    state
+        .configuration_state
+        .load_workspace_preview(&state.manager, &program_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn get_configuration_workspace(
     state: State<'_, AppState>,
     program_id: String,
@@ -4349,6 +4362,25 @@ pub async fn resolve_configuration_conflict(
 }
 
 #[tauri::command]
+pub async fn adopt_upstream_change(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::AdoptUpstreamChangeRequest,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let _operation =
+        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
+    state
+        .configuration_state
+        .adopt_upstream_change_with_lease(&state.manager, &program_id, request, &lease)
+        .await
+}
+
+#[tauri::command]
 pub async fn discard_final_configuration_draft(
     state: State<'_, AppState>,
     program_id: String,
@@ -4456,8 +4488,9 @@ pub async fn update_configuration_sources(
         .await?;
     let current = state
         .configuration_state
-        .load_view_with_lease(&state.manager, &program_id, &configuration_lease)
-        .await?;
+        .load_editor_snapshot(&state.manager, &program_id, &configuration_lease)
+        .await?
+        .state;
     if current.generation != request.expected_generation {
         return Err(camellia_nexus_core::CamelliaNexusError::new(
             ErrorCode::ConfigConflict,
@@ -4523,7 +4556,7 @@ pub async fn update_configuration_sources(
     settle_configuration_workspace(&state, previous_spec, credentials, refreshed).await?;
     let snapshot = state
         .configuration_state
-        .load_workspace_with_lease(&state.manager, &program_id, &configuration_lease)
+        .load_editor_snapshot(&state.manager, &program_id, &configuration_lease)
         .await?;
     drop(configuration_lease);
     Ok(snapshot)

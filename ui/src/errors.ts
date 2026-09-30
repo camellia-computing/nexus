@@ -17,12 +17,30 @@ export type ConfigurationErrorContext =
   | 'final-editor-draft'
   | 'configuration-save'
   | 'configuration-apply'
-  | 'configuration-rebase';
+  | 'configuration-rebase'
+  | 'configuration-adopt-upstream';
 
 export const TRANSIENT_ERROR_DISMISS_MS = 12_000;
 
+export function configurationNoticeDuration(error: ErrorInfo, context: ConfigurationErrorContext, hasUsableWorkspace = false): number {
+  if (context === 'final-editor-draft'
+    || error.messageKey?.includes('RECOVERY_REQUIRED')
+    || error.messageKey === 'CONFIGURATION_OPERATION_PENDING') return 0;
+  if (context === 'configuration-load') return hasUsableWorkspace ? TRANSIENT_ERROR_DISMISS_MS : 0;
+  if (context === 'sources-refresh') return TRANSIENT_ERROR_DISMISS_MS;
+  // An unconfirmed write retains its original retry request.
+  return configurationChoiceWasRejected(error) || error.code === 'PROGRAM_BUSY'
+    ? TRANSIENT_ERROR_DISMISS_MS : 0;
+}
+
 export function isTransientErrorInfo(error: ErrorInfo | null | undefined) {
   return error?.code === 'TIMEOUT' || error?.code === 'NETWORK' || error?.code === 'RATE_LIMITED';
+}
+
+export function configurationChoiceWasRejected(error: Pick<ErrorInfo, 'code' | 'messageKey'>): boolean {
+  if (error.messageKey === 'CONFIGURATION_OPERATION_PENDING') return false;
+  return ['INVALID_SPEC', 'INVALID_PATH', 'INVALID_STATE', 'CONFIG_INVALID', 'CONFIG_CONFLICT', 'NOT_FOUND', 'REQUEST_TOO_LARGE', 'UNSUPPORTED_BINARY']
+    .includes(error.code ?? '') || (error.code?.startsWith('LICENSE_') ?? false);
 }
 
 export function publicErrorInfo(error: ErrorInfo | null | undefined): ErrorInfo | null {
@@ -184,10 +202,13 @@ const assessmentMessages: Record<string, string> = {
   CORE_NATIVE_TYPE_REJECTED: 'The program reported a value with the wrong type.',
   CORE_NATIVE_SYNTAX_REJECTED: 'The program could not parse this configuration.',
   CORE_NATIVE_PORT_REJECTED: 'The program reported an invalid port.',
+  CORE_NATIVE_AUTO_REDIRECT_REJECTED: 'The program could not enable automatic traffic redirection. Check the TUN auto_redirect setting.',
   CORE_NATIVE_RESOURCE_UNAVAILABLE: 'The program could not read a required file.',
   CORE_CONFIGURATION_FIELD_UNCONFIRMED: 'This program has not declared a configuration field. Remove it or choose a build that supports it.',
   CORE_CONFIGURATION_SCHEMA_UNCONFIRMED: 'This program could not provide usable field information. Retry or choose another build.',
   CONFIGURATION_VALUE_NOT_ALLOWED: 'A value is not supported by this program. Review Final configuration.',
+  CONFIGURATION_PLATFORM_UNSUPPORTED: 'This setting is not available on this program’s platform. Disable or remove it.',
+  CONFIGURATION_AUTO_ROUTE_REQUIRED: 'Turn on automatic routing before enabling automatic redirection.',
   CONFIGURATION_ASSESSMENT_LIMIT: 'This configuration is too complex to check. Reduce it and try again.',
   CORE_BUILD_CAPABILITY_UNAVAILABLE: 'This build cannot use a configured feature. Change the setting or choose another build.',
   CORE_BUILD_CAPABILITY_UNCONFIRMED: 'A configured feature could not be confirmed. Choose a build with identifiable capabilities.',
@@ -356,6 +377,7 @@ const configurationContextLabels: Record<ConfigurationErrorContext, { title: str
   'configuration-save': { title: 'Configuration candidate could not be saved' },
   'configuration-apply': { title: 'Configuration could not be applied' },
   'configuration-rebase': { title: 'Configuration draft could not be rebased' },
+  'configuration-adopt-upstream': { title: 'Latest setting could not be used' },
 };
 
 /**
@@ -455,6 +477,16 @@ export function configurationErrorInfo(
       fallbackMessage: '配置在本次操作提交前已在其他位置更新。当前草稿和有效配置均已保留。',
       details: base.details || base.message,
       suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_DRAFT_UNCOMMITTED') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'Finish or discard your unfinished edit first.',
+      fallbackMessage: '请先完成或放弃尚未提交的编辑。',
+      details: base.details || base.message,
+      suggestion: '',
     };
   }
   if (base.messageKey === 'CONFIGURATION_BLOCKING_CONFLICT') {

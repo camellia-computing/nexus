@@ -343,6 +343,7 @@ export interface ConfigurationConflict {
   semanticPath: string;
   reason: string;
   severity: 'warning' | 'error';
+  sourceIds?: string[];
   messageKey?: string;
   parameters?: Record<string, string | number>;
   scope?: ConfigurationIssueScope;
@@ -436,6 +437,14 @@ export interface FinalChangeProjection {
   finalValue: SemanticValue;
   issues: ConfigurationEditorIssue[];
 }
+export interface AdoptUpstreamChangeRequest {
+  operationId: string;
+  expectedStateRevision: number;
+  editorSessionId?: string;
+  expectedDraftRevision?: number;
+  editId: string;
+  path: SemanticPathSegment[];
+}
 export type FinalMergeConflictKind = 'addVsAdd' | 'modifyVsModify' | 'deleteVsModify' | 'modifyVsDelete' | 'sequence';
 export interface FinalMergeConflict {
   conflictId: string;
@@ -469,6 +478,7 @@ export interface ConfigurationEditorView {
   document: { content: string; revision: ConfigurationRevision };
   editStatus: FinalEditStatus;
   candidateStatus: CandidateStatus;
+  diagnostics: ConfigurationDiagnostic[];
   changes: FinalChangeProjection[];
   conflicts: FinalConflictProjection[];
   blockers: ConfigurationGateBlocker[];

@@ -5,6 +5,7 @@
   import type {
     ConfigurationWorkspaceView,
     FinalEditorSession,
+    FinalChangeProjection,
     SemanticValue,
   } from './types';
 
@@ -16,6 +17,8 @@
   export let draftDirty = false;
   export let syntaxInvalid = false;
   export let editorHasErrors = false;
+  export let identityChecking = false;
+  export let identityCheckFailed = false;
 
   const dispatch = createEventDispatcher<{
     focusPath: { path: string };
@@ -23,7 +26,8 @@
     rebaseDraft: void;
     resumeDraft: void;
     discardDraft: void;
-    navigateSurface: { surface: 'intent' | 'details' | 'sources' | 'configuration' | 'compatibility' };
+    navigateSurface: { surface: 'intent' | 'details' | 'sources' | 'configuration' | 'compatibility'; sourceId?: string };
+    adoptUpstream: FinalChangeProjection;
   }>();
 
   const blockerMessages: Record<string, string> = {
@@ -47,9 +51,13 @@
   $: selectedChange = selectedPath
     ? changes.find((item) => item.semanticPath === selectedPath) ?? null
     : null;
-  $: effectiveEditStatus = workspace.editor.editStatus === 'conflict'
-    || conflicts.length
-    || draft?.rebaseRequired
+  $: selectedChangeIndex = selectedChange ? changes.findIndex((item) => item.editId === selectedChange.editId) : -1;
+  $: repairingCandidateIssue = draftDirty && !conflicts.length
+    && workspace.editor.blockers.some((blocker) => blocker.blocks.includes('save') && blocker.recoveryAction === 'reviewCandidate')
+    && !workspace.editor.blockers.some((blocker) => blocker.blocks.includes('save') && blocker.recoveryAction !== 'reviewCandidate');
+  $: effectiveEditStatus = (workspace.editor.editStatus === 'conflict' && !repairingCandidateIssue)
+    || conflicts.length > 0
+    || !!draft?.rebaseRequired
     ? 'conflict'
     : draftDirty || workspace.editor.editStatus === 'modified'
       ? 'modified'
@@ -58,7 +66,7 @@
   $: actionableBlockers = workspace.editor.blockers.filter((blocker) => ![
     'CONFIGURATION_CANDIDATE_UNSAVED',
     'CORE_VALIDATION_REQUIRED',
-  ].includes(blocker.code));
+  ].includes(blocker.code) && !(repairingCandidateIssue && blocker.blocks.includes('save') && blocker.recoveryAction === 'reviewCandidate'));
   $: hasSaveBlocker = actionableBlockers.some((blocker) => blocker.blocks.includes('save'));
   $: visibleBlockers = (hasSaveBlocker
     ? actionableBlockers.filter((blocker) => blocker.blocks.includes('save'))
@@ -84,6 +92,10 @@
       ? 'Fix the highlighted issue, then try again.'
     : effectiveCandidateStatus === 'invalid'
       ? 'Fix the highlighted issue, then try again.'
+      : identityCheckFailed
+        ? 'Check the program in Compatibility before applying.'
+      : identityChecking
+        ? 'Checking the current program before applying.'
       : effectiveCandidateStatus === 'applied'
         ? 'Configuration is up to date.'
         : 'Ready to apply.';
@@ -104,7 +116,7 @@
       return;
     }
     if (blocker.recoveryAction === 'resolveSourceConflict') {
-      dispatch('navigateSurface', { surface: 'sources' });
+      dispatch('navigateSurface', { surface: 'sources', sourceId: blocker.scope.ownerId });
       return;
     }
     if (blocker.semanticPath) dispatch('focusPath', { path: blocker.semanticPath });
@@ -115,6 +127,12 @@
     const index = (activeConflictIndex + offset + conflicts.length) % conflicts.length;
     const conflict = conflicts[index];
     dispatch('selectConflict', { conflictId: conflict.conflictId, path: conflict.semanticPath });
+  }
+
+  function navigateChange(offset: number): void {
+    if (!changes.length || selectedChangeIndex < 0) return;
+    const change = changes[(selectedChangeIndex + offset + changes.length) % changes.length];
+    dispatch('focusPath', { path: change.semanticPath });
   }
 </script>
 
@@ -183,7 +201,14 @@
           <p class="eyebrow">{$t('Your change')}</p>
           <h3 id="path-inspector-title"><code>{selectedChange.semanticPath}</code></h3>
         </div>
-        <button type="button" class="quiet-button" on:click={() => dispatch('focusPath', { path: selectedChange.semanticPath })}>{$t('Locate in editor')}</button>
+        <div class="change-navigation">
+          {#if changes.length > 1}
+            <button type="button" class="quiet-button" on:click={() => navigateChange(-1)} aria-label={$t('Previous change')}>←</button>
+            <span>{selectedChangeIndex + 1} / {changes.length}</span>
+            <button type="button" class="quiet-button" on:click={() => navigateChange(1)} aria-label={$t('Next change')}>→</button>
+          {/if}
+          <button type="button" class="quiet-button" on:click={() => dispatch('focusPath', { path: selectedChange.semanticPath })}>{$t('Locate in editor')}</button>
+        </div>
       </header>
 
         <p class="inspector-summary">{$t('This path differs from the current upstream configuration.')}</p>
@@ -191,6 +216,7 @@
           <div><small>{$t('Upstream value')}</small><pre>{displaySemantic(selectedChange.upstreamValue)}</pre></div>
           <div><small>{$t('Final value')}</small><pre>{displaySemantic(selectedChange.finalValue)}</pre></div>
         </div>
+        <button type="button" class="quiet-button" on:click={() => dispatch('adoptUpstream', selectedChange)} disabled={disabled || draftDirty || !!draft?.rebaseRequired}>{$t('Use latest setting')}</button>
 
     </aside>
   {/if}
@@ -212,6 +238,7 @@
   .editor-slot, .editor-actions { min-width: 0; overflow: hidden; }.path-inspector { display: grid; gap: 9px; min-width: 0; max-width: 100%; padding: 11px; border: 1px solid var(--ui-border-default); border-radius: 8px; background: var(--ui-surface-2); }.path-inspector h3 code { white-space: pre-wrap; overflow-wrap: anywhere; }.inspector-summary { margin: 0; color: var(--ui-text-secondary); font-size: .76rem; overflow-wrap: anywhere; }
   .value-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; min-width: 0; }.value-grid > div { min-width: 0; }.value-grid small { color: var(--ui-text-tertiary); font-size: .68rem; }.value-grid pre, details pre { max-height: 150px; margin: 3px 0 0; overflow: auto; border: 1px solid var(--ui-border-subtle); border-radius: 5px; background: var(--ui-input); padding: 6px; color: inherit; font: .7rem/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
   .quiet-button { min-width: 0; max-width: 100%; min-height: 32px; border: 1px solid var(--ui-border-default); border-radius: 6px; background: transparent; padding: 5px 8px; color: inherit; font-size: .74rem; white-space: normal; overflow-wrap: anywhere; } details { min-width: 0; color: var(--ui-text-secondary); font-size: .72rem; } details p { overflow-wrap: anywhere; }
+  .change-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }.change-navigation span { color: var(--ui-text-secondary); font-size: .72rem; }.change-navigation button[aria-label] { min-width: 32px; padding: 4px; }
   @media (max-width: 680px) { .editor-state { width: 100%; }.value-grid { grid-template-columns: 1fr; } }
   @media (max-width: 520px) { .workspace-heading, .path-inspector > header, .draft-recovery { align-items: stretch; flex-direction: column; }.quiet-button, .draft-recovery button { width: 100%; } }
 </style>

@@ -44,6 +44,10 @@ fn classify(stdout: &str, stderr: &str) -> &'static str {
     // Match diagnostic categories, never retain the values or paths following a native message.
     let categories: &[(&str, &[&str])] = &[
         (
+            "CORE_NATIVE_AUTO_REDIRECT_REJECTED",
+            &["initialize auto-redirect: invalid argument"],
+        ),
+        (
             "CORE_NATIVE_FIELD_REJECTED",
             &["json: unknown field", "unexpected key:"],
         ),
@@ -108,6 +112,10 @@ mod tests {
                 "CORE_NATIVE_TYPE_REJECTED",
             ),
             ("invalid port: private-token", "CORE_NATIVE_PORT_REJECTED"),
+            (
+                "initialize inbound[1]: initialize auto-redirect: invalid argument: private-token",
+                "CORE_NATIVE_AUTO_REDIRECT_REJECTED",
+            ),
             (
                 "private-token: permission denied",
                 "CORE_NATIVE_RESOURCE_UNAVAILABLE",

@@ -2793,6 +2793,63 @@ test('source save errors stay scoped, explain the busy operation, and retry safe
   await expect(sources.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
 });
 
+test('source feedback expires and a repeated save gets a fresh display interval', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('#program-panel-sources');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  const content = sources.locator('.source-inline-content').last();
+  await page.clock.install();
+  await content.fill('{"log":{"level":"debug"}}');
+  await sources.getByRole('button', { name: 'Save sources', exact: true }).click();
+  const feedback = sources.locator('.workspace-success');
+  await expect(feedback).toHaveText('Sources saved');
+  await page.clock.runFor(4000);
+  await content.fill('{"log":{"level":"warn"}}');
+  await sources.getByRole('button', { name: 'Save sources', exact: true }).click();
+  await expect(feedback).toHaveText('Sources saved');
+  await page.clock.runFor(3000);
+  await expect(feedback).toBeVisible();
+  await page.clock.runFor(3100);
+  await expect(feedback).toHaveCount(0);
+  await expect(sources.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
+});
+
+test('platform capability feedback is localized, actionable and clears after repair', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 820 });
+  await openPreview(page, 'aurora', 'dark', 1, '&__ui_platform_issue');
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const workspace = page.locator('.final-editor-workspace');
+  const warning = workspace.locator('.editor-blockers');
+  await expect(warning).toContainText('This setting is not available on this program’s platform');
+  await expect(warning).toContainText('/inbounds/0/auto_redirect');
+  await expect(page.getByRole('button', { name: 'Apply and restart', exact: true })).toBeDisabled();
+  await page.clock.install();
+  await page.clock.runFor(15000);
+  await expect(warning).toBeVisible();
+  await expectAccessible(page, '.final-editor-workspace');
+  await expectNoViewportOverflow(page);
+  await warning.getByRole('button').click();
+  await expect(editor).toBeFocused();
+
+  if (await page.getByRole('button', { name: 'Open navigation' }).isVisible()) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+  }
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(warning).toContainText('此程序在当前平台无法使用该设置');
+  await expectNoViewportOverflow(page);
+  await replaceEditorContent(page, workspace.locator('.cm-content'), '{"inbounds":[{"type":"tun","tag":"tun-in","auto_route":true,"auto_redirect":false}]}');
+  await page.clock.runFor(1000);
+  await expect(warning).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '应用并重启', exact: true })).toBeEnabled();
+  await expect(workspace).not.toContainText('此程序在当前平台无法使用该设置');
+});
+
 test('create program keeps its content scrollable and actions reachable at the minimum window size', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 680, height: 480 });
   await openPreview(page, 'aurora', 'dark', 1.3);
@@ -3047,6 +3104,8 @@ test('invalid and unavailable sources retain visible recovery diagnostics', asyn
     await expect(source).toContainText(scenario.status);
     await expect(source.locator('.source-status-reason')).toHaveText(scenario.reason);
     await expect(source.getByRole('button', { name: 'Retry source update', exact: true })).toBeVisible();
+    await source.getByRole('button', { name: 'Review source', exact: true }).click();
+    await expect(sources.locator('.config-source-row[data-source-id="primary"] .source-enabled input')).toBeFocused();
     await expect(sources.locator('.surface-issues')).toHaveCount(0);
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
     const guided = page.locator('#program-panel-intent .guided-workspace');
@@ -3057,6 +3116,49 @@ test('invalid and unavailable sources retain visible recovery diagnostics', asyn
     await expectAccessible(page, '#program-panel-intent');
     await page.screenshot({ path: testInfo.outputPath(`configuration-source-${scenario.mode}.png`), fullPage: true });
   }
+});
+
+test('source conflict points to the source and clears after pausing it', async ({ page }) => {
+  await openPreview(page, 'material', 'light', 1, '&__ui_config_source=conflict');
+  await openProgramConfiguration(page, 'xray-primary');
+  const final = page.locator('.final-editor-workspace');
+  await final.getByRole('button', { name: /Resolve the source conflict/ }).click();
+  const sources = page.locator('#program-panel-sources');
+  await expect(sources).toBeVisible();
+  await expect(sources.locator('.surface-issues article')).toHaveCount(1);
+  await sources.getByRole('button', { name: 'Review source: Production routing' }).click();
+  await expect(sources.locator('.config-source-row[data-source-id="primary"] .source-enabled input')).toBeFocused();
+  await sources.getByRole('button', { name: 'Review source: Alternative routing' }).click();
+  const alternate = sources.locator('.config-source-row[data-source-id="alternate"]');
+  await expect(alternate.locator('.source-enabled input')).toBeFocused();
+  await alternate.locator('.source-enabled input').uncheck();
+  await sources.getByRole('button', { name: 'Save sources' }).click();
+  await expect(sources.locator('.surface-issues')).toHaveCount(0);
+  await expect(sources.locator('.source-status-item').filter({ hasText: 'Alternative routing' }).getByRole('button', { name: 'Retry source update' })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration' }).click();
+  await expect(final.getByText('Resolve the source conflict before continuing.')).toHaveCount(0);
+});
+
+test('source conflict names remain readable in Chinese at narrow width', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 760 });
+  await openPreview(page, 'aurora', 'light', 1, '&__ui_config_source=conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const navigation = page.getByRole('button', { name: 'Open navigation' });
+  if (await navigation.isVisible()) await navigation.click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  const closeNavigation = page.getByRole('button', { name: 'Close navigation' });
+  if (await closeNavigation.isVisible()) await closeNavigation.click();
+  const issue = page.locator('#program-panel-sources .surface-issues');
+  await expect(issue).toContainText('这些配置源给出了不同的值');
+  await expect(issue.getByRole('button', { name: '检查配置源: Production routing' })).toBeVisible();
+  await expect(issue.getByRole('button', { name: '检查配置源: Alternative routing' })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-sources');
 });
 
 test('source failure reason switches language without exposing a raw error', async ({ page }) => {
@@ -3263,6 +3365,54 @@ test('a deleted final field locates its parent without a false missing path erro
   await inspector.getByRole('button', { name: 'Locate in editor' }).click();
   await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
   await expect(page.locator('.cm-configuration-source-widget')).toHaveCount(0);
+});
+
+test('an unchanged saved Source can restore one Final edit without re-saving all sources', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_deleted_final_edit');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('#program-panel-sources');
+  await expect(sources.getByRole('button', { name: 'Save sources' })).toBeDisabled();
+  await expect(sources).toContainText('Sources are saved. Final configuration has manual changes');
+  await sources.getByRole('button', { name: 'Review final changes' }).click();
+  const inspector = page.locator('.path-inspector');
+  await expect(inspector).toContainText('/log/timestamp');
+  await inspector.getByRole('button', { name: 'Use latest setting' }).click();
+  await expect(inspector).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"timestamp": true');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await expect(sources.getByRole('button', { name: 'Save sources' })).toBeDisabled();
+  await expect(sources.getByText('Sources are saved. Final configuration has manual changes')).toHaveCount(0);
+});
+
+test('a failed path adoption keeps the edit and clears its error after retry', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_deleted_final_edit&__ui_adopt_fail_once');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await page.locator('.cm-configuration-marker-line.cm-configuration-marker-source').click();
+  const inspector = page.locator('.path-inspector');
+  await inspector.getByRole('button', { name: 'Use latest setting' }).click();
+  const notice = page.locator('#program-panel-configuration > .error-notice');
+  await expect(notice).toContainText('Latest setting could not be used');
+  await expect(inspector).toContainText('/log/timestamp');
+  await notice.getByRole('button', { name: 'Retry' }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(inspector).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"timestamp": true');
+});
+
+test('a rejected conflict choice allows choosing the other value without editing text', async ({ page }) => {
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_conflict_rejected_once');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(block.getByRole('alert')).toBeVisible();
+  await expect(block.getByRole('button', { name: 'Accept updated', exact: true })).toBeEnabled();
+  await block.getByRole('button', { name: 'Accept updated', exact: true }).click();
+  await expect(block).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"loglevel": "info"');
+  await expect(page.locator('#program-panel-configuration [role="alert"]')).toHaveCount(0);
 });
 
 test('a lost conflict response retries the committed request without another choice', async ({ page }) => {
@@ -3649,6 +3799,22 @@ test('latest settings and Final configuration remain usable while optional reads
   await expect(page.locator('.configuration-loading')).toHaveCount(0);
 });
 
+test('Final configuration opens from saved state while the exact program check continues', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 820 });
+  await openPreview(page, 'material', 'light', 1, '&__ui_slow_verified_workspace');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toBeVisible({ timeout: 1000 });
+  await expect(editor).toContainText('"loglevel"');
+  await expect(page.locator('.configuration-loading')).toHaveCount(0);
+  const apply = page.locator('#program-panel-configuration .config-save');
+  await expect(apply).toBeDisabled();
+  await expect(apply).toHaveAttribute('title', /Checking the current program before applying/);
+  await expect(apply).not.toHaveAttribute('title', /Checking the current program before applying/, { timeout: 4000 });
+});
+
 test('Apply changes performs save, native validation and activation as one operation', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 820 });
   await openPreview(page, 'cupertino', 'light');
@@ -3927,12 +4093,12 @@ for (const invalidDraft of [false, true]) {
     await details.locator('.change-notice').getByRole('button', { name: 'Revert', exact: true }).click();
     await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
     await expect(editor).toContainText(invalidDraft ? 'unfinished-package-edit' : 'keep-me');
-    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
     if (invalidDraft) {
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
       await expect(editor).toContainText('unfinished-package-edit');
       await editor.fill('{"log":{"loglevel":"debug"},"packageEdit":"repaired"}');
     }
+    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
     await page.setViewportSize({ width: 400, height: 860 });
     await expectNoViewportOverflow(page);
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
@@ -4047,6 +4213,37 @@ test('repairing an invalid draft to the authoritative document removes the persi
   await expect(restored).toContainText('"loglevel": "warning"');
   await expect(restored).toContainText('"final": "proxy-sg"');
   await expect(restored).not.toContainText('{"route":');
+});
+
+test('a saved JSON draft containing only a trailing newline does not create another change', async ({ page }) => {
+  await openPreview(page, 'material', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, unknown>) => Promise<unknown>;
+    } }).__TAURI_INTERNALS__;
+    const snapshot = await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' }) as {
+      state: { workspace: { editor: { document: { content: string } } } };
+      editorSession: { workingContent: string; draftRevision: number };
+    };
+    const draft = structuredClone(snapshot.editorSession);
+    draft.workingContent = `${snapshot.state.workspace.editor.document.content}\n`;
+    await bridge.invoke('update_final_configuration_draft', {
+      programId: 'xray-primary', request: { draft, expectedRevision: draft.draftRevision },
+    });
+  });
+  await openProgramDetails(page, 'sing-box-edge');
+  await openProgramConfiguration(page, 'xray-primary');
+  await expect.poll(async () => page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, unknown>) => Promise<unknown>;
+    } }).__TAURI_INTERNALS__;
+    const snapshot = await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' }) as {
+      editorSession?: { draftRevision: number };
+    };
+    return snapshot.editorSession?.draftRevision ?? 0;
+  })).toBe(0);
+  await expect(page.locator('#program-panel-configuration .editor-state')).toContainText('Applied');
 });
 
 test('successive autosaves queue behind a delayed response without racing revisions', async ({ page }) => {
@@ -4379,6 +4576,19 @@ test('the JSON configuration editor supports diagnostics, formatting and command
   await expect(editor).toContainText(/"final"\s*:\s*"block"/);
   await expectNoViewportOverflow(page);
   await shell.screenshot({ path: testInfo.outputPath('configuration-editor-json-commands.png') });
+});
+
+test('JSON comments and trailing commas remain editable without false syntax errors', async ({ page }) => {
+  await openPreview(page, 'material', 'light', 1);
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await replaceEditorContent(page, editor, '{\n  // Final routing choice\n  "route": { "final": "direct", },\n}');
+  await expect(page.getByRole('button', { name: 'Problems: No problems' })).toBeVisible();
+  const apply = page.getByRole('button', { name: 'Apply changes', exact: true });
+  await expect(apply).toBeEnabled();
+  await apply.click();
+  await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
+  await expect(editor).toContainText('"final": "direct"');
 });
 
 test('sing-box schema completion and structural diagnostics remain program-specific', async ({ page }, testInfo) => {

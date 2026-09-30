@@ -267,6 +267,8 @@ pub struct ConfigurationConflict {
     pub semantic_path: String,
     pub reason: String,
     pub severity: ConflictSeverity,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_ids: Vec<String>,
     /// Stable UI mapping key.  `reason` remains technical context for logs,
     /// while clients use this key for the localized explanation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,7 +372,7 @@ pub fn merge_configuration_sources(
     for snapshot in snapshots {
         values.push(snapshot.value()?);
     }
-    let conflicts = collect_source_value_conflicts(kind, snapshots, &values);
+    let source_conflicts = collect_source_value_conflicts(kind, snapshots, &values);
     let mut merged = values.remove(0);
     let mut merged_provenance = ProvenanceNode::from_value(&merged, &snapshots[0].source_id);
     ensure_root_mapping(&merged)?;
@@ -399,6 +401,13 @@ pub fn merge_configuration_sources(
             ProgramKind::Generic => unreachable!("generic rejected above"),
         }
     }
+    let conflicts = source_conflicts
+        .into_iter()
+        .map(|(path, mut conflict)| {
+            conflict.effective_value = semantic_path_value(&merged, &path).ok().flatten().cloned();
+            conflict
+        })
+        .collect();
     let content = serialize_semantic_document(format, &merged)?;
     Ok(SemanticMergeResult {
         content_hash: hash_bytes(content.as_bytes()),
@@ -426,6 +435,8 @@ enum SourceSequencePolicy {
     Replace,
 }
 
+type SourceConflictMap = BTreeMap<SemanticPath, ConfigurationConflict>;
+
 /// Detect same-level Source conflicts independently from the deterministic
 /// preview merge.  The preview remains useful while a conflict is being
 /// repaired, but the returned blocking issues prevent Save/Validate/Apply.
@@ -435,7 +446,7 @@ fn collect_source_value_conflicts(
     kind: ProgramKind,
     snapshots: &[SourceSnapshot],
     values: &[Value],
-) -> Vec<ConfigurationConflict> {
+) -> SourceConflictMap {
     let mut conflicts = BTreeMap::new();
     for right_index in 1..values.len() {
         for left_index in 0..right_index {
@@ -450,7 +461,29 @@ fn collect_source_value_conflicts(
             );
         }
     }
-    conflicts.into_values().collect()
+    let mut locations = conflicts.into_iter().collect::<Vec<_>>();
+    locations.sort_by(|left, right| {
+        left.0
+            .len()
+            .cmp(&right.0.len())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let mut aggregated = Vec::<(SemanticPath, ConfigurationConflict)>::new();
+    for (path, conflict) in locations {
+        if let Some((_, parent)) = aggregated
+            .iter_mut()
+            .find(|(parent_path, _)| path.starts_with(parent_path))
+        {
+            for source_id in conflict.source_ids {
+                if !parent.source_ids.contains(&source_id) {
+                    parent.source_ids.push(source_id);
+                }
+            }
+        } else {
+            aggregated.push((path, conflict));
+        }
+    }
+    aggregated.into_iter().collect()
 }
 
 fn compare_source_values(
@@ -460,7 +493,7 @@ fn compare_source_values(
     path: &mut SemanticPath,
     left_source: &str,
     right_source: &str,
-    conflicts: &mut BTreeMap<String, ConfigurationConflict>,
+    conflicts: &mut SourceConflictMap,
 ) {
     if values_semantically_equal(left, right, path) {
         return;
@@ -512,7 +545,6 @@ fn compare_source_values(
                 );
             }
             SourceSequencePolicy::Replace => insert_source_value_conflict(
-                kind,
                 path,
                 &Value::Array(left.clone()),
                 &Value::Array(right.clone()),
@@ -525,15 +557,7 @@ fn compare_source_values(
         // Treating that marker as a value conflict would block a merge whose
         // established Core-specific semantics already preserve the old value.
         (_, Value::Null) if kind == ProgramKind::Xray => {}
-        _ => insert_source_value_conflict(
-            kind,
-            path,
-            left,
-            right,
-            left_source,
-            right_source,
-            conflicts,
-        ),
+        _ => insert_source_value_conflict(path, left, right, left_source, right_source, conflicts),
     }
 }
 
@@ -583,7 +607,7 @@ fn compare_identity_source_sequences(
     path: &mut SemanticPath,
     left_source: &str,
     right_source: &str,
-    conflicts: &mut BTreeMap<String, ConfigurationConflict>,
+    conflicts: &mut SourceConflictMap,
 ) {
     for left_item in left {
         let Some(identity) = left_item.get(identity_field).and_then(Value::as_str) else {
@@ -613,35 +637,39 @@ fn compare_identity_source_sequences(
 }
 
 fn insert_source_value_conflict(
-    kind: ProgramKind,
     path: &[SemanticPathSegment],
     left: &Value,
     right: &Value,
     left_source: &str,
     right_source: &str,
-    conflicts: &mut BTreeMap<String, ConfigurationConflict>,
+    conflicts: &mut SourceConflictMap,
 ) {
-    let semantic_path = display_semantic_path(path);
-    conflicts.entry(semantic_path.clone()).or_insert_with(|| {
-        let effective = if kind == ProgramKind::SingBox {
-            left
-        } else {
-            right
-        };
+    let path_key = path.to_vec();
+    if let Some(conflict) = conflicts.get_mut(&path_key) {
+        for source_id in [left_source, right_source] {
+            if !conflict.source_ids.iter().any(|id| id == source_id) {
+                conflict.source_ids.push(source_id.to_owned());
+            }
+        }
+        return;
+    }
+    conflicts.insert(
+        path_key,
         ConfigurationConflict {
-            semantic_path,
+            semantic_path: display_semantic_path(path),
             reason: format!(
                 "Configuration sources {left_source} and {right_source} provide different values"
             ),
             severity: ConflictSeverity::Error,
+            source_ids: vec![left_source.to_owned(), right_source.to_owned()],
             message_key: Some("SOURCE_VALUE_CONFLICT".into()),
             scope: ConfigurationIssueScope::sources(right_source.to_owned()),
             source_value: Some(left.clone()),
             guided_value: None,
             user_value: Some(right.clone()),
-            effective_value: Some(effective.clone()),
-        }
-    });
+            effective_value: None,
+        },
+    );
 }
 
 fn merge_sing_box_value(
@@ -1445,7 +1473,7 @@ fn escape_pointer(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -1507,6 +1535,24 @@ pub struct FinalEditEntry {
     pub path: SemanticPath,
     pub original: SemanticValue,
     pub edited: SemanticValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdoptUpstreamChangeRequest {
+    pub operation_id: String,
+    pub expected_state_revision: u64,
+    pub editor_session_id: Option<String>,
+    pub expected_draft_revision: Option<u64>,
+    pub edit_id: String,
+    pub path: SemanticPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdoptUpstreamReceipt {
+    pub operation_id: String,
+    pub request_hash: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3402,6 +3448,7 @@ fn identity_index(
             semantic_path: format!("[{field}={identity}]"),
             reason: "A semantic identity is duplicated".into(),
             severity: ConflictSeverity::Error,
+            source_ids: Vec::new(),
             message_key: Some("CONFIGURATION_IDENTITY_DUPLICATED".into()),
             scope: ConfigurationIssueScope::configuration(),
             source_value: None,
@@ -3437,6 +3484,7 @@ fn semantic_path_conflict(
         semantic_path: display_semantic_path(path),
         reason: reason.into(),
         severity: ConflictSeverity::Error,
+        source_ids: Vec::new(),
         message_key: Some("FINAL_EDIT_CONFLICT".into()),
         scope: ConfigurationIssueScope::configuration(),
         source_value: None,
@@ -3555,6 +3603,8 @@ pub struct ConfigurationState {
     pub final_edit: FinalEditState,
     pub operation_receipts: Vec<ConfigurationOperationReceipt>,
     #[serde(default)]
+    pub adopted_changes: Vec<AdoptUpstreamReceipt>,
+    #[serde(default)]
     pub conflict_operations: Vec<ConfigurationConflictReceipt>,
     pub desired: ConfigurationCandidate,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3610,6 +3660,7 @@ impl ConfigurationState {
             upstream,
             final_edit: FinalEditState::default(),
             operation_receipts: Vec::new(),
+            adopted_changes: Vec::new(),
             conflict_operations: Vec::new(),
             desired: candidate,
             editor_session: None,
@@ -3649,6 +3700,137 @@ impl ConfigurationState {
 
     pub fn upstream_content(&self) -> Result<String> {
         serialize_semantic_document(self.format, &self.upstream_document()?)
+    }
+
+    pub fn adopt_upstream_change(
+        &mut self,
+        request: AdoptUpstreamChangeRequest,
+        created_unix_ms: u64,
+    ) -> Result<bool> {
+        let request_hash = hash_bytes(&serde_json::to_vec(&request).expect("serializable request"));
+        if let Some(recorded) = self
+            .adopted_changes
+            .iter()
+            .find(|recorded| recorded.operation_id == request.operation_id)
+        {
+            if recorded.request_hash == request_hash {
+                return Ok(false);
+            }
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Operation identity belongs to a different change",
+            )
+            .with_message_key("CONFIGURATION_OPERATION_MISMATCH"));
+        }
+        if uuid::Uuid::parse_str(&request.operation_id).is_err() {
+            return Err(CamelliaNexusError::invalid_spec(
+                "Invalid configuration operation identity",
+            ));
+        }
+        if self
+            .operation_receipts
+            .iter()
+            .any(|receipt| receipt.request.operation_id == request.operation_id)
+            || self
+                .conflict_operations
+                .iter()
+                .any(|receipt| receipt.request.operation_id == request.operation_id)
+        {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Operation identity belongs to a different request",
+            )
+            .with_message_key("CONFIGURATION_OPERATION_MISMATCH"));
+        }
+        if request.expected_state_revision != self.state_revision {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Configuration state changed",
+            )
+            .with_message_key("CONFIGURATION_STATE_STALE"));
+        }
+        let draft_matches = match &self.editor_session {
+            Some(draft) => {
+                request.editor_session_id.as_deref() == Some(&draft.session_id)
+                    && request.expected_draft_revision == Some(draft.draft_revision)
+            }
+            None => request
+                .expected_draft_revision
+                .is_none_or(|revision| revision == 0),
+        };
+        if !draft_matches {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Configuration draft changed",
+            )
+            .with_message_key("CONFIGURATION_DRAFT_STALE"));
+        }
+        if self.editor_session.as_ref().is_some_and(|draft| {
+            draft.rebase_required
+                || !draft.unresolved_conflict_ids.is_empty()
+                || draft.working_content != self.desired.content
+        }) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Finish or discard the current edit first",
+            )
+            .with_message_key("CONFIGURATION_DRAFT_UNCOMMITTED"));
+        }
+        let edit = self
+            .final_edit
+            .edits
+            .iter()
+            .find(|edit| edit.edit_id == request.edit_id && edit.path == request.path)
+            .ok_or_else(|| {
+                CamelliaNexusError::new(ErrorCode::ConfigConflict, "Final change has changed")
+                    .with_message_key("CONFIGURATION_STATE_STALE")
+            })?;
+        if self.final_edit.conflicts.iter().any(|conflict| {
+            edit.path.starts_with(&conflict.path) || conflict.path.starts_with(&edit.path)
+        }) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Resolve this conflict before adopting the updated value",
+            )
+            .with_message_key("FINAL_EDIT_CONFLICT"));
+        }
+        let upstream = self.upstream_document()?;
+        let current = semantic_value_at(&upstream, &edit.path).map_err(|conflict| {
+            CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason)
+        })?;
+        if !semantic_values_equal_at(&current, &edit.original, &edit.path) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "The updated value has changed; review it again",
+            )
+            .with_message_key("CONFIGURATION_STATE_STALE"));
+        }
+        let mut next = self.clone();
+        let mut document =
+            parse_semantic_document(next.format, next.final_edit.edited_content.as_bytes())?;
+        apply_semantic_value(&mut document, &request.path, &current).map_err(|conflict| {
+            CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason)
+        })?;
+        next.final_edit.base_content = serialize_semantic_document(next.format, &upstream)?;
+        next.final_edit.edited_content = serialize_semantic_document(next.format, &document)?;
+        next.final_edit.edits = final_edit_entries(&upstream, &document)?;
+        next.final_edit.basis.content_hash = semantic_document_hash(&upstream);
+        next.final_edit.saved_candidate = None;
+        next.rebuild_desired(created_unix_ms)?;
+        next.state_revision = next
+            .state_revision
+            .max(self.state_revision.saturating_add(1));
+        next.adopted_changes.push(AdoptUpstreamReceipt {
+            operation_id: request.operation_id,
+            request_hash,
+        });
+        const RECEIPT_LIMIT: usize = 64;
+        if next.adopted_changes.len() > RECEIPT_LIMIT {
+            next.adopted_changes
+                .drain(..next.adopted_changes.len() - RECEIPT_LIMIT);
+        }
+        *self = next;
+        Ok(true)
     }
 
     pub fn resolve_final_conflict(
@@ -3741,6 +3923,7 @@ impl ConfigurationState {
                 semantic_path: display_semantic_path(&conflict.path),
                 reason: "The upstream configuration and final editor changed the same path".into(),
                 severity: ConflictSeverity::Error,
+                source_ids: Vec::new(),
                 message_key: Some("FINAL_EDIT_CONFLICT".into()),
                 scope: ConfigurationIssueScope {
                     surface: ConfigurationSurface::Configuration,
@@ -4326,6 +4509,7 @@ fn build_configuration_workspace(state: &ConfigurationState) -> ConfigurationWor
         candidate_status,
         changes,
         conflicts,
+        diagnostics: state.desired.diagnostics.clone(),
         blockers,
         can_save,
         can_validate,
@@ -4903,6 +5087,7 @@ pub struct ConfigurationEditorView {
     pub changes: Vec<FinalChangeProjection>,
     #[serde(default)]
     pub conflicts: Vec<FinalConflictProjection>,
+    pub diagnostics: Vec<ConfigurationDiagnostic>,
     #[serde(default)]
     pub blockers: Vec<ConfigurationGateBlocker>,
     pub can_save: bool,
@@ -5217,11 +5402,100 @@ mod tests {
             conflict.semantic_path == "/log/level"
                 && conflict.message_key.as_deref() == Some("SOURCE_VALUE_CONFLICT")
                 && conflict.scope.surface == ConfigurationSurface::Sources
+                && conflict.source_ids == ["a".to_owned(), "b".to_owned()]
         }));
         assert!(result.conflicts.iter().any(|conflict| {
             conflict.semantic_path == "/outbounds[tag=same]/type"
                 && conflict.message_key.as_deref() == Some("SOURCE_VALUE_CONFLICT")
         }));
+    }
+
+    #[test]
+    fn source_conflict_names_every_contributing_source_on_one_path() {
+        let result = merge_configuration_sources(
+            ProgramKind::Xray,
+            &[
+                snapshot(ProgramKind::Xray, "a", r#"{"log":{"loglevel":"info"}}"#),
+                snapshot(ProgramKind::Xray, "b", r#"{"log":{"loglevel":"debug"}}"#),
+                snapshot(ProgramKind::Xray, "c", r#"{"log":{"loglevel":"warning"}}"#),
+            ],
+        )
+        .expect("merge");
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].semantic_path, "/log/loglevel");
+        assert_eq!(
+            result.conflicts[0].source_ids,
+            ["a".to_owned(), "b".to_owned(), "c".to_owned()]
+        );
+        assert_eq!(
+            result.conflicts[0].effective_value,
+            Some(Value::from("warning"))
+        );
+    }
+
+    #[test]
+    fn source_conflict_preview_tracks_identity_replacement_and_parent_conflicts() {
+        let replaced = merge_configuration_sources(
+            ProgramKind::Mihomo,
+            &[
+                snapshot(
+                    ProgramKind::Mihomo,
+                    "a",
+                    "proxies:\n  - name: p\n    server: first",
+                ),
+                snapshot(
+                    ProgramKind::Mihomo,
+                    "b",
+                    "proxies:\n  - name: p\n    server: second",
+                ),
+                snapshot(ProgramKind::Mihomo, "c", "proxies:\n  - name: p"),
+            ],
+        )
+        .expect("merge");
+        assert_eq!(replaced.conflicts.len(), 1);
+        assert_eq!(
+            replaced.conflicts[0].semantic_path,
+            "/proxies[name=p]/server"
+        );
+        assert_eq!(replaced.conflicts[0].effective_value, None);
+
+        let parent = merge_configuration_sources(
+            ProgramKind::Mihomo,
+            &[
+                snapshot(ProgramKind::Mihomo, "a", "log:\n  level: info"),
+                snapshot(ProgramKind::Mihomo, "b", "log:\n  level: debug"),
+                snapshot(ProgramKind::Mihomo, "c", "log: null"),
+            ],
+        )
+        .expect("merge");
+        assert_eq!(parent.conflicts.len(), 1);
+        assert_eq!(parent.conflicts[0].semantic_path, "/log");
+        assert_eq!(parent.conflicts[0].effective_value, Some(Value::Null));
+        assert_eq!(
+            parent.conflicts[0].source_ids,
+            ["a".to_owned(), "c".to_owned(), "b".to_owned()]
+        );
+    }
+
+    #[test]
+    fn source_conflicts_keep_distinct_structural_paths_with_similar_labels() {
+        let result = merge_configuration_sources(
+            ProgramKind::Mihomo,
+            &[
+                snapshot(
+                    ProgramKind::Mihomo,
+                    "a",
+                    r#"{"proxies":[{"name":"edge","server":"first"}],"proxies[name=edge]":{"server":"first"}}"#,
+                ),
+                snapshot(
+                    ProgramKind::Mihomo,
+                    "b",
+                    r#"{"proxies":[{"name":"edge","server":"second"}],"proxies[name=edge]":{"server":"second"}}"#,
+                ),
+            ],
+        )
+        .expect("merge");
+        assert_eq!(result.conflicts.len(), 2);
     }
 
     #[test]
@@ -6249,6 +6523,224 @@ mod tests {
             state.view().workspace.editor.document.content,
             state.desired.content
         );
+    }
+
+    #[test]
+    fn saved_source_value_masked_by_final_delete_requires_only_a_path_scoped_adoption() {
+        let kind = ProgramKind::SingBox;
+        let merge = merge_configuration_sources(
+            kind,
+            &[snapshot(
+                kind,
+                "source",
+                r#"{"log":{"level":"info","timestamp":true},"inbounds":[],"outbounds":[]}"#,
+            )],
+        )
+        .unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state.applied = Some(state.desired.clone());
+        state.last_known_good = state.applied.clone();
+        state
+            .replace_final_from_edited(
+                br#"{"log":{"level":"warn"},"inbounds":[],"outbounds":[]}"#,
+                2,
+            )
+            .unwrap();
+        let applied = state.applied.clone();
+        let lkg = state.last_known_good.clone();
+        let before = state.clone();
+        state.rebuild_desired(3).unwrap();
+        assert_eq!(state, before, "identical Source content is not a new write");
+        let edit = state
+            .final_edit
+            .edits
+            .iter()
+            .find(|entry| display_semantic_path(&entry.path) == "/log/timestamp")
+            .unwrap()
+            .clone();
+        let request = AdoptUpstreamChangeRequest {
+            operation_id: "06acdb34-66f8-4db1-a562-321779bc9ca0".into(),
+            expected_state_revision: state.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            edit_id: edit.edit_id,
+            path: edit.path,
+        };
+        assert!(state.adopt_upstream_change(request.clone(), 4).unwrap());
+        let effective =
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
+        assert_eq!(effective["log"]["timestamp"], true);
+        assert_eq!(effective["log"]["level"], "warn");
+        assert_eq!(state.applied, applied);
+        assert_eq!(state.last_known_good, lkg);
+        assert!(
+            !state
+                .final_edit
+                .edits
+                .iter()
+                .any(|entry| display_semantic_path(&entry.path) == "/log/timestamp")
+        );
+        let after = state.clone();
+        assert!(!state.adopt_upstream_change(request.clone(), 5).unwrap());
+        assert_eq!(
+            state, after,
+            "retrying the same operation is read-equivalent"
+        );
+        let mismatched = AdoptUpstreamChangeRequest {
+            edit_id: "another-edit".into(),
+            ..request.clone()
+        };
+        assert_eq!(
+            state
+                .adopt_upstream_change(mismatched, 5)
+                .unwrap_err()
+                .message_key
+                .as_deref(),
+            Some("CONFIGURATION_OPERATION_MISMATCH")
+        );
+        let stale = AdoptUpstreamChangeRequest {
+            operation_id: "fe2721b8-639f-40a2-ae1d-de6ed6df9424".into(),
+            ..request
+        };
+        assert_eq!(
+            state
+                .adopt_upstream_change(stale, 6)
+                .unwrap_err()
+                .message_key
+                .as_deref(),
+            Some("CONFIGURATION_STATE_STALE")
+        );
+        assert_eq!(state, after);
+    }
+
+    #[test]
+    fn adopting_upstream_does_not_discard_an_unfinished_final_editor_draft() {
+        let kind = ProgramKind::SingBox;
+        let merge = merge_configuration_sources(
+            kind,
+            &[snapshot(
+                kind,
+                "source",
+                r#"{"log":{"level":"info","timestamp":true},"inbounds":[],"outbounds":[]}"#,
+            )],
+        )
+        .unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state
+            .replace_final_from_edited(
+                br#"{"log":{"level":"info"},"inbounds":[],"outbounds":[]}"#,
+                2,
+            )
+            .unwrap();
+        let edit = state.final_edit.edits[0].clone();
+        state.editor_session = Some(FinalEditorSession {
+            session_id: "session".into(),
+            draft_revision: 1,
+            based_on_state_revision: state.state_revision,
+            based_on_candidate_generation: state.generation,
+            base_content: state.desired.content.clone(),
+            working_content: "{unfinished".into(),
+            conflicts: Vec::new(),
+            resolutions: BTreeMap::new(),
+            unresolved_conflict_ids: Vec::new(),
+            rebase_required: true,
+            updated_unix_ms: 3,
+        });
+        let before = state.clone();
+        let request = AdoptUpstreamChangeRequest {
+            operation_id: "cafce09d-7f38-41fc-b68c-a23310f96091".into(),
+            expected_state_revision: state.state_revision,
+            editor_session_id: Some("session".into()),
+            expected_draft_revision: Some(1),
+            edit_id: edit.edit_id,
+            path: edit.path,
+        };
+        assert_eq!(
+            state
+                .adopt_upstream_change(request, 4)
+                .unwrap_err()
+                .message_key
+                .as_deref(),
+            Some("CONFIGURATION_DRAFT_UNCOMMITTED")
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn adopting_a_nonconflicting_path_preserves_another_unresolved_choice() {
+        let kind = ProgramKind::Xray;
+        let merge =
+            merge_configuration_sources(kind, &[snapshot(kind, "source", r#"{"a":1,"b":1}"#)])
+                .unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state
+            .replace_final_from_edited(br#"{"a":9,"b":9}"#, 2)
+            .unwrap();
+        replace_test_base(&mut state, json!({"a":2,"b":1}), 3);
+        state.rebuild_desired(3).unwrap();
+        assert_eq!(state.final_edit.conflicts.len(), 1);
+        let retained_conflict = state.final_edit.conflicts[0].clone();
+        let edit = state
+            .final_edit
+            .edits
+            .iter()
+            .find(|entry| display_semantic_path(&entry.path) == "/b")
+            .unwrap()
+            .clone();
+        let request = AdoptUpstreamChangeRequest {
+            operation_id: "8e0145cd-3b0b-4680-9e3f-831ff5c0528d".into(),
+            expected_state_revision: state.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            edit_id: edit.edit_id,
+            path: edit.path,
+        };
+        state.adopt_upstream_change(request, 4).unwrap();
+        let effective =
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
+        assert_eq!(effective, json!({"a":2,"b":1}));
+        assert_eq!(state.final_edit.conflicts, vec![retained_conflict]);
+        assert!(!state.view().workspace.editor.can_save);
+    }
+
+    #[test]
+    fn source_timestamp_update_previews_latest_value_when_final_delete_conflicts() {
+        let kind = ProgramKind::SingBox;
+        let merge = merge_configuration_sources(
+            kind,
+            &[snapshot(
+                kind,
+                "source",
+                r#"{"log":{"level":"info","timestamp":false},"inbounds":[],"outbounds":[]}"#,
+            )],
+        )
+        .unwrap();
+        let mut state =
+            ConfigurationState::from_merge(kind, 1, 1, merge, compatibility_profile(kind)).unwrap();
+        state
+            .replace_final_from_edited(
+                br#"{"log":{"level":"info"},"inbounds":[],"outbounds":[]}"#,
+                2,
+            )
+            .unwrap();
+        replace_test_base(
+            &mut state,
+            json!({"log":{"level":"info","timestamp":true},"inbounds":[],"outbounds":[]}),
+            3,
+        );
+        state.rebuild_desired(3).unwrap();
+        let effective =
+            parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
+        assert_eq!(effective["log"]["timestamp"], true);
+        assert_eq!(state.final_edit.conflicts.len(), 1);
+        let conflict = &state.final_edit.conflicts[0];
+        assert_eq!(conflict.semantic_path, "/log/timestamp");
+        assert_eq!(conflict.user_value, SemanticValue::Missing);
+        assert_eq!(conflict.upstream_value, SemanticValue::Present(json!(true)));
+        assert!(!state.view().workspace.editor.can_save);
     }
 
     #[test]

@@ -227,14 +227,11 @@ impl CoreTargetIdentity {
         }
     }
 
-    pub fn validate(&self) -> Result<()> {
-        let knowledge = crate::embedded_core_knowledge()?;
-        let descriptor = knowledge
-            .program(self.program)
-            .ok_or_else(|| invalid_compatibility("Program has no source knowledge descriptor"))?;
-        if self.knowledge_hash != knowledge.content_hash {
+    /// Validates a retained observation without granting current capability authority.
+    pub fn validate_observation(&self) -> Result<()> {
+        if self.program == ProgramKind::Generic || !is_sha256(&self.knowledge_hash) {
             return Err(invalid_compatibility(
-                "Target knowledge digest does not match the reviewed source",
+                "Core observations require a program kind and an exact knowledge digest",
             ));
         }
         if self
@@ -253,6 +250,41 @@ impl CoreTargetIdentity {
         {
             return Err(invalid_compatibility(
                 "Target fingerprint must be an exact SHA-256 digest",
+            ));
+        }
+        if let CoreVersionCoordinate::Release {
+            tag,
+            normalized_version,
+            commit_sha,
+        } = &self.coordinate
+        {
+            let version = Version::parse(normalized_version)
+                .map_err(|_| invalid_compatibility("Observed Core version is not valid SemVer"))?;
+            if tag.is_empty()
+                || tag.len() > 128
+                || tag
+                    .chars()
+                    .any(|character| character.is_control() || character.is_whitespace())
+                || !version.pre.is_empty()
+                || !version.build.is_empty()
+                || !is_commit_sha(commit_sha)
+                || self.basis != CoreCompatibilityBasis::BinaryReported
+            {
+                return Err(invalid_compatibility("Core release observation is invalid"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_observation()?;
+        let knowledge = crate::embedded_core_knowledge()?;
+        let descriptor = knowledge
+            .program(self.program)
+            .ok_or_else(|| invalid_compatibility("Program has no source knowledge descriptor"))?;
+        if self.knowledge_hash != knowledge.content_hash {
+            return Err(invalid_compatibility(
+                "Target knowledge digest does not match the reviewed source",
             ));
         }
         if let CoreVersionCoordinate::Release {
@@ -581,7 +613,53 @@ mod tests {
         assert!(forged.validate().is_err());
         let mut stale = target;
         stale.knowledge_hash = "0".repeat(64);
+        assert!(stale.validate_observation().is_ok());
         assert!(stale.validate().is_err());
+    }
+
+    #[test]
+    fn retained_observations_are_bounded_and_never_grant_current_authority() {
+        let knowledge = crate::embedded_core_knowledge().unwrap();
+        let baseline = knowledge
+            .program(ProgramKind::Xray)
+            .unwrap()
+            .releases
+            .last()
+            .unwrap();
+        let probe = CoreProbeReport::from_program_output(
+            ProgramKind::Xray,
+            &format!("Xray {}", baseline.version),
+        );
+        let mut target =
+            CoreTargetIdentity::from_probe(ProgramKind::Xray, &probe, Some("a".repeat(64)))
+                .unwrap();
+        target.knowledge_hash = "0".repeat(64);
+        assert!(target.validate_observation().is_ok());
+        assert!(CoreCompatibilityProfile::resolve(&target).is_err());
+        let mut invalid = target.clone();
+        invalid.knowledge_hash = "not-a-digest".into();
+        assert!(invalid.validate_observation().is_err());
+        for coordinate in [
+            CoreVersionCoordinate::Release {
+                tag: "v1.0.0".into(),
+                normalized_version: "1.0.0-beta".into(),
+                commit_sha: "a".repeat(40),
+            },
+            CoreVersionCoordinate::Release {
+                tag: "v1.0.0".into(),
+                normalized_version: "1.0.0".into(),
+                commit_sha: "abc123".into(),
+            },
+            CoreVersionCoordinate::Release {
+                tag: "v1.0.0\n".into(),
+                normalized_version: "1.0.0".into(),
+                commit_sha: "a".repeat(40),
+            },
+        ] {
+            invalid = target.clone();
+            invalid.coordinate = coordinate;
+            assert!(invalid.validate_observation().is_err());
+        }
     }
 
     #[test]

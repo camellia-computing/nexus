@@ -305,6 +305,8 @@ export const api = {
   loadConfig: (programId: string) => invoke<ConfigDocument>('load_config', { programId }),
   loadConfigurationSchema: (programId: string) =>
     invoke<ConfigurationSchemaDocument | null>('load_configuration_schema', { programId }),
+  getConfigurationWorkspacePreview: (programId: string) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_workspace_preview', { programId }),
   getConfigurationWorkspace: (programId: string) =>
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_workspace', { programId }),
   setGuidedIntent: (
@@ -325,6 +327,8 @@ export const api = {
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('rebase_final_configuration_draft', { programId, expectedRevision }),
   resolveConfigurationConflict: (programId: string, request: import('./types').ResolveConfigurationConflictRequest) =>
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('resolve_configuration_conflict', { programId, request }),
+  adoptUpstreamChange: (programId: string, request: import('./types').AdoptUpstreamChangeRequest) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('adopt_upstream_change', { programId, request }),
   discardConfigurationDraft: (programId: string, expectedRevision: number) =>
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('discard_final_configuration_draft', {
       programId,

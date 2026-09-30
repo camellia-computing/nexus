@@ -170,7 +170,7 @@
 
   <div class="source-stack">
     {#each sources as source, index (source.id)}
-      <article class:disabled={!source.enabled} class:remote={source.mode === 'remote'} class="config-source-row">
+      <article data-source-id={source.id} class:disabled={!source.enabled} class:remote={source.mode === 'remote'} class="config-source-row">
         <div class="source-primary">
           <input class="source-name" value={source.name} maxlength="128" aria-label={$t('Source name')} placeholder={$t('Source name')} on:input={(event) => update(index, 'name', event.currentTarget.value)} {disabled} />
           <span class="source-type-select"><OptionSelect value={source.mode} options={sourceTypeOptions} ariaLabel={$t('Source type')} {disabled} align="center" size="md" width="content" on:change={(event) => update(index, 'mode', String(event.detail.value))} /></span>

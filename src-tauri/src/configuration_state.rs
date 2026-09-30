@@ -123,9 +123,14 @@ impl ConfigurationCoordinator {
         manager: &ProgramManager,
         id: &ProgramId,
     ) -> Result<ConfigurationWorkspaceSnapshot> {
+        let started = std::time::Instant::now();
         let lease = self.lock(id).await;
-        self.recover_interrupted_operation(manager, id).await?;
-        match self.load_workspace_with_lease(manager, id, &lease).await {
+        let (_, state) = self.recover_interrupted_operation(manager, id).await?;
+        let recovery_ms = started.elapsed().as_millis();
+        let result = match self
+            .load_workspace_from_state(manager, id, state, &lease)
+            .await
+        {
             Ok(snapshot) => Ok(snapshot),
             Err(error) => {
                 let (spec, _) = manager.get(id).await?;
@@ -145,7 +150,33 @@ impl ConfigurationCoordinator {
                     operation_result: None,
                 })
             }
-        }
+        };
+        tracing::debug!(
+            recovery_ms,
+            total_ms = started.elapsed().as_millis(),
+            "configuration workspace checked"
+        );
+        result
+    }
+
+    pub(crate) async fn load_workspace_preview(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+    ) -> Result<ConfigurationWorkspaceSnapshot> {
+        let started = std::time::Instant::now();
+        let _lease = self.lock(id).await;
+        let (spec, state) = self.recover_interrupted_operation(manager, id).await?;
+        let snapshot = ConfigurationWorkspaceSnapshot {
+            state: view_for_spec(&spec, &state)?,
+            editor_session: Some(final_editor_session_for_state(&state)),
+            operation_result: None,
+        };
+        tracing::debug!(
+            total_ms = started.elapsed().as_millis(),
+            "configuration preview ready"
+        );
+        Ok(snapshot)
     }
 
     pub(crate) async fn prepare_package_workspace(
@@ -182,7 +213,21 @@ impl ConfigurationCoordinator {
         id: &ProgramId,
         lease: &ConfigurationLease,
     ) -> Result<ConfigurationWorkspaceSnapshot> {
-        let (spec, state) = self.load_state_for_view(manager, id, lease).await?;
+        let state = self.load_or_initialize(manager, id).await?;
+        self.load_workspace_from_state(manager, id, state, lease)
+            .await
+    }
+
+    async fn load_workspace_from_state(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        state: ConfigurationState,
+        lease: &ConfigurationLease,
+    ) -> Result<ConfigurationWorkspaceSnapshot> {
+        let (spec, state) = self
+            .load_state_for_view_from_state(manager, id, state, lease)
+            .await?;
         let editor_session = final_editor_session_for_state(&state);
         Ok(ConfigurationWorkspaceSnapshot {
             state: view_for_spec(&spec, &state)?,
@@ -201,14 +246,44 @@ impl ConfigurationCoordinator {
         view_for_spec(&spec, &state)
     }
 
-    async fn load_state_for_view(
+    pub(crate) async fn load_editor_snapshot(
         &self,
         manager: &ProgramManager,
         id: &ProgramId,
         _lease: &ConfigurationLease,
+    ) -> Result<ConfigurationWorkspaceSnapshot> {
+        let (spec, state) = self.load_current(manager, id).await?;
+        Ok(ConfigurationWorkspaceSnapshot {
+            state: view_for_spec(&spec, &state)?,
+            editor_session: Some(final_editor_session_for_state(&state)),
+            operation_result: None,
+        })
+    }
+
+    async fn load_state_for_view(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        lease: &ConfigurationLease,
     ) -> Result<(ProgramSpec, ConfigurationState)> {
+        let state = self.load_or_initialize(manager, id).await?;
+        self.load_state_for_view_from_state(manager, id, state, lease)
+            .await
+    }
+
+    async fn load_state_for_view_from_state(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        mut state: ConfigurationState,
+        _lease: &ConfigurationLease,
+    ) -> Result<(ProgramSpec, ConfigurationState)> {
+        let identity_started = std::time::Instant::now();
         let spec = manager.refresh_binary_identity_if_changed(id).await?;
-        let mut state = self.load_or_initialize(manager, id).await?;
+        tracing::debug!(
+            elapsed_ms = identity_started.elapsed().as_millis(),
+            "configuration binary identity checked"
+        );
         let previous_state_revision = state.state_revision;
         if self.retarget_state(id, &spec, &mut state).await? {
             self.store
@@ -278,7 +353,7 @@ impl ConfigurationCoordinator {
         state.rebuild_desired(now_unix_ms())?;
         self.persist_candidate(manager, id, state, previous_state_revision)
             .await?;
-        self.load_workspace_with_lease(manager, id, lease).await
+        self.load_editor_snapshot(manager, id, lease).await
     }
 
     pub(crate) fn preview_import(
@@ -358,14 +433,14 @@ impl ConfigurationCoordinator {
         )?;
         refresh_final_editor_conflicts(&mut draft, state.format);
         if persisted_before.as_ref() == Some(&draft) {
-            return self.load_workspace_with_lease(manager, id, lease).await;
+            return self.load_editor_snapshot(manager, id, lease).await;
         }
         draft.draft_revision = draft.draft_revision.saturating_add(1);
         draft.updated_unix_ms = now_unix_ms();
         self.store
             .save_final_editor_draft(id, &draft, Some(expected_revision))
             .await?;
-        self.load_workspace_with_lease(manager, id, lease).await
+        self.load_editor_snapshot(manager, id, lease).await
     }
 
     pub(crate) async fn rebase_final_configuration_draft_with_lease(
@@ -404,14 +479,14 @@ impl ConfigurationCoordinator {
         )?;
         refresh_final_editor_conflicts(&mut draft, state.format);
         if draft == before {
-            return self.load_workspace_with_lease(manager, id, lease).await;
+            return self.load_editor_snapshot(manager, id, lease).await;
         }
         draft.draft_revision = draft.draft_revision.saturating_add(1);
         draft.updated_unix_ms = now_unix_ms();
         self.store
             .save_final_editor_draft(id, &draft, Some(expected_revision))
             .await?;
-        self.load_workspace_with_lease(manager, id, lease).await
+        self.load_editor_snapshot(manager, id, lease).await
     }
 
     pub(crate) async fn resolve_configuration_conflict_with_lease(
@@ -424,7 +499,7 @@ impl ConfigurationCoordinator {
         let (_spec, mut state) = self.load_current(manager, id).await?;
         let previous_revision = state.state_revision;
         if !state.resolve_configuration_conflict(request.clone(), now_unix_ms())? {
-            return self.load_workspace_with_lease(manager, id, lease).await;
+            return self.load_editor_snapshot(manager, id, lease).await;
         }
         self.store
             .save_configuration_conflict_state(
@@ -434,7 +509,24 @@ impl ConfigurationCoordinator {
                 request.expected_draft_revision,
             )
             .await?;
-        self.load_workspace_with_lease(manager, id, lease).await
+        self.load_editor_snapshot(manager, id, lease).await
+    }
+
+    pub(crate) async fn adopt_upstream_change_with_lease(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        request: camellia_nexus_core::AdoptUpstreamChangeRequest,
+        lease: &ConfigurationLease,
+    ) -> Result<ConfigurationWorkspaceSnapshot> {
+        let (_spec, mut state) = self.load_current(manager, id).await?;
+        let previous_revision = state.state_revision;
+        if state.adopt_upstream_change(request.clone(), now_unix_ms())? {
+            self.store
+                .save_configuration_state(id, &state, Some(previous_revision))
+                .await?;
+        }
+        self.load_editor_snapshot(manager, id, lease).await
     }
 
     pub(crate) async fn discard_final_configuration_draft_with_lease(
@@ -447,7 +539,7 @@ impl ConfigurationCoordinator {
         self.store
             .discard_final_editor_draft(id, expected_revision)
             .await?;
-        self.load_workspace_with_lease(manager, id, lease).await
+        self.load_editor_snapshot(manager, id, lease).await
     }
 
     pub(crate) async fn save_workspace_with_lease<F, Fut, Permit>(
@@ -870,25 +962,32 @@ impl ConfigurationCoordinator {
         &self,
         manager: &ProgramManager,
         id: &ProgramId,
-    ) -> Result<()> {
+    ) -> Result<(ProgramSpec, ConfigurationState)> {
         // The caller owns the lease; a pending request cannot still be executing.
         // Committed Apply markers are reconciled by load_current before this check.
         let (spec, _) = manager.get(id).await?;
         self.store.reconcile_configuration_workspace(&spec).await?;
-        let (_, state) = self.load_current(manager, id).await?;
-        for receipt in state.operation_receipts {
-            if receipt.result.status == ConfigurationOperationStatus::Pending {
-                self.finish_operation(
-                    manager,
-                    id,
-                    &receipt.request.operation_id,
-                    ConfigurationOperationStatus::Interrupted,
-                    Some("CONFIGURATION_OPERATION_INTERRUPTED"),
-                )
-                .await?;
-            }
+        let (mut spec, mut state) = self.load_current(manager, id).await?;
+        let pending = state
+            .operation_receipts
+            .iter()
+            .filter(|receipt| receipt.result.status == ConfigurationOperationStatus::Pending)
+            .map(|receipt| receipt.request.operation_id.clone())
+            .collect::<Vec<_>>();
+        for operation_id in &pending {
+            self.finish_operation(
+                manager,
+                id,
+                operation_id,
+                ConfigurationOperationStatus::Interrupted,
+                Some("CONFIGURATION_OPERATION_INTERRUPTED"),
+            )
+            .await?;
         }
-        Ok(())
+        if !pending.is_empty() {
+            (spec, state) = self.load_current(manager, id).await?;
+        }
+        Ok((spec, state))
     }
 
     pub(crate) async fn prepare_source_refresh(
@@ -899,7 +998,7 @@ impl ConfigurationCoordinator {
         credentials: &CredentialSnapshot,
     ) -> Result<PreparedSourceRefresh> {
         let lease = self.acquire_lease(manager, id).await?;
-        let spec = manager.refresh_binary_identity(id).await?;
+        let (spec, _) = manager.get(id).await?;
         let state = self.load_or_initialize(manager, id).await?;
         drop(lease);
         self.prepare_source_observations(
@@ -932,7 +1031,7 @@ impl ConfigurationCoordinator {
         _lease: &ConfigurationLease,
         source_update: camellia_nexus_core::SourceUpdateKind,
     ) -> Result<PreparedSourceRefresh> {
-        let spec = manager.refresh_binary_identity(id).await?;
+        let (spec, _) = manager.get(id).await?;
         let state = self.load_or_initialize(manager, id).await?;
         self.prepare_source_observations(spec, state, local_base, credentials, source_update)
             .await
@@ -1058,7 +1157,7 @@ impl ConfigurationCoordinator {
         self.store
             .save_configuration_state(id, &state, Some(previous_state_revision))
             .await?;
-        self.load_workspace_with_lease(manager, id, _lease).await
+        self.load_editor_snapshot(manager, id, _lease).await
     }
 
     pub(crate) async fn sync_managed_dashboard(
@@ -1148,7 +1247,7 @@ impl ConfigurationCoordinator {
         mut state: ConfigurationState,
         expected_state_revision: u64,
     ) -> Result<ConfigurationStateView> {
-        let spec = manager.refresh_binary_identity(id).await?;
+        let (spec, _) = manager.get(id).await?;
         self.retarget_state(id, &spec, &mut state).await?;
         self.store
             .save_configuration_state(id, &state, Some(expected_state_revision))
@@ -1304,6 +1403,7 @@ impl ConfigurationCoordinator {
                 semantic_path: format!("/sources/{source_id}"),
                 reason: "Share source has no item expressible for the selected Core target".into(),
                 severity: ConflictSeverity::Error,
+                source_ids: vec![source_id.clone()],
                 message_key: Some("CORE_TARGET_SOURCE_REJECTED".into()),
                 scope: ConfigurationIssueScope::sources(source_id.clone()),
                 source_value: None,
@@ -1722,6 +1822,68 @@ fn view_for_spec(spec: &ProgramSpec, state: &ConfigurationState) -> Result<Confi
         )?,
     };
     project_admission(&mut view, report);
+    if view
+        .core_admission
+        .as_ref()
+        .is_some_and(|report| report.status == CoreAdmissionStatus::Admitted)
+    {
+        if !compatibility_profile(spec)
+            .is_ok_and(|profile| profile.profile_hash == state.compatibility_profile.profile_hash)
+        {
+            use camellia_nexus_core::{
+                ConfigurationGate, ConfigurationGateBlocker, ConfigurationRecoveryAction,
+            };
+            let editor = &mut view.workspace.editor;
+            editor.can_validate = false;
+            editor.can_apply = false;
+            editor.blockers.insert(
+                0,
+                ConfigurationGateBlocker {
+                    code: "CORE_PROFILE_MISMATCH".into(),
+                    message_key: "CORE_PROFILE_MISMATCH".into(),
+                    scope: ConfigurationIssueScope::compatibility(),
+                    semantic_path: None,
+                    blocks: vec![ConfigurationGate::Validate, ConfigurationGate::Apply],
+                    recovery_action: ConfigurationRecoveryAction::ValidateCandidate,
+                    details: None,
+                },
+            );
+        }
+        let content = state
+            .editor_session
+            .as_ref()
+            .filter(|draft| draft.draft_revision > 0 && !draft.rebase_required)
+            .map_or(state.desired.content.as_str(), |draft| {
+                draft.working_content.as_str()
+            });
+        // Projection uses retained identity observations; activation still verifies the file.
+        match camellia_nexus_core::assess_program_configuration(spec, content) {
+            Ok(Some(assessment)) => project_configuration_assessment(&mut view, &assessment)?,
+            Ok(None) => {}
+            Err(error) => {
+                use camellia_nexus_core::{
+                    CandidateStatus, ConfigurationGate, ConfigurationGateBlocker,
+                    ConfigurationRecoveryAction,
+                };
+                let key = error
+                    .message_key
+                    .unwrap_or_else(|| "CONFIGURATION_INVALID".into());
+                let editor = &mut view.workspace.editor;
+                editor.can_validate = false;
+                editor.can_apply = false;
+                editor.candidate_status = CandidateStatus::Invalid;
+                editor.blockers.push(ConfigurationGateBlocker {
+                    code: key.clone(),
+                    message_key: key,
+                    scope: ConfigurationIssueScope::configuration(),
+                    semantic_path: None,
+                    blocks: vec![ConfigurationGate::Validate, ConfigurationGate::Apply],
+                    recovery_action: ConfigurationRecoveryAction::ReviewCandidate,
+                    details: None,
+                });
+            }
+        }
+    }
     let order = spec
         .managed_config
         .as_ref()
@@ -1741,6 +1903,54 @@ fn view_for_spec(spec: &ProgramSpec, state: &ConfigurationState) -> Result<Confi
             .unwrap_or(usize::MAX)
     });
     Ok(view)
+}
+
+fn project_configuration_assessment(
+    view: &mut ConfigurationStateView,
+    assessment: &camellia_nexus_core::ConfigurationAssessment,
+) -> Result<()> {
+    use camellia_nexus_core::{
+        CandidateStatus, ConfigurationDiagnosticLocation, ConfigurationGate,
+        ConfigurationGateBlocker, ConfigurationRecoveryAction,
+    };
+    let editor = &mut view.workspace.editor;
+    let mut assessed_blockers = Vec::new();
+    for issue in &assessment.issues {
+        let location = ConfigurationDiagnosticLocation::from_pointer(&issue.path);
+        if !editor.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == issue.code && diagnostic.location.as_ref() == Some(&location)
+        }) {
+            editor.diagnostics.push(ConfigurationDiagnostic {
+                location: Some(location.clone()),
+                code: issue.code.clone(),
+                message_key: Some(issue.message_key.clone()),
+                message: "A configured setting is not supported".into(),
+                scope: ConfigurationIssueScope::configuration(),
+                details: Some(serde_json::to_string(issue)?),
+            });
+        }
+        if !editor.blockers.iter().any(|blocker| {
+            blocker.code == issue.code
+                && blocker.semantic_path.as_deref() == Some(&location.semantic_path)
+        }) {
+            assessed_blockers.push(ConfigurationGateBlocker {
+                code: issue.code.clone(),
+                message_key: issue.message_key.clone(),
+                scope: ConfigurationIssueScope::configuration(),
+                semantic_path: Some(location.semantic_path),
+                blocks: vec![ConfigurationGate::Validate, ConfigurationGate::Apply],
+                recovery_action: ConfigurationRecoveryAction::ReviewCandidate,
+                details: None,
+            });
+        }
+    }
+    editor.blockers.splice(0..0, assessed_blockers);
+    if !assessment.issues.is_empty() {
+        editor.can_validate = false;
+        editor.can_apply = false;
+        editor.candidate_status = CandidateStatus::Invalid;
+    }
+    Ok(())
 }
 
 fn project_admission(view: &mut ConfigurationStateView, report: CoreAdmissionReport) {
@@ -1853,6 +2063,7 @@ mod tests {
         set_guided => set_guided_with_lease(setting: String, value: Option<Value>, generation: u64);
         update_final_configuration_draft => update_final_configuration_draft_with_lease(draft: FinalEditorSession, revision: u64);
         resolve_configuration_conflict => resolve_configuration_conflict_with_lease(request: ResolveConfigurationConflictRequest);
+        adopt_upstream_change => adopt_upstream_change_with_lease(request: camellia_nexus_core::AdoptUpstreamChangeRequest);
     }
 
     #[cfg(unix)]
@@ -1953,6 +2164,106 @@ mod tests {
         }
     }
 
+    #[test]
+    fn editor_projection_checks_platform_without_rewriting_candidate_or_applied_state() {
+        let mut spec = spec(Vec::new());
+        let baseline = camellia_nexus_core::embedded_core_knowledge()
+            .unwrap()
+            .program(ProgramKind::Xray)
+            .unwrap()
+            .releases
+            .last()
+            .unwrap();
+        let probe = camellia_nexus_core::CoreProbeReport::from_program_output(
+            ProgramKind::Xray,
+            &format!(
+                "Xray {} (Xray, Penetrates Everything.) Custom (go1.26.0 windows/amd64)",
+                baseline.version
+            ),
+        );
+        let ExecutableSpec::External {
+            metadata: Some(metadata),
+            ..
+        } = &mut spec.executable
+        else {
+            unreachable!()
+        };
+        metadata.core_target = Some(
+            CoreTargetIdentity::from_probe(
+                ProgramKind::Xray,
+                &probe,
+                Some(metadata.fingerprint.sha256.clone()),
+            )
+            .unwrap(),
+        );
+        metadata.probe = Some(probe);
+        let content = r#"{"outbounds":[{"streamSettings":{"sockopt":{"mark":123}}}]}"#;
+        let mut state = state_from_existing_document(&spec, content, None).unwrap();
+        state.mark_candidate_saved().unwrap();
+        state
+            .mark_validation(
+                false,
+                vec![ConfigurationDiagnostic {
+                    location: None,
+                    code: "CORE_INVALID".into(),
+                    message_key: Some("CORE_INVALID".into()),
+                    message: "Core validation failed".into(),
+                    scope: ConfigurationIssueScope::configuration(),
+                    details: None,
+                }],
+                None,
+            )
+            .unwrap();
+        let retained = state.clone();
+        let view = view_for_spec(&spec, &state).unwrap();
+        assert_eq!(state, retained);
+        assert_eq!(
+            view.workspace.editor.document.content,
+            state.desired.content
+        );
+        assert_eq!(view.desired, state.desired);
+        let editor = &view.workspace.editor;
+        assert_eq!(editor.diagnostics.len(), 2);
+        assert_eq!(
+            editor.diagnostics[1].code,
+            "CONFIGURATION_PLATFORM_UNSUPPORTED"
+        );
+        assert_eq!(
+            editor.diagnostics[1]
+                .location
+                .as_ref()
+                .unwrap()
+                .document_path,
+            ["outbounds", "0", "streamSettings", "sockopt", "mark"]
+        );
+        assert!(!editor.can_apply && !editor.can_validate);
+        assert_eq!(
+            editor.blockers[0].code,
+            "CONFIGURATION_PLATFORM_UNSUPPORTED"
+        );
+        assert_eq!(
+            view.applied_revision,
+            retained.applied.map(|value| value.revision)
+        );
+        let mut draft = final_editor_session_for_state(&state);
+        draft.draft_revision = 1;
+        draft.working_content =
+            r#"{"outbounds":[{"streamSettings":{"sockopt":{"mark":0}}}]}"#.into();
+        state.editor_session = Some(draft);
+        let repaired = view_for_spec(&spec, &state).unwrap();
+        assert_eq!(repaired.workspace.editor.diagnostics.len(), 1);
+        assert_eq!(
+            repaired.workspace.editor.diagnostics[0].code,
+            "CORE_INVALID"
+        );
+        assert_eq!(repaired.workspace.editor.document.content, content);
+        assert_eq!(repaired.generation, view.generation);
+        assert_eq!(
+            repaired.last_known_good_revision,
+            view.last_known_good_revision
+        );
+    }
+
     #[cfg(unix)]
     async fn workspace_fixture() -> (
         tempfile::TempDir,
@@ -1991,7 +2302,7 @@ mod tests {
             &binary,
             r#"#!/bin/sh
 case "$1" in
-version) echo 'Xray FIXTURE_VERSION' ;;
+version) printf 'probe\n' >> "${0%/*}/identity-probes"; echo 'Xray FIXTURE_VERSION' ;;
 help) echo 'run version -test -c -format -dump' ;;
 run)
     if [ -f "${0%/*}/hold-validation" ]; then
@@ -2053,6 +2364,245 @@ esac
             .await
             .expect("workspace");
         (directory, store, manager, coordinator, id)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workspace_preview_keeps_the_saved_candidate_without_trusting_a_changed_binary() {
+        let (directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let verified = coordinator.load_workspace(&manager, &id).await.unwrap();
+        std::fs::remove_file(directory.path().join("xray")).unwrap();
+
+        let preview = coordinator
+            .load_workspace_preview(&manager, &id)
+            .await
+            .unwrap();
+        assert_eq!(preview.state.desired, verified.state.desired);
+        assert_eq!(
+            preview.state.applied_revision,
+            verified.state.applied_revision
+        );
+        assert_eq!(
+            preview.state.last_known_good_revision,
+            verified.state.last_known_good_revision
+        );
+
+        let checked = coordinator.load_workspace(&manager, &id).await;
+        assert!(
+            checked.is_err()
+                || checked.unwrap().state.core_admission.unwrap().status
+                    != camellia_nexus_core::CoreAdmissionStatus::Admitted
+        );
+        let retained = store.load_configuration_state(&id).await.unwrap().unwrap();
+        assert_eq!(
+            retained.applied.as_ref().map(|value| &value.revision),
+            verified.state.applied_revision.as_ref()
+        );
+        assert_eq!(
+            retained
+                .last_known_good
+                .as_ref()
+                .map(|value| &value.revision),
+            verified.state.last_known_good_revision.as_ref()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retained_catalog_observations_load_but_require_current_acceptance() {
+        use camellia_nexus_core::ProgramStore;
+        let (directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let original = coordinator.load_workspace(&manager, &id).await.unwrap();
+        let accepted = coordinator
+            .activate_configuration_candidate(&manager, &id, activation_request(&original), false)
+            .await
+            .unwrap();
+        let (mut spec, _) = manager.get(&id).await.unwrap();
+        let ExecutableSpec::External {
+            metadata: Some(metadata),
+            ..
+        } = &mut spec.executable
+        else {
+            unreachable!()
+        };
+        metadata.core_target.as_mut().unwrap().knowledge_hash = "0".repeat(64);
+        // Isolate knowledge freshness from file and probe implementation freshness.
+        assert_eq!(
+            metadata.probe.as_ref().unwrap().revision,
+            camellia_nexus_core::CORE_BINARY_PROBE_REVISION
+        );
+        store.save(&spec).await.unwrap();
+        let mut retained = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let previous_revision = retained.state_revision;
+        retained.compatibility_profile.target.knowledge_hash = "0".repeat(64);
+        retained.compatibility_profile.profile_hash = "b".repeat(64);
+        for candidate in [
+            Some(&mut retained.base),
+            Some(&mut retained.desired),
+            retained.applied.as_mut(),
+            retained.last_known_good.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            candidate.compatibility_profile_hash = "b".repeat(64);
+            if let Some(evidence) = &mut candidate.validation_evidence {
+                evidence.profile_hash = "b".repeat(64);
+            }
+        }
+        store
+            .save_configuration_state(&id, &retained, Some(previous_revision))
+            .await
+            .unwrap();
+        let report = store.load_all().await.unwrap();
+        assert!(report.invalid.is_empty());
+        assert_eq!(report.valid[0].spec, spec);
+
+        let restarted = ProgramManager::new(
+            Arc::new(crate::NativeProcessDriver::default()),
+            store.clone(),
+            store.clone(),
+            Arc::new(crate::NativeToolRunner::default()),
+        );
+        assert!(
+            restarted
+                .initialize_without_auto_start()
+                .await
+                .unwrap()
+                .invalid
+                .is_empty()
+        );
+        assert!(restarted.verify_applied_config(&spec).await.is_err());
+        let preview = coordinator
+            .load_workspace_preview(&restarted, &id)
+            .await
+            .unwrap();
+        assert!(!preview.state.workspace.editor.can_apply);
+        assert!(
+            preview
+                .state
+                .workspace
+                .editor
+                .blockers
+                .iter()
+                .any(|blocker| blocker.code == "CORE_PROFILE_MISMATCH")
+        );
+        let probes = std::fs::read(directory.path().join("identity-probes")).unwrap();
+        let refreshed = coordinator.load_workspace(&restarted, &id).await.unwrap();
+        assert_ne!(
+            std::fs::read(directory.path().join("identity-probes")).unwrap(),
+            probes
+        );
+        let (current_spec, current_status) = restarted.get(&id).await.unwrap();
+        current_spec
+            .core_target_identity()
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(current_status, camellia_nexus_core::ProgramState::Stopped);
+        assert_eq!(
+            refreshed.state.desired.content,
+            accepted.state.desired.content
+        );
+        assert!(refreshed.state.desired.validation_evidence.is_none());
+        assert_eq!(
+            refreshed.state.applied_revision,
+            accepted.state.applied_revision
+        );
+        assert_eq!(
+            refreshed.state.last_known_good_revision,
+            accepted.state.last_known_good_revision
+        );
+        assert!(
+            restarted
+                .verify_applied_config(&current_spec)
+                .await
+                .is_err()
+        );
+        let repeated = coordinator.load_workspace(&restarted, &id).await.unwrap();
+        assert_eq!(repeated.state.generation, refreshed.state.generation);
+        assert_eq!(
+            repeated.state.state_revision,
+            refreshed.state.state_revision
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn editor_updates_do_not_reprobe_an_unchanged_program_and_keep_text_without_binary() {
+        let (directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let original = coordinator.load_workspace(&manager, &id).await.unwrap();
+        let probes = std::fs::read(directory.path().join("identity-probes")).unwrap();
+        let updated = coordinator
+            .set_guided(
+                &manager,
+                &id,
+                "logging.level".into(),
+                Some(Value::from("warning")),
+                original.state.generation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(directory.path().join("identity-probes")).unwrap(),
+            probes
+        );
+        std::fs::rename(
+            directory.path().join("xray"),
+            directory.path().join("xray-away"),
+        )
+        .unwrap();
+        let editable = coordinator
+            .set_guided(
+                &manager,
+                &id,
+                "logging.level".into(),
+                Some(Value::from("error")),
+                updated.state.generation,
+            )
+            .await
+            .unwrap();
+        let prepared = coordinator
+            .prepare_source_refresh(&manager, &id, None, &CredentialSnapshot::empty())
+            .await
+            .unwrap();
+        let refreshed = coordinator
+            .commit_source_refresh(&manager, prepared)
+            .await
+            .unwrap();
+        assert_eq!(
+            refreshed.state.desired.content,
+            editable.state.desired.content
+        );
+        let mut draft = refreshed.editor_session.unwrap();
+        draft.working_content = r#"{"log":{"loglevel":"debug"}}"#.into();
+        let saved = coordinator
+            .update_final_configuration_draft(&manager, &id, draft, 0)
+            .await
+            .unwrap();
+        assert!(
+            saved
+                .editor_session
+                .as_ref()
+                .unwrap()
+                .working_content
+                .contains("debug")
+        );
+        assert_eq!(
+            saved.state.applied_revision,
+            original.state.applied_revision
+        );
+        assert_eq!(
+            saved.state.last_known_good_revision,
+            original.state.last_known_good_revision
+        );
+        assert!(
+            coordinator
+                .activate_configuration_candidate(&manager, &id, activation_request(&saved), false)
+                .await
+                .is_err()
+        );
+        assert!(store.load_final_editor_draft(&id).await.unwrap().is_some());
     }
 
     #[cfg(unix)]
@@ -3210,6 +3760,69 @@ esac
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn adopting_one_upstream_value_is_atomic_and_retryable_after_a_write_failure() {
+        let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let initial = coordinator.load_workspace(&manager, &id).await.unwrap();
+        let mut draft = initial.editor_session.unwrap();
+        draft.working_content = r#"{"log":{"loglevel":"error"}}"#.into();
+        coordinator
+            .update_final_configuration_draft(&manager, &id, draft, 0)
+            .await
+            .unwrap();
+        let saved = coordinator
+            .save_configuration_candidate(&manager, &id)
+            .await
+            .unwrap();
+        let edit = saved
+            .state
+            .workspace
+            .editor
+            .changes
+            .iter()
+            .find(|change| change.semantic_path == "/log/loglevel")
+            .unwrap();
+        let request = camellia_nexus_core::AdoptUpstreamChangeRequest {
+            operation_id: Uuid::new_v4().to_string(),
+            expected_state_revision: saved.state.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            edit_id: edit.edit_id.clone(),
+            path: edit.segments.clone(),
+        };
+        store.fail_next_configuration_write();
+        coordinator
+            .adopt_upstream_change(&manager, &id, request.clone())
+            .await
+            .unwrap_err();
+        let unchanged = coordinator.load_workspace(&manager, &id).await.unwrap();
+        assert_eq!(unchanged.state.state_revision, saved.state.state_revision);
+        assert_eq!(unchanged.state.desired.content, saved.state.desired.content);
+        let adopted = coordinator
+            .adopt_upstream_change(&manager, &id, request.clone())
+            .await
+            .unwrap();
+        assert!(
+            adopted
+                .state
+                .desired
+                .content
+                .contains("\"loglevel\": \"info\"")
+        );
+        assert!(adopted.state.workspace.editor.changes.is_empty());
+        assert_eq!(adopted.state.applied_revision, saved.state.applied_revision);
+        assert_eq!(
+            adopted.state.last_known_good_revision,
+            saved.state.last_known_good_revision
+        );
+        let retried = coordinator
+            .adopt_upstream_change(&manager, &id, request)
+            .await
+            .unwrap();
+        assert_eq!(retried.state.state_revision, adopted.state.state_revision);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn committed_operation_basis_allows_continued_typing_without_self_conflicts() {
         for action in ["save", "apply", "reject"] {
             let (directory, store, manager, coordinator, id) = workspace_fixture().await;
@@ -4180,6 +4793,18 @@ esac
         assert_eq!(
             rejected.state.desired.validation,
             CandidateValidationStatus::Invalid
+        );
+        assert_eq!(
+            rejected.state.workspace.editor.candidate_status,
+            camellia_nexus_core::CandidateStatus::Invalid
+        );
+        assert!(
+            store
+                .load_configuration_state(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .candidate_is_saved()
         );
         assert!(store.load_final_editor_draft(&id).await.unwrap().is_some());
         assert_eq!(

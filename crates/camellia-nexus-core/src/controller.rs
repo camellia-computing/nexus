@@ -611,12 +611,7 @@ impl ProgramController {
         let mut spec = self.spec.read().await.clone();
         let current = self.store.executable_metadata(&spec).await?;
         let changed = spec.executable.metadata().is_none_or(|recorded| {
-            recorded.fingerprint.sha256 != current.fingerprint.sha256
-                || (spec.program_type.kind() != crate::ProgramKind::Generic
-                    && recorded
-                        .probe
-                        .as_ref()
-                        .is_none_or(|probe| probe.revision != crate::CORE_BINARY_PROBE_REVISION))
+            !recorded.observations_match(&current, spec.program_type.kind())
         });
         if !changed {
             return Ok(());

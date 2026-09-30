@@ -23,13 +23,15 @@ RULES = ROOT / "scripts/core-knowledge-rules.json"
 PROGRAMS = (
     {"program":"singBox","repository":"SagerNet/sing-box","familyPolicy":"majorMinor","prefixes":["option/","include/","constant/","protocol/"],"roots":["option#Options"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
     {"program":"mihomo","repository":"MetaCubeX/mihomo","familyPolicy":"majorMinor","prefixes":["config/","adapter/","listener/","constant/","rules/","common/structure/","main.go"],"roots":["config#RawConfig"],"outboundCollection":"proxies","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"ss","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
-    {"program":"xray","repository":"XTLS/Xray-core","familyPolicy":"releaseMonth","prefixes":["infra/conf/"],"roots":["infra/conf#Config"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria","proxy.outbound.tuicV5":"tuic"}},
+    {"program":"xray","repository":"XTLS/Xray-core","familyPolicy":"releaseMonth","prefixes":["infra/conf/","transport/internet/sockopt"],"roots":["infra/conf#Config"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria","proxy.outbound.tuicV5":"tuic"}},
 )
 STABLE_TAG = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DEPENDENCIES = {
     "singBox": [{"modulePath": "github.com/sagernet/sing", "repository": "SagerNet/sing",
-                 "prefixes": ["common/json/", "common/x/linkedhashmap/"]}],
+                 "prefixes": ["common/json/", "common/x/linkedhashmap/"]},
+                {"modulePath": "github.com/sagernet/sing-tun", "repository": "SagerNet/sing-tun",
+                 "prefixes": ["redirect", "tun", "stack"]}],
 }
 
 
@@ -329,21 +331,35 @@ def reviewed_rules(program: str, inventory: dict, rules: list[dict]) -> list[dic
     for rule in rules:
         if rule["program"] != program:
             continue
-        functions = [fn for fn in inventory["functions"] if fn["id"] == rule["evidence"]["function"]]
         declarations = [entry for entry in inventory["declarations"] if entry["id"] == rule["declaration"]]
-        if len(functions) != 1 or len(declarations) != 1:
+        if len(declarations) != 1:
             raise ValueError(f"semantic rule evidence is missing or ambiguous: {rule['id']}")
-        fn, declaration = functions[0], declarations[0]
+        declaration = declarations[0]
         fields = [field for field in declaration["fields"] if field["name"] == rule["field"]]
+        if not fields:
+            continue
         if len(fields) != 1:
             raise ValueError(f"semantic rule field requires source review: {rule['id']}")
         field_shape = {key: fields[0][key] for key in ("type", "embedded", "tags", "annotations")}
-        if fn["bodyHash"] not in rule["evidence"]["bodyHashes"] or field_shape != rule["evidence"]["fieldShape"]:
+        if field_shape not in rule["fieldShapes"]:
             raise ValueError(f"semantic rule requires source review: {rule['id']}")
+        evidence = []
+        for recipe in rule["evidence"]:
+            functions = [fn for fn in inventory["functions"] if fn["id"] == recipe["function"]
+                         and fn["source"]["path"] == recipe["path"]]
+            if len(functions) != 1:
+                raise ValueError(f"semantic rule behavior is missing or ambiguous: {rule['id']}")
+            fn = functions[0]
+            if (fn["bodyHash"] not in recipe["bodyHashes"] or fn["buildConstraint"] not in recipe["buildConstraints"]
+                    or any(fn["imports"].get(name) != module for name, module in recipe.get("imports", {}).items())):
+                raise ValueError(f"semantic rule behavior requires source review: {rule['id']}")
+            evidence.append({"source": fn["source"], "bodyHash": fn["bodyHash"]})
+        if not evidence:
+            raise ValueError(f"semantic rule lacks reviewed behavior: {rule['id']}")
         result.append({**{key: value for key, value in rule.items() if key not in {"program", "evidence"}},
                        "fieldHash": digest(field_shape),
-                       "buildConstraint": fn["buildConstraint"],
-                       "evidence": {"source": fn["source"], "bodyHash": fn["bodyHash"]}})
+                       "evidence": evidence})
+        result[-1].pop("fieldShapes")
     return result
 
 

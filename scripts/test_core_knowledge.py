@@ -251,7 +251,7 @@ class SourceReviewTests(unittest.TestCase):
     def test_reviewed_rule_is_invalidated_by_behavior_change(self):
         fn = {"id": "option#Options.Build", "bodyHash": "a" * 64, "buildConstraint": "", "source": {"path": "option/options.go", "symbol": "Options.Build"}}
         field_shape = {key: value for key, value in self.declaration()["fields"][0].items() if key not in {"name", "source"}}
-        rule = {"id": "timeout", "program": "fixture", "declaration": "option#Options", "field": "Timeout", "evidence": {"function": fn["id"], "bodyHashes": [fn["bodyHash"]], "fieldShape": field_shape}}
+        rule = {"id": "timeout", "program": "fixture", "declaration": "option#Options", "field": "Timeout", "fieldShapes": [field_shape], "evidence": [{"function": fn["id"], "path": fn["source"]["path"], "bodyHashes": [fn["bodyHash"]], "buildConstraints": [""]}]}
         inventory = {"declarations": [self.declaration()], "functions": [fn]}
         self.assertEqual(len(reviewed_rules("fixture", inventory, [rule])), 1)
         updated = {**fn, "bodyHash": "b" * 64}
@@ -264,6 +264,27 @@ class SourceReviewTests(unittest.TestCase):
         inventory["declarations"][0]["fields"][0]["tags"]["proxy"] = "different-path"
         with self.assertRaises(ValueError):
             reviewed_rules("fixture", inventory, [rule])
+
+    def test_rule_requires_each_dependency_branch_and_applies_only_to_declared_fields(self):
+        field_shape = {key: value for key, value in self.declaration()["fields"][0].items() if key not in {"name", "source"}}
+        fns = [{"id": "option#Build", "bodyHash": "a", "buildConstraint": "", "imports": {"tun": "example.org/tun"}, "source": {"path": "option.go", "symbol": "Build"}},
+               {"id": "dep#Stub", "bodyHash": "b", "buildConstraint": "(!linux)", "source": {"path": "stub.go", "symbol": "Stub"}}]
+        rule = {"id": "platform", "program": "fixture", "declaration": "option#Options", "field": "Timeout", "fieldShapes": [field_shape],
+                "evidence": [{"function": fn["id"], "path": fn["source"]["path"], "bodyHashes": [fn["bodyHash"]], "buildConstraints": [fn["buildConstraint"]]} for fn in fns]}
+        rule["evidence"][0]["imports"] = {"tun": "example.org/tun"}
+        inventory = {"declarations": [self.declaration()], "functions": fns}
+        self.assertEqual(len(reviewed_rules("fixture", inventory, [rule])[0]["evidence"]), 2)
+        for change in ["bodyHash", "buildConstraint"]:
+            invalid = deepcopy(inventory)
+            invalid["functions"][1][change] = "changed"
+            with self.assertRaises(ValueError):
+                reviewed_rules("fixture", invalid, [rule])
+        invalid = deepcopy(inventory)
+        invalid["functions"][0]["imports"]["tun"] = "example.org/unreviewed"
+        with self.assertRaises(ValueError):
+            reviewed_rules("fixture", invalid, [rule])
+        inventory["declarations"][0]["fields"] = []
+        self.assertEqual(reviewed_rules("fixture", inventory, [rule]), [])
 
     def test_type_reference_coverage_keeps_unresolved_dependencies_explicit(self):
         declarations = [{"id": "option#Options", "shape": {"kind": "structure"}, "fields": [
