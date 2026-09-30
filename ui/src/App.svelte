@@ -66,6 +66,7 @@
     configurationErrorInfo,
     configurationNoticeDuration,
     configurationChoiceWasRejected,
+    intentErrorNeedsFinalEditor,
     coreAdmissionMessage,
     coreAssessmentMessage,
     sourceIssueMessage,
@@ -378,6 +379,7 @@
 
   let configDocument: ConfigDocument | null = null;
   let configurationState: ConfigurationStateView | null = null;
+  let intentObjectEditing = false;
   let configurationStateLoadingId = '';
   let configurationIdentityCheckingId = '';
   let configurationStateLoadError = false;
@@ -928,7 +930,7 @@
     || !canEditConfigurationByLicense
     || !canRunDiagnosticsByLicense
     || !configurationState
-    || !configDocument
+    || (!configDocument && activeTab !== 'intent')
     || !configurationNeedsActivation
     || coreAdmissionRejected
     || configurationStateLoadError
@@ -4322,40 +4324,40 @@
   }
 
   async function changeGuidedSetting(
-    event: CustomEvent<{
-      settingId: string;
-      value?: unknown;
-    }>,
-  ) {
-    if (!selectedId || !canEditConfigurationByLicense) return;
+    change: import('./types').ConfigurationIntentAction,
+    retryRequest?: import('./types').ConfigurationIntentRequest,
+  ): Promise<boolean> {
+    if (!selectedId || !canEditConfigurationByLicense) return false;
     const id = selectedId;
+    let request = retryRequest;
     clearIntentError();
-    await mutateConfiguration(
-      id,
-      'guided-setting',
+    return mutateConfiguration(
+      id, 'guided-setting',
       async () => {
-        let current = await synchronizeFinalEditorBeforeUpstreamMutation(id);
-        let snapshot: ConfigurationWorkspaceSnapshot | null = null;
+        const current = await synchronizeFinalEditorBeforeUpstreamMutation(id);
+        request ??= {
+          operationId: crypto.randomUUID(), expectedStateRevision: current.stateRevision,
+          editorSessionId: finalEditorSession?.sessionId,
+          expectedDraftRevision: finalEditorSession?.draftRevision, change,
+        };
         for (let attempt = 0; attempt < 2; attempt += 1) {
           try {
-            snapshot = await api.setGuidedIntent(id, {
-              settingId: event.detail.settingId,
-              value: event.detail.value,
-              expectedGeneration: current.generation,
-            });
-            break;
+            const snapshot = await api.updateConfigurationIntent(id, request);
+            await adoptConfigurationWorkspace(id, snapshot);
+            return;
           } catch (error) {
             if (attempt !== 0 || !isRetryableConfigurationConflict(error)) throw error;
             const refreshed = await api.getConfigurationWorkspace(id);
             if (selectedId !== id) throw error;
             await adoptConfigurationWorkspace(id, refreshed);
-            current = refreshed.state;
+            request = { ...request, expectedStateRevision: refreshed.state.stateRevision,
+              editorSessionId: refreshed.editorSession?.sessionId,
+              expectedDraftRevision: refreshed.editorSession?.draftRevision };
           }
         }
-        if (snapshot) await adoptConfigurationWorkspace(id, snapshot);
       },
       async (value) => {
-        reportIntentError(value, async () => { await changeGuidedSetting(event); });
+        reportIntentError(value, async () => { await changeGuidedSetting(change, request); });
       },
     );
   }
@@ -4474,7 +4476,7 @@
   }
 
   async function applyConfiguration(retryRequest?: import('./types').ConfigurationMutationContext, submittedContent?: string) {
-    if (!configDocument || !selectedId || !configurationState || (!retryRequest && configurationActivationBlocked)) return false;
+    if (!selectedId || !configurationState || (!retryRequest && configurationActivationBlocked)) return false;
     clearConfigurationError();
     clearConfigOutput();
     const id = selectedId;
@@ -4908,7 +4910,16 @@
     captureVisibleLogScrollState();
     stopLogPolling();
     stopXrayDashboardPolling();
+    const changedTab = activeTab !== tab;
     activeTab = tab;
+    if (tab === 'intent' && changedTab) {
+      await tick();
+      const panel = document.getElementById('program-panel-intent');
+      if (panel && mainElement && activeTab === tab) {
+        const tabsHeight = mainElement.querySelector('.program-tabs')?.getBoundingClientRect().height ?? 0;
+        mainElement.scrollTop += panel.getBoundingClientRect().top - mainElement.getBoundingClientRect().top - tabsHeight - 20;
+      }
+    }
     if (!selectedId || detail?.spec.type.kind === 'generic') return;
     if (configurationState && !configurationStateLoadError) return;
     const id = selectedId;
@@ -6196,16 +6207,22 @@
         </div>
       {:else if activeTab === 'intent'}
         <div id="program-panel-intent" role="tabpanel" tabindex="0" aria-labelledby="program-tab-intent" class="panel configuration-workspace">
-          {#if workspaceErrors.intent}<ErrorNotice error={workspaceErrors.intent} dismissible autoDismissMs={workspaceNoticeDurations.intent ?? 0} onDismiss={() => clearWorkspaceError('intent')} actionLabel="Retry" onAction={() => retryWorkspaceError('intent')} actionBusy={workspaceErrorBusyScope === 'intent'} />{/if}
+          {#if workspaceErrors.intent}<ErrorNotice error={workspaceErrors.intent} dismissible autoDismissMs={workspaceNoticeDurations.intent ?? 0} onDismiss={() => clearWorkspaceError('intent')} actionLabel={intentErrorNeedsFinalEditor(workspaceErrors.intent) ? 'Open Final configuration' : 'Retry'} onAction={() => intentErrorNeedsFinalEditor(workspaceErrors.intent) ? openFinalConfiguration() : retryWorkspaceError('intent')} actionBusy={workspaceErrorBusyScope === 'intent'} />{/if}
           <header class="workspace-header">
-            <div><p class="eyebrow">{$t('Intent')}</p><h2>{$t('Common settings')}</h2><p>{$t('Changes here update Final configuration.')}</p></div>
+            <div><h2>{$t('Intent')}</h2><p>{$t(intentObjectEditing ? 'Finish or cancel the open entry before applying.' : 'Change settings for this program; apply them when you are ready.')}</p></div>
+            {#if configurationState}<div class="workspace-actions intent-workspace-actions">
+              <button class="primary" type="button" disabled={intentObjectEditing || configurationActivationBlocked || !configurationNeedsActivation} on:click={() => void applyConfiguration()}>{$t(configSaveRequiresRestart ? 'Apply and restart' : 'Apply changes')}</button>
+            </div>{/if}
           </header>
-          {#if configurationState && configurationState.guidedDescriptors.length > 0}
+          {#if configurationState && (configurationState.guidedDescriptors.length > 0 || configurationState.intentObjectDescriptors?.some((item) => item.canCreate) || configurationState.intentObjects?.length)}
             <GuidedConfigurationEditor
               state={configurationState}
               disabled={!!busy || !canEditConfigurationByLicense}
-              on:change={changeGuidedSetting}
+              onChange={changeGuidedSetting}
+              onOpenFinal={openFinalConfiguration}
+              onEditingChange={(editing) => intentObjectEditing = editing}
             />
+            {#if !intentObjectEditing && configurationActivationBlocked && configurationActivationReason}<p class="intent-apply-reason">{$t(configurationActivationReason)}</p>{/if}
           {:else if configurationStateLoadingId === detail.spec.id}
             <div class="loading configuration-loading">{$t('Loading compatibility profile')}…</div>
           {:else if configurationStateLoadError}

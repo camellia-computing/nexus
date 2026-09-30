@@ -21,6 +21,8 @@ struct UpstreamPathWrite {
     path: SemanticPath,
     value: SemanticValue,
     sequence: u64,
+    #[serde(default)]
+    list_edit: Option<IntentListEdit>,
 }
 
 /// Current contributions and their explicit write order, not an event history.
@@ -94,6 +96,32 @@ impl UpstreamState {
                 None => self.writes.retain(|write| write.owner != owner),
             }
         }
+        for id in self
+            .intent
+            .path_edits
+            .keys()
+            .chain(intent.path_edits.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>()
+        {
+            if self.intent.path_edits.get(&id) == intent.path_edits.get(&id) {
+                continue;
+            }
+            let owner = UpstreamOwner::Intent(id.clone());
+            match intent.path_edits.get(&id) {
+                Some(edit) => {
+                    self.record(owner.clone(), edit.path.clone(), edit.value.clone());
+                    if let Some(write) = self
+                        .writes
+                        .iter_mut()
+                        .find(|write| write.owner == owner && write.path == edit.path)
+                    {
+                        write.list_edit = edit.list_edit.clone();
+                    }
+                }
+                None => self.writes.retain(|write| write.owner != owner),
+            }
+        }
         self.intent = intent.clone();
 
         if self.details != *details {
@@ -143,6 +171,51 @@ impl UpstreamState {
                 UpstreamOwner::Intent(setting.into()),
                 path,
                 SemanticValue::Present(value),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn claim_intent_path(&mut self, id: &str, edit: &IntentPathEdit) -> Result<()> {
+        if let Some(delta) = &edit.list_edit {
+            let values = match value_at(&self.document()?, &edit.path)? {
+                SemanticValue::Present(Value::Array(items)) => items,
+                SemanticValue::Missing => Vec::new(),
+                _ => {
+                    return Err(CamelliaNexusError::invalid_spec(
+                        "Intent list requires a list",
+                    ));
+                }
+            };
+            let mut updated = values.clone();
+            delta.apply(&mut updated)?;
+            if values != updated {
+                self.record(
+                    UpstreamOwner::Intent(id.into()),
+                    edit.path.clone(),
+                    edit.value.clone(),
+                );
+                if let Some(write) = self
+                    .writes
+                    .iter_mut()
+                    .find(|write| write.owner == UpstreamOwner::Intent(id.into()))
+                {
+                    write.list_edit = Some(delta.clone());
+                }
+            }
+            return Ok(());
+        }
+        if edit.list_edit.is_none()
+            && !semantic_values_equal_at(
+                &value_at(&self.document()?, &edit.path)?,
+                &edit.value,
+                &edit.path,
+            )
+        {
+            self.record(
+                UpstreamOwner::Intent(id.into()),
+                edit.path.clone(),
+                edit.value.clone(),
             );
         }
         Ok(())
@@ -212,6 +285,7 @@ impl UpstreamState {
             path,
             value,
             sequence: self.sequence,
+            list_edit: None,
         });
     }
 
@@ -220,6 +294,24 @@ impl UpstreamState {
         let mut ordered = self.writes.iter().collect::<Vec<_>>();
         ordered.sort_by_key(|write| write.sequence);
         for write in ordered {
+            if let Some(edit) = &write.list_edit {
+                let mut values = match value_at(&document, &write.path)? {
+                    SemanticValue::Present(Value::Array(values)) => values,
+                    SemanticValue::Missing => Vec::new(),
+                    _ => {
+                        return Err(CamelliaNexusError::invalid_spec(
+                            "An Intent list crosses a non-list value",
+                        ));
+                    }
+                };
+                edit.apply(&mut values)?;
+                write_value(
+                    &mut document,
+                    &write.path,
+                    &SemanticValue::Present(json!(values)),
+                )?;
+                continue;
+            }
             let value = if write.owner == UpstreamOwner::Sources {
                 value_at(&self.source, &write.path)?
             } else {

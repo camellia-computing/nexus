@@ -1,233 +1,178 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
-  import { t, translate, translateConfigurationValue, uiLanguage } from './i18n';
-  import type {
-    ConfigurationStateView,
-    GuidedProjection,
-    GuidedSettingDescriptor,
-  } from './types';
-
+  import { onDestroy, tick } from 'svelte';
+  import { t } from './i18n';
+  import { intentGroups, intentOptionMessage } from './intentPresentation';
+  import Icon, { type IconName } from './lib/components/Icon.svelte';
+  import IntentSettingControl from './IntentSettingControl.svelte';
+  import IntentObjectForm from './IntentObjectForm.svelte';
+  import type { ConfigurationStateView, ConfigurationIntentAction, IntentObjectDescriptor, IntentObjectProjection } from './types';
   export let state: ConfigurationStateView;
   export let disabled = false;
-
-  const dispatch = createEventDispatcher<{
-    change: {
-      settingId: string;
-      value?: unknown;
-    };
-  }>();
-
-  $: projectionById = new Map(
-    state.guidedProjection.map((projection) => [projection.settingId, projection]),
-  );
-  $: categories = [...new Set(state.guidedDescriptors.map((descriptor) => descriptor.category))];
-  $: intentDiagnostics = state.desired.diagnostics.filter(belongsToIntent);
-  $: intentConflicts = state.desired.conflicts.filter(belongsToIntent);
-
-  function projectionFor(descriptor: GuidedSettingDescriptor): GuidedProjection {
-    return projectionById.get(descriptor.id) ?? {
-      settingId: descriptor.id,
-      status: 'inherited',
-    };
-  }
-
-  function projectedValue(descriptor: GuidedSettingDescriptor): unknown {
-    return projectionFor(descriptor).value;
-  }
-
-  function dependencyEnabled(descriptor: GuidedSettingDescriptor): boolean {
-    if (!descriptor.enabledWhen) return true;
-    const dependency = projectionById.get(descriptor.enabledWhen);
-    // Keep the dependency editable while Final configuration also changes it,
-    // so the user can still update the upstream Intent value.
-    if (dependency?.status === 'overridden' || dependency?.status === 'finalEdit' || dependency?.status === 'custom') return true;
-    return dependency?.value === true;
-  }
-
-  function dependencyHint(descriptor: GuidedSettingDescriptor): string | undefined {
-    if (!descriptor.enabledWhen) return undefined;
-    const dependency = projectionById.get(descriptor.enabledWhen);
-    if (dependency?.status === 'overridden' || dependency?.status === 'finalEdit') return 'The parent setting has a Final configuration edit.';
-    return dependency?.value === true ? undefined : 'Dependency unavailable';
-  }
-
-  function change(descriptor: GuidedSettingDescriptor, value: unknown) {
-    dispatch('change', {
-      settingId: descriptor.id,
-      value,
-    });
-  }
-
-  function reset(descriptor: GuidedSettingDescriptor) {
-    dispatch('change', {
-      settingId: descriptor.id,
-      value: undefined,
-    });
-  }
-
-  function statusLabel(projection: GuidedProjection): string {
-    switch (projection.status) {
-      case 'explicit': return 'Explicit';
-      case 'custom': return 'Custom / Advanced';
-      case 'overridden':
-      case 'finalEdit': return 'Final configuration edit';
-      default: return 'Following source';
-    }
-  }
-
-  function categoryLabel(category: string): string {
-    return ({
-      logging: 'Logging',
-      dns: 'DNS',
-      routing: 'Routing',
-      network: 'Network',
-      tun: 'TUN',
-    } as Record<string, string>)[category] ?? category;
-  }
-
-  function settingValueLabel(descriptor: GuidedSettingDescriptor, value: string): string {
-    // Reference the store in this component so Svelte re-renders option
-    // labels immediately when the language changes while the tab remains
-    // mounted.
-    return $uiLanguage === 'zh-CN'
-      ? translateConfigurationValue(descriptor.id, value)
-      : value;
-  }
-
-  const diagnosticMessageKeys: Record<string, string> = {
-    SOURCE_INVALID: 'Fix or disable this source before continuing.',
-    SOURCE_UNAVAILABLE: 'Refresh or disable the unavailable source before continuing.',
-    CORE_PROFILE_MISMATCH: 'Apply again to check these changes with the current program.',
-    CORE_VALIDATION_EVIDENCE_STALE: 'Your changes will be checked when you apply them.',
-    CORE_INVALID: 'The program could not use these changes. Your current configuration was kept.',
-    CORE_TARGET_CHANGED: 'Review these changes for the current program.',
-    CORE_TARGET_SOURCE_REJECTED: 'This source cannot be used with the selected program target.',
+  export let onChange: (change: ConfigurationIntentAction) => Promise<boolean>;
+  export let onOpenFinal: () => void;
+  export let onEditingChange: (editing: boolean) => void;
+  let selection: { descriptor: IntentObjectDescriptor; object?: IntentObjectProjection } | null = null;
+  let workspace: HTMLElement;
+  let opener: HTMLButtonElement | null = null;
+  let chosenIds: Record<string, string> = {};
+  let collapsed: string[] = [];
+  let following = '';
+  $: onEditingChange(selection !== null);
+  onDestroy(() => onEditingChange(false));
+  const groupIcons: Record<string, IconName> = { local: 'home', dns: 'search', routing: 'sliders', tun: 'shield', logging: 'logs' };
+  const emptyMessages: Record<string, string> = {
+    listener: 'Add a local proxy for your apps to connect to.',
+    dnsServer: 'Add a DNS server when you need your own resolver.',
+    routeRule: 'Choose which connection a domain or IP address uses.',
+    tun: 'Add a virtual adapter configuration. It stays off until you run the program.',
   };
-
-  function diagnosticMessage(code: string, messageKey?: string): string {
-    const key = messageKey && diagnosticMessageKeys[messageKey]
-      ? diagnosticMessageKeys[messageKey]
-      : diagnosticMessageKeys[code];
-    return localizedMessage(key ?? 'Review the highlighted setting. Your current configuration was kept.');
+  function objectLabel(object: IntentObjectProjection, descriptor: IntentObjectDescriptor, localize: (message: string) => string) {
+    return object.label.startsWith('nexus-') ? localize(descriptor.label) : object.label;
   }
-
-  function localizedMessage(source: string): string {
-    // The shared translator intentionally removes terminal punctuation for
-    // compact labels.  Diagnostics and source details are sentences; retain
-    // their English punctuation while still translating the Chinese view.
-    return $uiLanguage === 'en' ? source : translate(source);
+  function objectSummary(object: IntentObjectProjection, localize: (message: string) => string) {
+    const { protocol, port, server, access, target } = object.values;
+    return [protocol ? localize(intentOptionMessage(String(protocol))) : '', port ? String(port) : '',
+      server ? String(server) : '', access ? localize(intentOptionMessage(String(access))) : '', target ? String(target) : ''].filter(Boolean).join(' · ');
   }
-
-  function conflictMessage(messageKey?: string): string {
-    if (messageKey === 'CONFIGURATION_IDENTITY_DUPLICATED') {
-      return translate('Two entries have the same name. Rename or remove one.');
-    }
-    return translate('This setting changed in two places. Choose which value to use.');
+  function openObject(descriptor: IntentObjectDescriptor, object: IntentObjectProjection | undefined, button: HTMLButtonElement) {
+    if (selection || disabled) return;
+    opener = button;
+    selection = { descriptor, object };
   }
-
-  function belongsToIntent(issue: { scope?: { surface: string } }): boolean {
-    return issue.scope?.surface === 'intent';
+  async function closeObject() {
+    const kind = selection?.descriptor.kind;
+    selection = null;
+    await tick();
+    if (opener?.isConnected) opener.focus();
+    else if (kind) workspace?.querySelector<HTMLButtonElement>(`button[data-add-kind="${kind}"]`)?.focus();
   }
+  async function followObject(object: IntentObjectProjection) {
+    if (following || disabled || selection) return;
+    following = object.objectId;
+    try { await onChange({ action: 'followObject', objectId: object.objectId, expectedHash: object.contentHash }); }
+    finally { following = ''; }
+  }
+  $: projection = new Map(state.guidedProjection.map((item) => [item.settingId, item]));
+  function belongsToGroup(category: string, group: string) { return (category === 'network' ? 'routing' : category) === group; }
+  $: groups = ['local', 'dns', 'routing', 'tun', 'logging'].filter((category) =>
+    state.guidedDescriptors.some((item) => belongsToGroup(item.category, category))
+      || state.intentObjectDescriptors?.some((item) => belongsToGroup(item.category, category) && (item.canCreate || state.intentObjects?.some((object) => object.kind === item.kind))));
 </script>
 
-<section class="guided-workspace" aria-label={$t('Common settings')}>
-  <div class="guided-grid">
-    {#each categories as category (category)}
-      {#each state.guidedDescriptors.filter((descriptor) => descriptor.category === category) as descriptor, index (descriptor.id)}
-          {@const projection = projectionFor(descriptor)}
-          {@const controlDisabled = disabled || !dependencyEnabled(descriptor)}
-          {@const dependencyMessage = dependencyHint(descriptor)}
-          <article class:custom={projection.status === 'custom'} class:overridden={projection.status === 'overridden' || projection.status === 'finalEdit'}>
-            {#if index === 0}<h3 class="setting-category">{$t(categoryLabel(category))}</h3>{/if}
-            <div class="setting-copy">
-              <strong>{$t(descriptor.label)}</strong>
-              <small>{$t(descriptor.description)}</small>
-              <span class="projection-status">{$t(statusLabel(projection))}</span>
+<section class="guided-workspace" aria-label={$t('Intent')} bind:this={workspace}>
+  <div class="intent-sections">
+    {#each groups as category (category)}
+      <section class="intent-group" data-group={category} aria-labelledby={'intent-heading-' + category}>
+        <h3 id={'intent-heading-' + category}>
+          <button class="group-heading" type="button" aria-expanded={!collapsed.includes(category)} aria-controls={'intent-content-' + category} on:click={() => collapsed = collapsed.includes(category) ? collapsed.filter((item) => item !== category) : [...collapsed, category]}>
+            <span class="group-icon"><Icon name={groupIcons[category]} size={20} /></span>
+            <span class="group-title">{$t(intentGroups[category])}</span>
+            {#if selection && belongsToGroup(selection.descriptor.category, category)}<span class="editing-label" aria-hidden="true">{$t('Editing')}</span>{/if}
+            <span class="group-chevron" class:expanded={!collapsed.includes(category)}><Icon name="chevron" size={16} /></span>
+          </button>
+        </h3>
+        <div class="group-content" id={'intent-content-' + category} hidden={collapsed.includes(category)}>
+        <div class="setting-list">
+        {#each state.guidedDescriptors.filter((item) => belongsToGroup(item.category, category) && !item.advanced) as descriptor (descriptor.id)}
+          <IntentSettingControl {descriptor} projection={projection.get(descriptor.id)} targets={state.intentTargets ?? []} {disabled} submit={onChange} openFinal={onOpenFinal} />
+        {/each}
+        </div>
+        {#each (state.intentObjectDescriptors ?? []).filter((item) => belongsToGroup(item.category, category) && (item.canCreate || state.intentObjects?.some((object) => object.kind === item.kind))) as descriptor (descriptor.kind)}
+          {@const objects = (state.intentObjects ?? []).filter((object) => object.kind === descriptor.kind)}
+          {@const chosen = objects.find((object) => object.objectId === chosenIds[descriptor.kind])}
+          <div class="object-list">
+            <div class="object-toolbar">
+              <h4>{$t(descriptor.label)}</h4>
+              {#if descriptor.canCreate}<button class="add-object" data-add-kind={descriptor.kind} type="button" disabled={disabled || !!selection || !!following} title={selection ? $t('Finish or cancel this entry first.') : undefined} on:click={(event) => openObject(descriptor, undefined, event.currentTarget)}><Icon name="add" size={16} /><span>{$t('Add')} {$t(descriptor.label)}</span></button>{/if}
             </div>
-            <div class="setting-control">
-              {#if descriptor.control === 'toggle'}
-                <label class="guided-toggle">
-                  <input
-                    type="checkbox"
-                    checked={projectedValue(descriptor) === true}
-                    disabled={controlDisabled}
-                    aria-label={$t(descriptor.label)}
-                    on:change={(event) => change(descriptor, event.currentTarget.checked)}
-                  />
-                  <span></span>
-                </label>
-              {:else if descriptor.control === 'select'}
-                <select
-                  value={typeof projectedValue(descriptor) === 'string' && descriptor.allowedValues.includes(String(projectedValue(descriptor))) ? String(projectedValue(descriptor)) : ''}
-                  disabled={controlDisabled}
-                  aria-label={$t(descriptor.label)}
-                  on:change={(event) => change(descriptor, event.currentTarget.value)}
-                >
-                  <option value="" disabled>{$t(projection.status === 'custom' ? 'Custom / Advanced' : 'Select a value')}</option>
-                  {#each descriptor.allowedValues as value (value)}
-                    <option {value}>{settingValueLabel(descriptor, value)}</option>
-                  {/each}
+            {#if objects.length > 4}
+              <div class="object-choice">
+                <select aria-label={$t('Choose an entry') + ': ' + $t(descriptor.label)} value={chosen?.objectId ?? ''} on:change={(event) => chosenIds = { ...chosenIds, [descriptor.kind]: event.currentTarget.value }}>
+                  <option value="">{$t('Choose an entry to edit')}</option>
+                  {#each objects as object (object.objectId)}<option value={object.objectId}>{objectLabel(object, descriptor, $t)}{#if object.values.port} · {String(object.values.port)}{/if}{#if object.removed} · {$t('Removed')}{/if}</option>{/each}
                 </select>
-              {:else if descriptor.control === 'number'}
-                <input type="number" value={typeof projectedValue(descriptor) === 'number' ? Number(projectedValue(descriptor)) : undefined} disabled={controlDisabled} aria-label={$t(descriptor.label)} on:change={(event) => change(descriptor, event.currentTarget.valueAsNumber)} />
-              {:else}
-                <input type="text" value={typeof projectedValue(descriptor) === 'string' ? String(projectedValue(descriptor)) : ''} disabled={controlDisabled} aria-label={$t(descriptor.label)} on:change={(event) => change(descriptor, event.currentTarget.value)} />
-              {/if}
-              <button type="button" on:click={() => reset(descriptor)} disabled={controlDisabled || projection.status === 'inherited'}>
-                {$t('Follow source')}
-              </button>
-              {#if projection.intentValue !== undefined && JSON.stringify(projection.intentValue) !== JSON.stringify(projection.value)}
-                <button type="button" on:click={() => change(descriptor, projection.intentValue)} disabled={controlDisabled}>{$t('Use this value')}</button>
-              {/if}
+                <button type="button" disabled={disabled || !chosen || !!selection || !!following} on:click={(event) => chosen && (chosen.removed ? void followObject(chosen) : chosen.editable ? openObject(descriptor, chosen, event.currentTarget) : onOpenFinal())}>{$t(chosen?.removed ? 'Follow source' : 'Edit')}</button>
+              </div>
+            {:else if objects.length}
+            <div class="object-entries">
+            {#each objects as object (object.objectId)}
+              <div class="object-row" class:editing={selection?.object?.objectId === object.objectId}>
+                <div class="object-description"><strong>{objectLabel(object, descriptor, $t)}</strong>{#if object.removed}<span>{$t('Removed')}</span>{:else if objectSummary(object, $t)}<span>{objectSummary(object, $t)}</span>{/if}</div>
+                <button type="button" disabled={disabled || !!selection || !!following} on:click={(event) => object.removed ? void followObject(object) : object.editable ? openObject(descriptor, object, event.currentTarget) : onOpenFinal()}>{$t(object.removed ? 'Follow source' : object.editable ? 'Edit' : 'Edit in Final configuration')}</button>
+              </div>
+            {/each}
             </div>
-            {#if projection.status === 'overridden' || projection.status === 'finalEdit'}
-              <p>{$t('Final configuration also edits this setting. Changes here may require conflict resolution there.')}</p>
-            {:else if projection.status === 'custom'}
-              <p>{$t('The effective configuration cannot be represented safely by this simple control.')}</p>
+            {:else if selection?.descriptor.kind !== descriptor.kind}
+              <p class="object-empty">{$t(emptyMessages[descriptor.kind])}</p>
             {/if}
-            {#if dependencyMessage}<p class="dependency-note">{$t(dependencyMessage)}</p>{/if}
-          </article>
-      {/each}
+          {#if selection?.descriptor.kind === descriptor.kind}
+            {#key selection.object?.objectId ?? descriptor.kind}
+              <IntentObjectForm {descriptor} object={selection.object} targets={state.intentTargets ?? []} program={state.kind} {disabled} submit={onChange} close={() => void closeObject()} />
+            {/key}
+          {/if}
+          </div>
+        {/each}
+        {#if state.guidedDescriptors.some((item) => belongsToGroup(item.category, category) && item.advanced)}
+          <details class="group-options"><summary><Icon name="settings" size={15} /><span>{$t('More options')}</span></summary>
+            <div class="setting-list">
+              {#each state.guidedDescriptors.filter((item) => belongsToGroup(item.category, category) && item.advanced) as descriptor (descriptor.id)}
+                <IntentSettingControl {descriptor} projection={projection.get(descriptor.id)} targets={state.intentTargets ?? []} {disabled} submit={onChange} openFinal={onOpenFinal} />
+              {/each}
+            </div>
+          </details>
+        {/if}
+        </div>
+      </section>
     {/each}
   </div>
-
-  {#if intentDiagnostics.length > 0 || intentConflicts.length > 0}
-    <div class="guided-diagnostics" role="status">
-      {#each intentDiagnostics as diagnostic (`diagnostic-${diagnostic.code}`)}
-        <span>{diagnosticMessage(diagnostic.code, diagnostic.messageKey)}<details><summary>{$t('Information for support')}</summary><code>{diagnostic.code}</code></details></span>
-      {/each}
-      {#each intentConflicts as conflict (`conflict-${conflict.semanticPath}`)}
-        <span>{conflictMessage(conflict.messageKey)}<details><summary>{$t('Information for support')}</summary><code>{conflict.semanticPath}</code></details></span>
-      {/each}
-    </div>
-  {/if}
 </section>
 
 <style>
-  .guided-workspace { display: grid; gap: 14px; margin-bottom: var(--ui-gap-md, 16px); padding: 16px; border: 1px solid var(--border-color, rgba(127,127,127,.28)); border-radius: 14px; background: var(--panel-background, rgba(127,127,127,.045)); container-type: inline-size; }
-  .setting-copy { display: grid; gap: 3px; }
-  .setting-copy small { opacity: .72; line-height: 1.35; }
-  .projection-status { width: fit-content; border-radius: 999px; padding: 3px 8px; font-size: .78rem; background: rgba(127,127,127,.12); }
-  /* The workspace is narrower than the viewport once the program sidebar and
-     panel padding are accounted for.  Flexible tracks let two short settings
-     share that real width instead of making auto-fill reserve a 300px track
-     and leaving a large empty column on the right. */
-  .guided-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; align-items: stretch; }
-  .setting-category { margin: 0; font-size: .78rem; font-weight: 700; letter-spacing: .02em; text-transform: capitalize; opacity: .7; }
-  article { display: grid; gap: 8px; align-content: start; min-width: 0; min-height: 0; padding: 11px; border: 1px solid var(--border-color, rgba(127,127,127,.22)); border-radius: 11px; background: var(--surface-background, rgba(255,255,255,.025)); }
-  article.custom, article.overridden { border-style: dashed; }
-  .projection-status { margin-top: 4px; }
-  .setting-control { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
-  .setting-control select, .setting-control input[type='number'], .setting-control input[type='text'] { flex: 1 1 150px; width: auto; min-width: 0; min-height: 34px; }
-  .setting-control button { flex: 0 0 auto; min-height: 32px; max-width: 100%; }
-  .guided-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; justify-self: start; margin-inline: 0 auto; }
-  .guided-toggle input { width: 18px; height: 18px; margin: 0; }
-  article p { margin: 0; font-size: .8rem; line-height: 1.4; opacity: .78; }
-  .dependency-note { color: var(--ui-text-warning, inherit); }
-  .guided-diagnostics { display: grid; gap: 5px; padding: 10px; border-radius: 9px; background: rgba(210,70,70,.09); }
-  .guided-diagnostics span { min-width: 0; overflow-wrap: anywhere; font-size: .82rem; }
-  .guided-diagnostics details { margin-top: 4px; font-size: .75rem; }
-  .guided-diagnostics code { overflow-wrap: anywhere; }
-  @container (max-width: 480px) { .guided-grid { grid-template-columns: 1fr; } }
-  @media (max-width: 520px) { .guided-grid { grid-template-columns: 1fr; } .setting-control { align-items: stretch; } .setting-control button { margin-inline-start: 0; } }
+  .guided-workspace { container-type: inline-size; min-width: 0; }
+  .intent-sections { display: grid; gap: 14px; }
+  .intent-group { --group-accent: var(--ui-brand); min-width: 0; border: 1px solid var(--ui-border-default); border-radius: var(--ui-radius-md); background: var(--ui-surface-1); }
+  .intent-group[data-group='dns'] { --group-accent: var(--ui-accent-tertiary); }
+  .intent-group[data-group='routing'] { --group-accent: var(--ui-accent-secondary); }
+  .intent-group[data-group='logging'] { --group-accent: var(--ui-text-secondary); }
+  h3, h4 { margin: 0; }
+  .group-heading { display: flex; width: 100%; min-width: 0; gap: 12px; justify-content: flex-start; padding: 13px 18px; border: 0; border-radius: var(--ui-radius-md); box-shadow: none; background: transparent; text-align: left; }
+  .group-heading:hover:not(:disabled) { background: var(--ui-state-hover); }
+  .group-icon { display: grid; place-items: center; flex: 0 0 36px; height: 36px; border-radius: var(--ui-radius-sm); color: color-mix(in srgb, var(--group-accent) 78%, var(--ui-text-primary)); background: color-mix(in srgb, var(--group-accent) 12%, var(--ui-surface-1)); }
+  .group-title { flex: 1; font-size: .94rem; font-weight: var(--ui-weight-semibold); }
+  .editing-label { font-size: .72rem; font-weight: var(--ui-weight-medium); color: var(--ui-text-link); }
+  .group-chevron { display: grid; color: var(--ui-text-secondary); flex-shrink: 0; }
+  .group-chevron.expanded { transform: rotate(90deg); }
+  .group-content { display: grid; gap: 14px; padding: 0 18px 16px; }
+  .group-content[hidden] { display: none; }
+  .setting-list { display: grid; min-width: 0; }
+  .setting-list:empty { display: none; }
+  .group-options { min-width: 0; border-top: 1px solid var(--ui-divider); }
+  summary { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 7px; padding: 12px 0 0; font-size: .8rem; color: var(--ui-text-secondary); cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  details[open] summary { padding-bottom: 8px; }
+  .object-list { min-width: 0; border: 1px solid var(--ui-border-subtle); border-radius: var(--ui-radius-sm); background: var(--ui-surface-2); }
+  .object-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  h4 { min-width: 0; font-size: .82rem; font-weight: var(--ui-weight-semibold); }
+  .add-object { min-height: 32px; padding: 6px 9px; box-shadow: none; border-color: color-mix(in srgb, var(--ui-brand) 25%, var(--ui-border-subtle)); background: var(--ui-brand-soft); color: var(--ui-text-link); font-size: .78rem; }
+  .object-entries { padding: 0 12px; }
+  .object-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0; border-top: 1px solid var(--ui-divider); min-width: 0; }
+  .object-row.editing { border-color: var(--ui-border-focus); }
+  .object-description { display: grid; gap: 3px; min-width: 0; }
+  .object-description strong { font-size: .85rem; font-weight: var(--ui-weight-medium); }
+  .object-description span { font-size: .77rem; color: var(--ui-text-secondary); }
+  .object-row button { flex: 0 0 auto; max-width: 45%; min-height: 32px; font-size: .78rem; padding: 6px 10px; box-shadow: none; }
+  .object-choice { display: flex; gap: 8px; min-width: 0; align-items: center; padding: 0 12px 12px; }
+  .object-choice select { width: 100%; min-width: 0; max-width: 100%; }
+  .object-choice button { flex: 0 0 auto; }
+  .object-empty { margin: 0; padding: 0 12px 12px; font-size: .8rem; line-height: 1.45; color: var(--ui-text-secondary); }
+  span, h4, button, p { min-width: 0; overflow-wrap: anywhere; }
+  button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  @container (min-width: 840px) { .setting-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; } }
+  @container (max-width: 440px) {
+    .group-heading { padding: 12px; gap: 9px; }
+    .group-content { padding: 0 12px 12px; }
+    .group-icon { flex-basis: 30px; height: 30px; }
+    .object-toolbar { align-items: flex-start; }
+    .object-choice { flex-direction: column; align-items: stretch; }
+  }
 </style>

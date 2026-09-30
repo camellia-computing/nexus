@@ -19,7 +19,7 @@ import {
 } from '../src/programs/shared/configuration.ts';
 import { applySingBoxDashboardChange } from '../src/programs/sing-box/dashboard-state.ts';
 import { mihomoProgram } from '../src/programs/mihomo/index.ts';
-import { configurationErrorInfo, configurationNoticeDuration, errorInfoOf, sourceIssueMessage, TRANSIENT_ERROR_DISMISS_MS } from '../src/errors.ts';
+import { configurationErrorInfo, configurationNoticeDuration, errorInfoOf, intentErrorNeedsFinalEditor, sourceIssueMessage, TRANSIENT_ERROR_DISMISS_MS } from '../src/errors.ts';
 import {
   clientVersionAdvisory,
   compareCanonicalSemVer,
@@ -545,7 +545,40 @@ globalThis.localStorage = {
 };
 globalThis.document = { documentElement: { lang: '' } };
 const { hasChineseTranslation } = await import('../src/i18n.ts');
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_RULE_SHADOWED' }), true);
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_OBJECT_AMBIGUOUS' }), true);
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_PORT_INVALID' }), false);
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'CONFIGURATION_OPERATION_PENDING' }), false);
+const { dnsServerNeedsResolver, intentSettingOptionMessages, intentOptionMessage } = await import('../src/intentPresentation.ts');
+for (const [setting, options] of Object.entries(intentSettingOptionMessages)) {
+  for (const [value, message] of Object.entries(options)) {
+    assert.equal(intentOptionMessage(value, setting), message);
+    assert.equal(hasChineseTranslation(message), true, `Missing Intent option translation: ${setting}/${value}`);
+  }
+}
+for (const server of ['', null, '192.0.2.50', '2001:db8::53', 'https://[2001:db8::53]/dns-query', 'https://192.0.2.50/dns-query']) {
+  assert.equal(dnsServerNeedsResolver(server), false, `IP DNS must not require another resolver: ${server}`);
+}
+for (const server of ['resolver.example', 'abc', 'https://resolver.example/dns-query']) {
+  assert.equal(dnsServerNeedsResolver(server), true);
+}
 for (const message of [
+  'Add',
+  'Edit',
+  'Done',
+  'Choose an entry',
+  'Choose an entry to edit',
+  'Add a local proxy for your apps to connect to.',
+  'Add a DNS server when you need your own resolver.',
+  'Choose which connection a domain or IP address uses.',
+  'Add a virtual adapter configuration. It stays off until you run the program.',
+  'Finish or cancel this entry first.',
+  'Use program default',
+  'Add a DNS server to choose it here.',
+  'Add a connection in Sources or Final configuration first.',
+  'Access protection',
+  'Entry actions',
+  'Editing',
   'setting needs a choice',
   'settings need a choice',
   'Updated configuration',

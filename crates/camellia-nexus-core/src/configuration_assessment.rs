@@ -218,11 +218,19 @@ impl CoreCapabilityProfile {
                     BuildCondition::Satisfied => {}
                 }
                 let code = match &rule.constraint {
-                    KnowledgeValueConstraint::Enum { values, allow_null } => {
+                    KnowledgeValueConstraint::Enum {
+                        values,
+                        allow_null,
+                        case_insensitive,
+                    } => {
                         let invalid = !(value.is_null() && *allow_null)
-                            && !value
-                                .as_str()
-                                .is_some_and(|value| values.iter().any(|allowed| allowed == value));
+                            && !value.as_str().is_some_and(|value| {
+                                values.iter().any(|allowed| {
+                                    allowed == value
+                                        || (*case_insensitive
+                                            && allowed.eq_ignore_ascii_case(value))
+                                })
+                            });
                         invalid.then_some("CONFIGURATION_VALUE_NOT_ALLOWED")
                     }
                     KnowledgeValueConstraint::Platform { condition, .. } => {

@@ -136,18 +136,18 @@ test('program configuration stages use sibling workspaces without overflow', asy
   await expect(page.getByRole('tab', { name: 'Configuration', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
-test('Intent settings use the available panel width at compact desktop sizes', async ({ page }) => {
+test('Intent sections align across the panel without staggered card whitespace', async ({ page }) => {
   await openPreview(page, 'cupertino', 'light');
   await openProgramDetails(page, 'sing-box-edge');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  const grid = page.locator('#program-panel-intent .guided-grid');
+  const grid = page.locator('#program-panel-intent .intent-sections');
   await expect(grid).toBeVisible();
 
   for (const width of [1280, 1024, 760, 680, 520, 400]) {
     await page.setViewportSize({ width, height: 820 });
     await expectNoViewportOverflow(page);
     const layout = await grid.evaluate((element) => {
-      const cards = [...element.querySelectorAll<HTMLElement>(':scope > article')]
+      const cards = [...element.querySelectorAll<HTMLElement>(':scope > .intent-group')]
         .map((card) => card.getBoundingClientRect());
       const rows = new Set(cards.map((card) => Math.round(card.top)));
       const bounds = element.getBoundingClientRect();
@@ -156,6 +156,8 @@ test('Intent settings use the available panel width at compact desktop sizes', a
           ? 0
           : new Set(cards.map((card) => Math.round(card.left))).size,
         rows: rows.size,
+        count: cards.length,
+        panelWidth: bounds.width,
         cardOverflow: Math.max(0, ...cards.map((card) => Math.max(
           bounds.left - card.left,
           card.right - bounds.right,
@@ -163,10 +165,273 @@ test('Intent settings use the available panel width at compact desktop sizes', a
       };
     });
     expect(layout.cardOverflow).toBeLessThanOrEqual(1);
-    if (width === 520) expect(layout.columns).toBe(1);
-    if (width === 1024) expect(layout.columns).toBeGreaterThanOrEqual(2);
-    if (width === 1280) expect(layout.columns).toBeGreaterThanOrEqual(2);
+    expect(layout.columns).toBe(1);
+    expect(layout.rows).toBe(layout.count);
   }
+});
+
+test('Intent folding preserves unfinished input and cancellation never writes configuration', async ({ page }, testInfo) => {
+  await openPreview(page);
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const initial = await editor.textContent();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  const local = intent.getByRole('region', { name: 'Local access', exact: true });
+  const heading = local.getByRole('button', { name: 'Local access', exact: true });
+  const add = local.getByRole('button', { name: 'Add Local proxy', exact: true });
+  await add.click();
+  const form = local.locator('.object-form');
+  await form.getByLabel('Port', { exact: true }).fill('18765');
+  await heading.click();
+  await expect(heading).toHaveAttribute('aria-expanded', 'false');
+  await expect(form).toBeHidden();
+  await heading.focus();
+  await page.keyboard.press('Enter');
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel('Port', { exact: true })).toHaveValue('18765');
+  await expect(intent.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeDisabled();
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(add).toBeFocused();
+  await expect(intent.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeEnabled();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toHaveText(initial ?? '');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('intent-workspace-wide.png'), fullPage: true });
+  await expectAccessible(page, '#program-panel-intent');
+});
+
+test('Intent applies only completed entries and resets the editing gate on navigation', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await intent.getByLabel('Log detail', { exact: true }).selectOption('error');
+  const apply = intent.getByRole('button', { name: 'Apply and restart', exact: true });
+  await expect(apply).toBeEnabled();
+  const add = intent.getByRole('button', { name: 'Add Local proxy', exact: true });
+  await add.click();
+  const form = intent.locator('.object-form');
+  await form.getByLabel('Port', { exact: true }).fill('18654');
+  await expect(apply).toBeDisabled();
+  await expect(intent.locator('.workspace-header')).toContainText('Finish or cancel the open entry before applying');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(apply).toBeEnabled();
+  await add.click();
+  await form.getByLabel('Port', { exact: true }).fill('18654');
+  await form.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await expect(apply).toBeEnabled();
+  await add.click();
+  await expect(apply).toBeDisabled();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toContainText('18654');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await expect(apply).toBeEnabled();
+});
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  test(`Intent creates a local proxy atomically and preserves cancellation for ${programId}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, programId);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    const add = intent.getByRole('button', { name: 'Add Local proxy', exact: true });
+    await add.click();
+    const form = intent.locator('.object-form');
+    await expect(form.getByLabel('Who can connect')).toHaveValue('local');
+    await expect(form.getByLabel('Password')).toHaveCount(0);
+    await form.getByLabel('Proxy type').selectOption('http');
+    await form.getByLabel('Port', { exact: true }).fill('18080');
+    await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(add).toBeFocused();
+    await add.click();
+    await form.getByLabel('Proxy type').selectOption('http');
+    await form.getByLabel('Port', { exact: true }).fill('18080');
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    await expect(add).toBeFocused();
+    await expect(intent.locator('.object-row')).toContainText('18080');
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await expect(editor).toContainText('18080');
+    await expect(editor).toContainText('127.0.0.1');
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  test(`Intent DNS creation, editing and removal synchronize Final for ${programId}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, programId);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    await intent.getByRole('button', { name: 'Add DNS servers', exact: true }).click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('DNS connection').selectOption('udp');
+    await form.getByLabel('Server address').fill('192.0.2.50');
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('192.0.2.50');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const dns = intent.getByRole('region', { name: 'DNS', exact: true });
+    await dns.locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
+    await form.getByLabel('Server address').fill('192.0.2.51');
+    await form.getByRole('button', { name: 'Done', exact: true }).click();
+    await dns.locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
+    await form.getByText('Entry actions', { exact: true }).click();
+    await form.getByRole('button', { name: 'Remove', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Configuration editor' })).not.toContainText('192.0.2.51');
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+for (const [theme, mode] of [['cupertino', 'light'], ['cupertino', 'dark'], ['material', 'light'], ['material', 'dark'], ['aurora', 'light'], ['aurora', 'dark']] as const) {
+  test(`Intent LAN protection and bilingual controls stay contained in ${theme} ${mode}`, async ({ page }, testInfo) => {
+    await openPreview(page, theme, mode);
+    await openProgramDetails(page, 'sing-box-edge');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    await intent.getByRole('button', { name: 'Add Local proxy', exact: true }).click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('Port', { exact: true }).fill('18080');
+    await form.getByLabel('Who can connect').selectOption('lan');
+    await expect(form.getByLabel('Password', { exact: true })).toHaveAttribute('type', 'password');
+    await expect(form.getByLabel('Password', { exact: true })).toHaveAttribute('required', '');
+    for (const width of [1280, 1024, 760, 680, 520, 400]) {
+      await page.setViewportSize({ width, height: 820 });
+      await expectNoViewportOverflow(page);
+      const outside = await form.evaluate((element) => {
+        const parent = element.closest('.intent-group')!.getBoundingClientRect();
+        return [...element.querySelectorAll<HTMLElement>('input, select, button, label')].filter((child) => {
+          const bounds = child.getBoundingClientRect();
+          return bounds.width > 0 && (bounds.left < parent.left - 1 || bounds.right > parent.right + 1);
+        }).map((child) => child.tagName);
+      });
+      expect(outside).toEqual([]);
+    }
+    await expectAccessible(page, '#program-panel-intent');
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+    await settings.getByRole('tab', { name: 'General', exact: true }).click();
+    await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(form.getByLabel('允许谁连接')).toHaveValue('lan');
+    await expect(form.getByLabel('允许谁连接').locator('option:checked')).toHaveText('局域网设备');
+    await expect(form.getByLabel('代理类型').locator('option:checked')).toHaveText('HTTP 和 SOCKS');
+    await expect(intent.getByLabel('日志详细程度').locator('option:checked')).toHaveText('常规日志');
+    await expect(form.getByLabel('密码', { exact: true })).toHaveAttribute('type', 'password');
+    await expect(form.getByRole('button', { name: '添加', exact: true })).toBeVisible();
+    await expect(form.getByRole('button', { name: '取消', exact: true })).toBeVisible();
+    await expectNoViewportOverflow(page);
+    await expectAccessible(page, '#program-panel-intent');
+    await form.getByLabel('密码', { exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`intent-${theme}-${mode}-zh-400.png`), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await form.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`intent-${theme}-${mode}-zh-1280.png`), fullPage: true });
+  });
+}
+
+test('Intent DNS guidance requires only the fields relevant to the selected connection', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await intent.getByRole('button', { name: 'Add DNS servers', exact: true }).click();
+  const form = intent.locator('.object-form');
+  const protocol = form.getByLabel('DNS connection', { exact: true });
+  await protocol.selectOption('https');
+  const server = form.getByLabel('Server address', { exact: true });
+  await expect(server).toHaveAttribute('required', '');
+  await server.fill('https://resolver.example/dns-query');
+  await expect(form.getByLabel('Resolve the server through', { exact: true })).toBeVisible();
+  await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
+  await expect(form).toContainText('Add a DNS server to choose it here');
+  await protocol.selectOption('system');
+  await expect(server).toHaveCount(0);
+  await expect(form.getByLabel('Resolve the server through', { exact: true })).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
+  await protocol.selectOption('udp');
+  await server.fill('2001:db8::53');
+  await expect(form.getByLabel('Resolve the server through', { exact: true })).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(intent.locator('.object-row')).toHaveCount(0);
+});
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  const behavior = programId === 'mihomo-alpha' ? 'offers Final recovery for a preceding catch-all' : 'uses an existing target and remains editable';
+  test(`Intent traffic rule guidance ${behavior} for ${programId}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, programId);
+    if (programId !== 'mihomo-alpha') {
+      await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+      const sources = page.locator('.config-source-editor');
+      await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+      await sources.locator('.source-inline-content').last().fill(JSON.stringify({
+        outbounds: [{ tag: 'via-home', ...(programId === 'xray-primary' ? { protocol: 'freedom' } : { type: 'direct' }) }],
+      }));
+      const save = page.getByRole('button', { name: 'Save sources', exact: true });
+      await save.click();
+      await expect(save).toBeDisabled();
+    }
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    await intent.getByRole('button', { name: 'Add Traffic rule', exact: true }).click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('Match', { exact: true }).selectOption('subdomain');
+    await form.getByLabel('Domain or IP network', { exact: true }).fill('guided.example');
+    await form.getByLabel('Send through', { exact: true }).selectOption(programId === 'mihomo-alpha' ? 'DIRECT' : 'via-home');
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    if (programId === 'mihomo-alpha') {
+      await expect(form).toBeVisible();
+      await expect(form.getByLabel('Domain or IP network', { exact: true })).toHaveValue('guided.example');
+      const notice = intent.locator('.error-notice');
+      await expect(notice).toContainText('A rule already handles all traffic');
+      await expect(notice.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+      await notice.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
+      const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+      await expect(editor).toBeVisible();
+      await expect(editor).not.toContainText('guided.example');
+      return;
+    }
+    await expect(form).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await expect(editor).toContainText('guided.example');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await intent.getByRole('region', { name: 'Traffic and connections', exact: true }).locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(form.getByLabel('Domain or IP network', { exact: true })).toHaveValue('guided.example');
+    await form.getByLabel('Domain or IP network', { exact: true }).fill('revised.example');
+    await form.getByRole('button', { name: 'Done', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(editor).toContainText('revised.example');
+    await expect(editor).not.toContainText('guided.example');
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+test('Intent virtual adapter guidance edits only configuration and keeps advanced options available', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await intent.getByRole('button', { name: 'Add Virtual network adapter', exact: true }).click();
+  const form = intent.locator('.object-form');
+  await form.getByLabel('Virtual network addresses', { exact: true }).fill('172.19.0.1/30');
+  await form.getByLabel('Route traffic automatically', { exact: true }).check();
+  await form.getByRole('button', { name: 'More options', exact: true }).click();
+  await expect(form.getByLabel('Packet size (MTU)', { exact: true })).toBeVisible();
+  await form.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('172.19.0.1/30');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
 async function replaceEditorContent(page: Page, editor: Locator, content: string) {
@@ -2711,6 +2976,39 @@ test('managed configuration sources stay dense, stable and responsive', async ({
   await page.screenshot({ path: testInfo.outputPath('managed-sources-compact.png'), fullPage: true });
 });
 
+test('Intent keeps large rule collections compact and selects the exact entry', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'mihomo-alpha');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('.config-source-editor');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  await sources.locator('.source-inline-content').last().fill(JSON.stringify({
+    rules: Array.from({ length: 100 }, (_, i) => `DOMAIN,rule-${i}.example,DIRECT`),
+  }));
+  const save = page.getByRole('button', { name: 'Save sources', exact: true });
+  await save.click();
+  await expect(save).toBeDisabled();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  const picker = intent.getByRole('combobox', { name: 'Choose an entry: Traffic rule', exact: true });
+  await expect(picker.locator('option')).toHaveCount(101);
+  const connections = intent.getByRole('region', { name: 'Traffic and connections', exact: true });
+  await expect(connections).toHaveCount(1);
+  await expect(connections.locator('.object-row')).toHaveCount(0);
+  await picker.selectOption({ label: 'rule-99.example' });
+  const edit = picker.locator('..').getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const form = intent.locator('.object-form');
+  await expect(form.getByLabel('Domain or IP network')).toHaveValue('rule-99.example');
+  await expect(form.getByLabel('Send through')).toHaveValue('DIRECT');
+  for (const width of [760, 520, 400]) {
+    await page.setViewportSize({ width, height: 820 });
+    await expectNoViewportOverflow(page);
+  }
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(edit).toBeFocused();
+});
+
 test('long inline Source content reaches Final configuration immediately after save', async ({ page }) => {
   await page.setViewportSize({ width: 1180, height: 820 });
   await openPreview(page, 'cupertino', 'light');
@@ -2745,7 +3043,7 @@ test('latest Source and Intent operations win while background refresh preserves
   await openPreview(page, 'material', 'light');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await page.getByLabel('Log level').selectOption('info');
+  await page.getByLabel('Log detail', { exact: true }).selectOption('info');
   await page.getByRole('tab', { name: 'Sources', exact: true }).click();
   const sources = page.locator('.config-source-editor');
   await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
@@ -2757,13 +3055,14 @@ test('latest Source and Intent operations win while background refresh preserves
   await expect(editor).toContainText('"loglevel": "debug"');
   await expect(page.locator('.path-inspector')).toHaveCount(0);
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await expect(page.getByLabel('Log level')).toHaveValue('debug');
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('debug');
+  await page.getByLabel('Setting actions: Log detail', { exact: true }).click();
   await page.getByRole('button', { name: 'Use this value', exact: true }).click();
-  await expect(page.getByLabel('Log level')).toHaveValue('info');
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('info');
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', {
     detail: { programId: 'xray-primary' },
   })));
-  await expect(page.getByLabel('Log level')).toHaveValue('info');
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('info');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toContainText('"loglevel": "info"');
   await expect(editor).toContainText('"automatic": true');
@@ -3249,6 +3548,7 @@ test('identity read failures have one localized retry and do not leak to sibling
 });
 
 test('automatic identity layout contains long messages and controls across languages and widths', async ({ page }) => {
+  test.setTimeout(90_000);
   for (const [index, theme] of ['cupertino', 'material', 'aurora'].entries()) {
     await openPreview(page, theme as 'cupertino' | 'material' | 'aurora', index % 2 ? 'dark' : 'light', 1.3, '&__ui_core_target=unknown');
     await openProgramDetails(page, 'xray-primary');
@@ -3307,8 +3607,8 @@ test('Final merge conflicts stay in Configuration while Intent controls remain r
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const guided = page.locator('#program-panel-intent .guided-workspace');
-  await expect(guided.locator('article')).toHaveCount(2);
-  const control = page.getByLabel('Domain strategy');
+  await expect(guided.locator('.intent-group')).toHaveCount(4);
+  const control = page.getByLabel('Domain matching', { exact: true });
   await expect(control).toBeEnabled();
   await control.selectOption('IPIfNonMatch');
   await expect(guided.getByText('FINAL_EDIT_CONFLICT', { exact: true })).toHaveCount(0);
@@ -3673,7 +3973,7 @@ test('Guided intent updates the Desired document and remains re-enterable', asyn
   await openProgramDetails(page, 'sing-box-edge');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
 
-  const logLevel = page.getByLabel('Log level');
+  const logLevel = page.getByLabel('Log detail', { exact: true });
   await logLevel.selectOption('error');
   await expect(logLevel).toHaveValue('error');
 
@@ -3706,7 +4006,7 @@ test('Final editor continuously rebases latest upstream changes and conflicts on
   await replaceEditorContent(page, editor, `${JSON.stringify(withManualField, null, 2)}\n`);
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await page.getByLabel('Log level').selectOption('error');
+  await page.getByLabel('Log detail', { exact: true }).selectOption('error');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toContainText('"level": "error"');
   await expect(editor).toContainText('"manual_extension"');
@@ -3715,7 +4015,7 @@ test('Final editor continuously rebases latest upstream changes and conflicts on
   withManualField.log.level = 'debug';
   await replaceEditorContent(page, editor, `${JSON.stringify(withManualField, null, 2)}\n`);
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await page.getByLabel('Log level').selectOption('fatal');
+  await page.getByLabel('Log detail', { exact: true }).selectOption('fatal');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
 
   const workspace = page.locator('.final-editor-workspace');
@@ -3728,17 +4028,18 @@ test('Final editor continuously rebases latest upstream changes and conflicts on
   await expectNoViewportOverflow(page);
 });
 
-test('Intent controls show their upstream value when Final configuration edits the same path', async ({ page }) => {
+test('Intent controls show the effective candidate without repeated final-edit warnings', async ({ page }) => {
   await page.setViewportSize({ width: 760, height: 820 });
   await openPreview(page, 'cupertino', 'light', 1, '&__ui_guided_final_edit');
   await openProgramDetails(page, 'sing-box-edge');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
 
   const intent = page.locator('#program-panel-intent');
-  await expect(page.getByLabel('Log level')).toHaveValue('fatal');
-  await expect(intent.getByText('Final configuration edit', { exact: true })).toBeVisible();
-  await expect(intent).toContainText('Final configuration also edits this setting');
-  await expect(intent).toContainText('Changes here may require conflict resolution there');
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('error');
+  await expect(intent.getByText('Final configuration edit', { exact: true })).toHaveCount(0);
+  await expect(intent.getByText('Changes here may require conflict resolution there', { exact: true })).toHaveCount(0);
+  await intent.getByLabel('Setting actions: Log detail', { exact: true }).click();
+  await expect(intent.getByRole('button', { name: 'Use this value', exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText(
@@ -3752,7 +4053,7 @@ test('an upstream candidate applies through one action without generation drift'
   await openPreview(page, 'cupertino', 'light');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await page.getByLabel('Log level').selectOption('debug');
+  await page.getByLabel('Log detail', { exact: true }).selectOption('debug');
 
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
   const generationBeforeSave = await page.evaluate(async () => {
@@ -3789,7 +4090,7 @@ test('latest settings and Final configuration remain usable while optional reads
   await openPreview(page, 'material', 'light', 1, '&__ui_slow_workspace_after_first&__ui_slow_config_metadata');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  const level = page.getByLabel('Log level');
+  const level = page.getByLabel('Log detail', { exact: true });
   await expect(level).toBeVisible();
   await level.selectOption('debug');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
@@ -4031,22 +4332,22 @@ test('a committed Final edit conflicts only when upstream changes the same path'
   await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await page.getByLabel('Domain strategy').selectOption('IPIfNonMatch');
+  await page.getByLabel('Domain matching', { exact: true }).selectOption('IPIfNonMatch');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toContainText('"loglevel": "debug"');
   await expect(page.locator('.final-editor-workspace').getByText('Modified', { exact: true })).toBeVisible();
   await expect(page.locator('.path-inspector')).toHaveCount(0);
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await page.getByLabel('Log level').selectOption('error');
+  await page.getByLabel('Log detail', { exact: true }).selectOption('error');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(page.locator('.final-editor-workspace .merge-summary')).toContainText('1 setting needs a choice');
   await expect(editor).toContainText('"loglevel": "error"');
   await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('Your edit');
   await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('debug');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await page.getByLabel('Domain strategy').selectOption('AsIs');
-  await page.getByLabel('Log level').selectOption('info');
+  await page.getByLabel('Domain matching', { exact: true }).selectOption('AsIs');
+  await page.getByLabel('Log detail', { exact: true }).selectOption('info');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toContainText('"loglevel": "info"');
   const block = page.locator('.cm-configuration-conflict-widget.expanded');
@@ -4390,7 +4691,7 @@ test('automatic source updates refresh Desired content, Guided projection and So
   await page.getByRole('tab', { name: 'Sources', exact: true }).click();
   await expect(page.locator('.source-status-item').getByText('Production routing: fresh', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  await expect(page.getByLabel('Log level')).toHaveValue('warning');
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('warning');
 
   await page.evaluate(() => {
     window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', {
@@ -4398,7 +4699,7 @@ test('automatic source updates refresh Desired content, Guided projection and So
     }));
   });
 
-  await expect(page.getByLabel('Log level')).toHaveValue('debug');
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('debug');
   await page.getByRole('tab', { name: 'Sources', exact: true }).click();
   await expect(
     page.getByText('Automatically refreshed source: fresh', { exact: true }),

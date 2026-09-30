@@ -1,7 +1,7 @@
 {
-  "contentHash": "f32b7c456847514fb36cde484ebed9a646276a717b667980dd8d06350d7136cb",
-  "producerHash": "2331e07015e487f7b0edf3386104cc8bbac70c006056b75cbe91549b59b66593",
-  "reportsHash": "682473a869e1e9a30eb7844fcb8f82b9914d57c1b5cc4d7ad531b73c8481e4c5",
+  "contentHash": "ecf9c479623d7330a8eb6857ce57fe72c235c5976b242ebd28b63b049c16fe11",
+  "producerHash": "0ffae72f8438a1a691d3e1acfecc9d576ffe7b0b0429604f76549ec4615ea80c",
+  "reportsHash": "c7a143a39940acb48a8edec0430e53a5251762a92714db138fd5c7f605050c2b",
   "programs": [
     {
       "program": "singBox",
@@ -17174,6 +17174,160 @@
         },
         {
           "declaration": {
+            "id": "log#Options",
+            "name": "Options",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "context": "context",
+              "io": "io",
+              "option": "github.com/sagernet/sing-box/option",
+              "time": "time"
+            },
+            "fields": [
+              {
+                "name": "Context",
+                "type": "context.Context",
+                "shape": {
+                  "kind": "named",
+                  "name": "Context",
+                  "package": "context"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Options.Context",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "Options",
+                "type": "option.LogOptions",
+                "shape": {
+                  "kind": "named",
+                  "name": "LogOptions",
+                  "package": "github.com/sagernet/sing-box/option"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Options.Options",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "Observable",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Options.Observable",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "DefaultWriter",
+                "type": "io.Writer",
+                "shape": {
+                  "kind": "named",
+                  "name": "Writer",
+                  "package": "io"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Options.DefaultWriter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "BaseTime",
+                "type": "time.Time",
+                "shape": {
+                  "kind": "named",
+                  "name": "Time",
+                  "package": "time"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Options.BaseTime",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "PlatformWriter",
+                "type": "PlatformWriter",
+                "shape": {
+                  "kind": "named",
+                  "name": "PlatformWriter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Options.PlatformWriter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [],
+            "source": {
+              "path": "log/log.go",
+              "symbol": "Options",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
             "id": "github.com/sagernet/sing/common/json/internal/contextjson#CommentMarshaler",
             "name": "CommentMarshaler",
             "package": "github.com/sagernet/sing/common/json/internal/contextjson",
@@ -28534,6 +28688,154 @@
         },
         {
           "declaration": {
+            "id": "log#Formatter",
+            "name": "Formatter",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "time": "time"
+            },
+            "fields": [
+              {
+                "name": "BaseTime",
+                "type": "time.Time",
+                "shape": {
+                  "kind": "named",
+                  "name": "Time",
+                  "package": "time"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.BaseTime",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "DisableColors",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.DisableColors",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "DisableTimestamp",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.DisableTimestamp",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "FullTimestamp",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.FullTimestamp",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "TimestampFormat",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.TimestampFormat",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "DisableLineBreak",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.DisableLineBreak",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [
+              "Format",
+              "FormatWithSimple"
+            ],
+            "source": {
+              "path": "log/format.go",
+              "symbol": "Formatter",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0"
+          ]
+        },
+        {
+          "declaration": {
             "id": "protocol/openvpn#ServerEndpoint",
             "name": "ServerEndpoint",
             "package": "protocol/openvpn",
@@ -37679,6 +37981,89 @@
             }
           },
           "releases": [
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#ID",
+            "name": "ID",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "time": "time"
+            },
+            "fields": [
+              {
+                "name": "ID",
+                "type": "uint32",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "uint32"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/id.go",
+                  "symbol": "ID.ID",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "CreatedAt",
+                "type": "time.Time",
+                "shape": {
+                  "kind": "named",
+                  "name": "Time",
+                  "package": "time"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/id.go",
+                  "symbol": "ID.CreatedAt",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [],
+            "source": {
+              "path": "log/id.go",
+              "symbol": "ID",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
             "v1.14.0",
             "v1.14.1",
             "v1.14.2"
@@ -52508,6 +52893,56 @@
         },
         {
           "declaration": {
+            "id": "log#nopFactory",
+            "name": "nopFactory",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [
+              "AttachPlatformWriter",
+              "Close",
+              "Debug",
+              "DebugContext",
+              "Error",
+              "ErrorContext",
+              "Fatal",
+              "FatalContext",
+              "Info",
+              "InfoContext",
+              "Level",
+              "Logger",
+              "NewLogger",
+              "Panic",
+              "PanicContext",
+              "SetLevel",
+              "Start",
+              "Subscribe",
+              "Trace",
+              "TraceContext",
+              "UnSubscribe",
+              "Warn",
+              "WarnContext"
+            ],
+            "source": {
+              "path": "log/nop.go",
+              "symbol": "nopFactory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
             "id": "option#SOCKSOutboundOptions",
             "name": "SOCKSOutboundOptions",
             "package": "option",
@@ -60047,6 +60482,54 @@
         },
         {
           "declaration": {
+            "id": "log#ObservableFactory",
+            "name": "ObservableFactory",
+            "package": "log",
+            "type": "interface {\n\tFactory\n\tobservable.Observable[Entry]\n}",
+            "shape": {
+              "kind": "dynamic"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "observable": "github.com/sagernet/sing/common/observable"
+            },
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/factory.go",
+              "symbol": "ObservableFactory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
             "id": "github.com/sagernet/sing/common/json/internal/contextjson#scanner",
             "name": "scanner",
             "package": "github.com/sagernet/sing/common/json/internal/contextjson",
@@ -62714,6 +63197,31 @@
           },
           "releases": [
             "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#Factory",
+            "name": "Factory",
+            "package": "log",
+            "type": "interface {\n\tStart() error\n\tClose() error\n\tLevel() Level\n\tSetLevel(level Level)\n\tLogger() ContextLogger\n\tNewLogger(tag string) ContextLogger\n\tAttachPlatformWriter(writer PlatformWriter)\n}",
+            "shape": {
+              "kind": "dynamic"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/factory.go",
+              "symbol": "Factory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
             "v1.14.1",
             "v1.14.2"
           ]
@@ -66371,6 +66879,317 @@
         },
         {
           "declaration": {
+            "id": "log#defaultFactory",
+            "name": "defaultFactory",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "atomic": "sync/atomic",
+              "context": "context",
+              "io": "io",
+              "observable": "github.com/sagernet/sing/common/observable",
+              "os": "os",
+              "sync": "sync"
+            },
+            "fields": [
+              {
+                "name": "ctx",
+                "type": "context.Context",
+                "shape": {
+                  "kind": "named",
+                  "name": "Context",
+                  "package": "context"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.ctx",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "formatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.formatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformFormatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformFormatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "writer",
+                "type": "io.Writer",
+                "shape": {
+                  "kind": "named",
+                  "name": "Writer",
+                  "package": "io"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.writer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "file",
+                "type": "*os.File",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "named",
+                    "name": "File",
+                    "package": "os"
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.file",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "filePath",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.filePath",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformWriter",
+                "type": "PlatformWriter",
+                "shape": {
+                  "kind": "named",
+                  "name": "PlatformWriter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformWriter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "needObservable",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.needObservable",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "level",
+                "type": "Level",
+                "shape": {
+                  "kind": "named",
+                  "name": "Level",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.level",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "subscriber",
+                "type": "*observable.Subscriber[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Subscriber",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.subscriber",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "observer",
+                "type": "*observable.Observer[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Observer",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.observer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "startAccess",
+                "type": "sync.Mutex",
+                "shape": {
+                  "kind": "named",
+                  "name": "Mutex",
+                  "package": "sync"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.startAccess",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "started",
+                "type": "atomic.Bool",
+                "shape": {
+                  "kind": "named",
+                  "name": "Bool",
+                  "package": "sync/atomic"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.started",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "pendingEntries",
+                "type": "[]pendingEntry",
+                "shape": {
+                  "kind": "sequence",
+                  "element": {
+                    "kind": "named",
+                    "name": "pendingEntry",
+                    "package": "log"
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.pendingEntries",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [
+              "Close",
+              "Level",
+              "Logger",
+              "NewLogger",
+              "SetLevel",
+              "Start",
+              "Subscribe",
+              "UnSubscribe",
+              "output"
+            ],
+            "source": {
+              "path": "log/observable.go",
+              "symbol": "defaultFactory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.20",
+            "v1.13.21"
+          ]
+        },
+        {
+          "declaration": {
             "id": "protocol/anytls#Inbound",
             "name": "Inbound",
             "package": "protocol/anytls",
@@ -69604,6 +70423,32 @@
             "v1.14.0",
             "v1.14.1",
             "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#ObservableFactory",
+            "name": "ObservableFactory",
+            "package": "log",
+            "type": "interface {\n\tFactory\n\tobservable.Observable[Entry]\n\tAttachPlatformWriter(writer PlatformWriter)\n}",
+            "shape": {
+              "kind": "dynamic"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "observable": "github.com/sagernet/sing/common/observable"
+            },
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/factory.go",
+              "symbol": "ObservableFactory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.14.0"
           ]
         },
         {
@@ -75286,6 +76131,331 @@
             "v1.14.0",
             "v1.14.1",
             "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#defaultFactory",
+            "name": "defaultFactory",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "atomic": "sync/atomic",
+              "context": "context",
+              "io": "io",
+              "observable": "github.com/sagernet/sing/common/observable",
+              "os": "os",
+              "sync": "sync"
+            },
+            "fields": [
+              {
+                "name": "ctx",
+                "type": "context.Context",
+                "shape": {
+                  "kind": "named",
+                  "name": "Context",
+                  "package": "context"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.ctx",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "formatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.formatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformFormatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformFormatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "writer",
+                "type": "io.Writer",
+                "shape": {
+                  "kind": "named",
+                  "name": "Writer",
+                  "package": "io"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.writer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "file",
+                "type": "*os.File",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "named",
+                    "name": "File",
+                    "package": "os"
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.file",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "filePath",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.filePath",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformWriters",
+                "type": "atomic.Pointer[[]PlatformWriter]",
+                "shape": {
+                  "kind": "generic",
+                  "target": {
+                    "kind": "named",
+                    "name": "Pointer",
+                    "package": "sync/atomic"
+                  },
+                  "arguments": [
+                    {
+                      "kind": "sequence",
+                      "element": {
+                        "kind": "named",
+                        "name": "PlatformWriter",
+                        "package": "log"
+                      }
+                    }
+                  ]
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformWriters",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "needObservable",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.needObservable",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "level",
+                "type": "Level",
+                "shape": {
+                  "kind": "named",
+                  "name": "Level",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.level",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "subscriber",
+                "type": "*observable.Subscriber[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Subscriber",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.subscriber",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "observer",
+                "type": "*observable.Observer[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Observer",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.observer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "startAccess",
+                "type": "sync.Mutex",
+                "shape": {
+                  "kind": "named",
+                  "name": "Mutex",
+                  "package": "sync"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.startAccess",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "started",
+                "type": "atomic.Bool",
+                "shape": {
+                  "kind": "named",
+                  "name": "Bool",
+                  "package": "sync/atomic"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.started",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "pendingEntries",
+                "type": "[]pendingEntry",
+                "shape": {
+                  "kind": "sequence",
+                  "element": {
+                    "kind": "named",
+                    "name": "pendingEntry",
+                    "package": "log"
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.pendingEntries",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [
+              "AttachPlatformWriter",
+              "Close",
+              "Level",
+              "Logger",
+              "NewLogger",
+              "SetLevel",
+              "Start",
+              "Subscribe",
+              "UnSubscribe",
+              "loadPlatformWriters",
+              "output"
+            ],
+            "source": {
+              "path": "log/observable.go",
+              "symbol": "defaultFactory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.14.0"
           ]
         },
         {
@@ -85365,6 +86535,53 @@
         },
         {
           "declaration": {
+            "id": "log#PlatformWriter",
+            "name": "PlatformWriter",
+            "package": "log",
+            "type": "interface {\n\tWriteMessage(level Level, message string)\n}",
+            "shape": {
+              "kind": "dynamic"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/platform.go",
+              "symbol": "PlatformWriter",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
             "id": "protocol/tailscale/tailssh#windowsUserShellSession",
             "name": "windowsUserShellSession",
             "package": "protocol/tailscale/tailssh",
@@ -87346,6 +88563,73 @@
             "source": {
               "path": "option/platform.go",
               "symbol": "OnDemandOptions",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#nopFactory",
+            "name": "nopFactory",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [
+              "Close",
+              "Debug",
+              "DebugContext",
+              "Error",
+              "ErrorContext",
+              "Fatal",
+              "FatalContext",
+              "Info",
+              "InfoContext",
+              "Level",
+              "Logger",
+              "NewLogger",
+              "Panic",
+              "PanicContext",
+              "SetLevel",
+              "Start",
+              "Subscribe",
+              "Trace",
+              "TraceContext",
+              "UnSubscribe",
+              "Warn",
+              "WarnContext"
+            ],
+            "source": {
+              "path": "log/nop.go",
+              "symbol": "nopFactory",
               "modulePath": "github.com/sagernet/sing-box"
             }
           },
@@ -90065,6 +91349,53 @@
             }
           },
           "releases": [
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#idKey",
+            "name": "idKey",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/id.go",
+              "symbol": "idKey",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
             "v1.14.0",
             "v1.14.1",
             "v1.14.2"
@@ -93622,6 +94953,51 @@
             "v1.14.0",
             "v1.14.1",
             "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#Factory",
+            "name": "Factory",
+            "package": "log",
+            "type": "interface {\n\tStart() error\n\tClose() error\n\tLevel() Level\n\tSetLevel(level Level)\n\tLogger() ContextLogger\n\tNewLogger(tag string) ContextLogger\n}",
+            "shape": {
+              "kind": "dynamic"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/factory.go",
+              "symbol": "Factory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0"
           ]
         },
         {
@@ -97879,6 +99255,348 @@
           },
           "releases": [
             "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#defaultFactory",
+            "name": "defaultFactory",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "atomic": "sync/atomic",
+              "context": "context",
+              "io": "io",
+              "observable": "github.com/sagernet/sing/common/observable",
+              "os": "os",
+              "sync": "sync"
+            },
+            "fields": [
+              {
+                "name": "ctx",
+                "type": "context.Context",
+                "shape": {
+                  "kind": "named",
+                  "name": "Context",
+                  "package": "context"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.ctx",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "formatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.formatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformFormatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformFormatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "writer",
+                "type": "io.Writer",
+                "shape": {
+                  "kind": "named",
+                  "name": "Writer",
+                  "package": "io"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.writer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "file",
+                "type": "*os.File",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "named",
+                    "name": "File",
+                    "package": "os"
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.file",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "filePath",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.filePath",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformWriters",
+                "type": "atomic.Pointer[[]PlatformWriter]",
+                "shape": {
+                  "kind": "generic",
+                  "target": {
+                    "kind": "named",
+                    "name": "Pointer",
+                    "package": "sync/atomic"
+                  },
+                  "arguments": [
+                    {
+                      "kind": "sequence",
+                      "element": {
+                        "kind": "named",
+                        "name": "PlatformWriter",
+                        "package": "log"
+                      }
+                    }
+                  ]
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformWriters",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "needConsole",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.needConsole",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "needObservable",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.needObservable",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "level",
+                "type": "Level",
+                "shape": {
+                  "kind": "named",
+                  "name": "Level",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.level",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "subscriber",
+                "type": "*observable.Subscriber[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Subscriber",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.subscriber",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "observer",
+                "type": "*observable.Observer[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Observer",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.observer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "startAccess",
+                "type": "sync.Mutex",
+                "shape": {
+                  "kind": "named",
+                  "name": "Mutex",
+                  "package": "sync"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.startAccess",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "started",
+                "type": "atomic.Bool",
+                "shape": {
+                  "kind": "named",
+                  "name": "Bool",
+                  "package": "sync/atomic"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.started",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "pendingEntries",
+                "type": "[]pendingEntry",
+                "shape": {
+                  "kind": "sequence",
+                  "element": {
+                    "kind": "named",
+                    "name": "pendingEntry",
+                    "package": "log"
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.pendingEntries",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [
+              "AttachPlatformWriter",
+              "Close",
+              "Level",
+              "Logger",
+              "NewLogger",
+              "SetLevel",
+              "Start",
+              "Subscribe",
+              "UnSubscribe",
+              "loadPlatformWriters",
+              "output"
+            ],
+            "source": {
+              "path": "log/observable.go",
+              "symbol": "defaultFactory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
             "v1.14.1",
             "v1.14.2"
           ]
@@ -111090,6 +112808,53 @@
         },
         {
           "declaration": {
+            "id": "log#overrideLevelKey",
+            "name": "overrideLevelKey",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/override.go",
+              "symbol": "overrideLevelKey",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
             "id": "option#OpenVPNServerEndpointOptions",
             "name": "OpenVPNServerEndpointOptions",
             "package": "option",
@@ -113377,6 +115142,87 @@
             }
           },
           "releases": [
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#Entry",
+            "name": "Entry",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [
+              {
+                "name": "Level",
+                "type": "Level",
+                "shape": {
+                  "kind": "named",
+                  "name": "Level",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/factory.go",
+                  "symbol": "Entry.Level",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "Message",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/factory.go",
+                  "symbol": "Entry.Message",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [],
+            "source": {
+              "path": "log/factory.go",
+              "symbol": "Entry",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
             "v1.14.0",
             "v1.14.1",
             "v1.14.2"
@@ -116286,6 +118132,121 @@
             "v1.13.16",
             "v1.13.18",
             "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#pendingEntry",
+            "name": "pendingEntry",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "context": "context",
+              "time": "time"
+            },
+            "fields": [
+              {
+                "name": "ctx",
+                "type": "context.Context",
+                "shape": {
+                  "kind": "named",
+                  "name": "Context",
+                  "package": "context"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "pendingEntry.ctx",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "level",
+                "type": "Level",
+                "shape": {
+                  "kind": "named",
+                  "name": "Level",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "pendingEntry.level",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "tag",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "pendingEntry.tag",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "message",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "pendingEntry.message",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "timestamp",
+                "type": "time.Time",
+                "shape": {
+                  "kind": "named",
+                  "name": "Time",
+                  "package": "time"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "pendingEntry.timestamp",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [],
+            "source": {
+              "path": "log/observable.go",
+              "symbol": "pendingEntry",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
             "v1.13.20",
             "v1.13.21",
             "v1.14.0",
@@ -119961,6 +121922,106 @@
         },
         {
           "declaration": {
+            "id": "log#observableLogger",
+            "name": "observableLogger",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [
+              {
+                "name": "*defaultFactory",
+                "type": "*defaultFactory",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "named",
+                    "name": "defaultFactory",
+                    "package": "log"
+                  }
+                },
+                "embedded": true,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "observableLogger.*defaultFactory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "tag",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "observableLogger.tag",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [
+              "Debug",
+              "DebugContext",
+              "Error",
+              "ErrorContext",
+              "Fatal",
+              "FatalContext",
+              "Info",
+              "InfoContext",
+              "Log",
+              "Panic",
+              "PanicContext",
+              "Trace",
+              "TraceContext",
+              "Warn",
+              "WarnContext"
+            ],
+            "source": {
+              "path": "log/observable.go",
+              "symbol": "observableLogger",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
             "id": "option#DNSRouteActionOptions",
             "name": "DNSRouteActionOptions",
             "package": "option",
@@ -120641,6 +122702,277 @@
             "v1.14.0",
             "v1.14.1",
             "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#defaultFactory",
+            "name": "defaultFactory",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "context": "context",
+              "io": "io",
+              "observable": "github.com/sagernet/sing/common/observable",
+              "os": "os"
+            },
+            "fields": [
+              {
+                "name": "ctx",
+                "type": "context.Context",
+                "shape": {
+                  "kind": "named",
+                  "name": "Context",
+                  "package": "context"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.ctx",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "formatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.formatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformFormatter",
+                "type": "Formatter",
+                "shape": {
+                  "kind": "named",
+                  "name": "Formatter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformFormatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "writer",
+                "type": "io.Writer",
+                "shape": {
+                  "kind": "named",
+                  "name": "Writer",
+                  "package": "io"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.writer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "file",
+                "type": "*os.File",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "named",
+                    "name": "File",
+                    "package": "os"
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.file",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "filePath",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.filePath",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "platformWriter",
+                "type": "PlatformWriter",
+                "shape": {
+                  "kind": "named",
+                  "name": "PlatformWriter",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.platformWriter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "needObservable",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.needObservable",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "level",
+                "type": "Level",
+                "shape": {
+                  "kind": "named",
+                  "name": "Level",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.level",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "subscriber",
+                "type": "*observable.Subscriber[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Subscriber",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.subscriber",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "observer",
+                "type": "*observable.Observer[Entry]",
+                "shape": {
+                  "kind": "pointer",
+                  "element": {
+                    "kind": "generic",
+                    "target": {
+                      "kind": "named",
+                      "name": "Observer",
+                      "package": "github.com/sagernet/sing/common/observable"
+                    },
+                    "arguments": [
+                      {
+                        "kind": "named",
+                        "name": "Entry",
+                        "package": "log"
+                      }
+                    ]
+                  }
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory.observer",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [
+              "Close",
+              "Level",
+              "Logger",
+              "NewLogger",
+              "SetLevel",
+              "Start",
+              "Subscribe",
+              "UnSubscribe"
+            ],
+            "source": {
+              "path": "log/observable.go",
+              "symbol": "defaultFactory",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19"
           ]
         },
         {
@@ -132267,6 +134599,105 @@
         },
         {
           "declaration": {
+            "id": "log#Level",
+            "name": "Level",
+            "package": "log",
+            "type": "uint8",
+            "shape": {
+              "kind": "builtin",
+              "name": "uint8"
+            },
+            "alias": true,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/level.go",
+              "symbol": "Level",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#ContextLogger",
+            "name": "ContextLogger",
+            "package": "log",
+            "type": "logger.ContextLogger",
+            "shape": {
+              "kind": "named",
+              "name": "ContextLogger",
+              "package": "github.com/sagernet/sing/common/logger"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "logger": "github.com/sagernet/sing/common/logger"
+            },
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/factory.go",
+              "symbol": "ContextLogger",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
             "id": "option#V2RayTransportOptions",
             "name": "V2RayTransportOptions",
             "package": "option",
@@ -132474,6 +134905,136 @@
           },
           "releases": [
             "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#Formatter",
+            "name": "Formatter",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "time": "time"
+            },
+            "fields": [
+              {
+                "name": "BaseTime",
+                "type": "time.Time",
+                "shape": {
+                  "kind": "named",
+                  "name": "Time",
+                  "package": "time"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.BaseTime",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "DisableColors",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.DisableColors",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "DisableTimestamp",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.DisableTimestamp",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "FullTimestamp",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.FullTimestamp",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "TimestampFormat",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.TimestampFormat",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
+                "name": "DisableLineBreak",
+                "type": "bool",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "bool"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter.DisableLineBreak",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              }
+            ],
+            "methods": [
+              "Format",
+              "FormatSimple",
+              "writeIdPrefix",
+              "writePrefix"
+            ],
+            "source": {
+              "path": "log/format.go",
+              "symbol": "Formatter",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
             "v1.14.1",
             "v1.14.2"
           ]
@@ -136410,6 +138971,57 @@
             "v1.14.1",
             "v1.14.2"
           ]
+        },
+        {
+          "declaration": {
+            "id": "log#Logger",
+            "name": "Logger",
+            "package": "log",
+            "type": "logger.Logger",
+            "shape": {
+              "kind": "named",
+              "name": "Logger",
+              "package": "github.com/sagernet/sing/common/logger"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {
+              "logger": "github.com/sagernet/sing/common/logger"
+            },
+            "fields": [],
+            "methods": [],
+            "source": {
+              "path": "log/factory.go",
+              "symbol": "Logger",
+              "modulePath": "github.com/sagernet/sing-box"
+            }
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21",
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
+          ]
         }
       ],
       "semanticRules": [
@@ -136623,6 +139235,71 @@
         },
         {
           "rule": {
+            "id": "singBox.logging.level",
+            "path": [
+              "log",
+              "level"
+            ],
+            "declaration": "option#LogOptions",
+            "field": "Level",
+            "constraint": {
+              "kind": "enum",
+              "values": [
+                "",
+                "trace",
+                "debug",
+                "info",
+                "warn",
+                "warning",
+                "error",
+                "fatal",
+                "panic"
+              ],
+              "allowNull": true
+            },
+            "defaultValue": null,
+            "defaultWhen": [],
+            "buildConstraint": "",
+            "when": [],
+            "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+            "fieldHash": "ac5ee955adff06130ee71131ce814175c1c0b0cc28816f7846999630bad354e1",
+            "evidence": [
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "ParseLevel",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "bodyHash": "9a3cba78d599f7b38dd9d0a8129a2cca8b4d72d387b9e75be948feae7f83ca0d"
+              }
+            ]
+          },
+          "releases": [
+            "v1.13.0",
+            "v1.13.1",
+            "v1.13.2",
+            "v1.13.3",
+            "v1.13.4",
+            "v1.13.5",
+            "v1.13.6",
+            "v1.13.7",
+            "v1.13.8",
+            "v1.13.9",
+            "v1.13.10",
+            "v1.13.11",
+            "v1.13.12",
+            "v1.13.13",
+            "v1.13.14",
+            "v1.13.15",
+            "v1.13.16",
+            "v1.13.18",
+            "v1.13.19",
+            "v1.13.20",
+            "v1.13.21"
+          ]
+        },
+        {
+          "rule": {
             "id": "singBox.tun.auto-redirect.platform",
             "path": [
               "inbounds",
@@ -136934,6 +139611,53 @@
             "v1.13.19",
             "v1.13.20",
             "v1.13.21"
+          ]
+        },
+        {
+          "rule": {
+            "id": "singBox.logging.level",
+            "path": [
+              "log",
+              "level"
+            ],
+            "declaration": "option#LogOptions",
+            "field": "Level",
+            "constraint": {
+              "kind": "enum",
+              "values": [
+                "",
+                "trace",
+                "debug",
+                "info",
+                "warn",
+                "warning",
+                "error",
+                "fatal",
+                "panic"
+              ],
+              "allowNull": true
+            },
+            "defaultValue": null,
+            "defaultWhen": [],
+            "buildConstraint": "",
+            "when": [],
+            "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+            "fieldHash": "0f4dbcd35a570dc313bd0680f45ca467fa4b2b5e04afec1101ddc94c575f968a",
+            "evidence": [
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "ParseLevel",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "bodyHash": "9a3cba78d599f7b38dd9d0a8129a2cca8b4d72d387b9e75be948feae7f83ca0d"
+              }
+            ]
+          },
+          "releases": [
+            "v1.14.0",
+            "v1.14.1",
+            "v1.14.2"
           ]
         },
         {
@@ -184667,6 +187391,108 @@
         },
         {
           "declaration": {
+            "id": "log#Event",
+            "name": "Event",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [
+              {
+                "name": "LogLevel",
+                "type": "LogLevel",
+                "shape": {
+                  "kind": "named",
+                  "name": "LogLevel",
+                  "package": "log"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Event.LogLevel",
+                  "modulePath": "github.com/metacubex/mihomo"
+                }
+              },
+              {
+                "name": "Payload",
+                "type": "string",
+                "shape": {
+                  "kind": "builtin",
+                  "name": "string"
+                },
+                "embedded": false,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/log.go",
+                  "symbol": "Event.Payload",
+                  "modulePath": "github.com/metacubex/mihomo"
+                }
+              }
+            ],
+            "methods": [
+              "Type"
+            ],
+            "source": {
+              "path": "log/log.go",
+              "symbol": "Event",
+              "modulePath": "github.com/metacubex/mihomo"
+            }
+          },
+          "releases": [
+            "v1.18.0",
+            "v1.18.1",
+            "v1.18.2",
+            "v1.18.3",
+            "v1.18.4",
+            "v1.18.5",
+            "v1.18.6",
+            "v1.18.7",
+            "v1.18.8",
+            "v1.18.9",
+            "v1.18.10",
+            "v1.19.0",
+            "v1.19.1",
+            "v1.19.2",
+            "v1.19.3",
+            "v1.19.4",
+            "v1.19.5",
+            "v1.19.6",
+            "v1.19.7",
+            "v1.19.8",
+            "v1.19.9",
+            "v1.19.10",
+            "v1.19.11",
+            "v1.19.12",
+            "v1.19.13",
+            "v1.19.14",
+            "v1.19.15",
+            "v1.19.16",
+            "v1.19.17",
+            "v1.19.18",
+            "v1.19.19",
+            "v1.19.20",
+            "v1.19.21",
+            "v1.19.22",
+            "v1.19.23",
+            "v1.19.24",
+            "v1.19.25",
+            "v1.19.26",
+            "v1.19.27",
+            "v1.19.28",
+            "v1.19.29",
+            "v1.19.30",
+            "v1.19.31"
+          ]
+        },
+        {
+          "declaration": {
             "id": "adapter/provider#overrideBinaryExpr",
             "name": "overrideBinaryExpr",
             "package": "adapter/provider",
@@ -220583,6 +223409,87 @@
         },
         {
           "declaration": {
+            "id": "log#singLogger",
+            "name": "singLogger",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [
+              "Debug",
+              "DebugContext",
+              "Error",
+              "ErrorContext",
+              "Fatal",
+              "FatalContext",
+              "Info",
+              "InfoContext",
+              "Panic",
+              "PanicContext",
+              "Trace",
+              "TraceContext",
+              "Warn",
+              "WarnContext"
+            ],
+            "source": {
+              "path": "log/sing.go",
+              "symbol": "singLogger",
+              "modulePath": "github.com/metacubex/mihomo"
+            }
+          },
+          "releases": [
+            "v1.18.0",
+            "v1.18.1",
+            "v1.18.2",
+            "v1.18.3",
+            "v1.18.4",
+            "v1.18.5",
+            "v1.18.6",
+            "v1.18.7",
+            "v1.18.8",
+            "v1.18.9",
+            "v1.18.10",
+            "v1.19.0",
+            "v1.19.1",
+            "v1.19.2",
+            "v1.19.3",
+            "v1.19.4",
+            "v1.19.5",
+            "v1.19.6",
+            "v1.19.7",
+            "v1.19.8",
+            "v1.19.9",
+            "v1.19.10",
+            "v1.19.11",
+            "v1.19.12",
+            "v1.19.13",
+            "v1.19.14",
+            "v1.19.15",
+            "v1.19.16",
+            "v1.19.17",
+            "v1.19.18",
+            "v1.19.19",
+            "v1.19.20",
+            "v1.19.21",
+            "v1.19.22",
+            "v1.19.23",
+            "v1.19.24",
+            "v1.19.25",
+            "v1.19.26",
+            "v1.19.27",
+            "v1.19.28",
+            "v1.19.29",
+            "v1.19.30",
+            "v1.19.31"
+          ]
+        },
+        {
+          "declaration": {
             "id": "rules/common#Domain",
             "name": "Domain",
             "package": "rules/common",
@@ -232650,6 +235557,55 @@
         },
         {
           "declaration": {
+            "id": "log#LogLevel",
+            "name": "LogLevel",
+            "package": "log",
+            "type": "int",
+            "shape": {
+              "kind": "builtin",
+              "name": "int"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [
+              "MarshalText",
+              "String",
+              "UnmarshalText"
+            ],
+            "source": {
+              "path": "log/level.go",
+              "symbol": "LogLevel",
+              "modulePath": "github.com/metacubex/mihomo"
+            }
+          },
+          "releases": [
+            "v1.19.11",
+            "v1.19.12",
+            "v1.19.13",
+            "v1.19.14",
+            "v1.19.15",
+            "v1.19.16",
+            "v1.19.17",
+            "v1.19.18",
+            "v1.19.19",
+            "v1.19.20",
+            "v1.19.21",
+            "v1.19.22",
+            "v1.19.23",
+            "v1.19.24",
+            "v1.19.25",
+            "v1.19.26",
+            "v1.19.27",
+            "v1.19.28",
+            "v1.19.29",
+            "v1.19.30",
+            "v1.19.31"
+          ]
+        },
+        {
+          "declaration": {
             "id": "listener/config#Hysteria2Server",
             "name": "Hysteria2Server",
             "package": "listener/config",
@@ -235083,6 +238039,77 @@
             }
           },
           "releases": [
+            "v1.19.19",
+            "v1.19.20",
+            "v1.19.21",
+            "v1.19.22",
+            "v1.19.23",
+            "v1.19.24",
+            "v1.19.25",
+            "v1.19.26",
+            "v1.19.27",
+            "v1.19.28",
+            "v1.19.29",
+            "v1.19.30",
+            "v1.19.31"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#singInfoToDebugLogger",
+            "name": "singInfoToDebugLogger",
+            "package": "log",
+            "type": "struct",
+            "shape": {
+              "kind": "structure"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [
+              {
+                "name": "singLogger",
+                "type": "singLogger",
+                "shape": {
+                  "kind": "named",
+                  "name": "singLogger",
+                  "package": "log"
+                },
+                "embedded": true,
+                "tags": {},
+                "annotations": {},
+                "source": {
+                  "path": "log/sing.go",
+                  "symbol": "singInfoToDebugLogger.singLogger",
+                  "modulePath": "github.com/metacubex/mihomo"
+                }
+              }
+            ],
+            "methods": [
+              "Info",
+              "InfoContext"
+            ],
+            "source": {
+              "path": "log/sing.go",
+              "symbol": "singInfoToDebugLogger",
+              "modulePath": "github.com/metacubex/mihomo"
+            }
+          },
+          "releases": [
+            "v1.19.5",
+            "v1.19.6",
+            "v1.19.7",
+            "v1.19.8",
+            "v1.19.9",
+            "v1.19.10",
+            "v1.19.11",
+            "v1.19.12",
+            "v1.19.13",
+            "v1.19.14",
+            "v1.19.15",
+            "v1.19.16",
+            "v1.19.17",
+            "v1.19.18",
             "v1.19.19",
             "v1.19.20",
             "v1.19.21",
@@ -312878,6 +315905,51 @@
         },
         {
           "declaration": {
+            "id": "log#LogLevel",
+            "name": "LogLevel",
+            "package": "log",
+            "type": "int",
+            "shape": {
+              "kind": "builtin",
+              "name": "int"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [
+              "MarshalJSON",
+              "MarshalText",
+              "MarshalYAML",
+              "String",
+              "UnmarshalJSON",
+              "UnmarshalText",
+              "UnmarshalYAML"
+            ],
+            "source": {
+              "path": "log/level.go",
+              "symbol": "LogLevel",
+              "modulePath": "github.com/metacubex/mihomo"
+            }
+          },
+          "releases": [
+            "v1.18.9",
+            "v1.18.10",
+            "v1.19.0",
+            "v1.19.1",
+            "v1.19.2",
+            "v1.19.3",
+            "v1.19.4",
+            "v1.19.5",
+            "v1.19.6",
+            "v1.19.7",
+            "v1.19.8",
+            "v1.19.9",
+            "v1.19.10"
+          ]
+        },
+        {
+          "declaration": {
             "id": "listener/inbound#RealityConfig",
             "name": "RealityConfig",
             "package": "listener/inbound",
@@ -315964,6 +319036,45 @@
             "source": {
               "path": "constant/adapters.go",
               "symbol": "Proxy",
+              "modulePath": "github.com/metacubex/mihomo"
+            }
+          },
+          "releases": [
+            "v1.18.0",
+            "v1.18.1",
+            "v1.18.2",
+            "v1.18.3",
+            "v1.18.4",
+            "v1.18.5",
+            "v1.18.6",
+            "v1.18.7",
+            "v1.18.8"
+          ]
+        },
+        {
+          "declaration": {
+            "id": "log#LogLevel",
+            "name": "LogLevel",
+            "package": "log",
+            "type": "int",
+            "shape": {
+              "kind": "builtin",
+              "name": "int"
+            },
+            "alias": false,
+            "buildConstraint": "",
+            "imports": {},
+            "fields": [],
+            "methods": [
+              "MarshalJSON",
+              "MarshalYAML",
+              "String",
+              "UnmarshalJSON",
+              "UnmarshalYAML"
+            ],
+            "source": {
+              "path": "log/level.go",
+              "symbol": "LogLevel",
               "modulePath": "github.com/metacubex/mihomo"
             }
           },
@@ -412279,6 +415390,73 @@
         },
         {
           "rule": {
+            "id": "mihomo.logging.level",
+            "path": [
+              "log-level"
+            ],
+            "declaration": "config#RawConfig",
+            "field": "LogLevel",
+            "constraint": {
+              "kind": "enum",
+              "values": [
+                "debug",
+                "info",
+                "warning",
+                "error",
+                "silent"
+              ],
+              "allowNull": true,
+              "caseInsensitive": true
+            },
+            "defaultValue": null,
+            "defaultWhen": [],
+            "buildConstraint": "",
+            "when": [],
+            "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+            "fieldHash": "9782f44cfe89b2e83a2a2944e0aebe1ec0771e36706e909525cd548ed70d6071",
+            "evidence": [
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.String",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"
+              },
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.UnmarshalJSON",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "716731e04cf988debac91267ab284ad181804f829dcd5f8f6593516e7427c485"
+              },
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.UnmarshalYAML",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "fdae817e437c90a8261d696ab9b041f6381b498c44be584cd3c6fb359eb2f0dc"
+              }
+            ]
+          },
+          "releases": [
+            "v1.18.9",
+            "v1.18.10",
+            "v1.19.0",
+            "v1.19.1",
+            "v1.19.2",
+            "v1.19.3",
+            "v1.19.4",
+            "v1.19.5",
+            "v1.19.6",
+            "v1.19.7",
+            "v1.19.8"
+          ]
+        },
+        {
+          "rule": {
             "id": "mihomo.tun.auto-redirect.platform",
             "path": [
               "tun",
@@ -412425,6 +415603,129 @@
             "v1.19.1",
             "v1.19.2",
             "v1.19.3"
+          ]
+        },
+        {
+          "rule": {
+            "id": "mihomo.logging.level",
+            "path": [
+              "log-level"
+            ],
+            "declaration": "config#RawConfig",
+            "field": "LogLevel",
+            "constraint": {
+              "kind": "enum",
+              "values": [
+                "debug",
+                "info",
+                "warning",
+                "error",
+                "silent"
+              ],
+              "allowNull": true,
+              "caseInsensitive": false
+            },
+            "defaultValue": null,
+            "defaultWhen": [],
+            "buildConstraint": "",
+            "when": [],
+            "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+            "fieldHash": "9782f44cfe89b2e83a2a2944e0aebe1ec0771e36706e909525cd548ed70d6071",
+            "evidence": [
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.String",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"
+              },
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.UnmarshalJSON",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "8b66dea3a855daf92a1c74f8a813e6dbb5b55e8f5e9a1872104625f054058cd5"
+              },
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.UnmarshalYAML",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "26ca440174ed343cb5b79f288117ae20497a4e37ab9c2ce676b5bf614a56d242"
+              }
+            ]
+          },
+          "releases": [
+            "v1.18.0",
+            "v1.18.1",
+            "v1.18.2",
+            "v1.18.3",
+            "v1.18.4",
+            "v1.18.5",
+            "v1.18.6",
+            "v1.18.7",
+            "v1.18.8"
+          ]
+        },
+        {
+          "rule": {
+            "id": "mihomo.logging.level",
+            "path": [
+              "log-level"
+            ],
+            "declaration": "config#RawConfig",
+            "field": "LogLevel",
+            "constraint": {
+              "kind": "enum",
+              "values": [
+                "debug",
+                "info",
+                "warning",
+                "error",
+                "silent"
+              ],
+              "allowNull": true,
+              "caseInsensitive": true
+            },
+            "defaultValue": null,
+            "defaultWhen": [],
+            "buildConstraint": "",
+            "when": [],
+            "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+            "fieldHash": "9782f44cfe89b2e83a2a2944e0aebe1ec0771e36706e909525cd548ed70d6071",
+            "evidence": [
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.String",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"
+              },
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.UnmarshalJSON",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "249dc65bf691ccd940b60cc7f5939b6d842655969a030a4d52b923f372cfc246"
+              },
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.UnmarshalYAML",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "c19009b3aaaa56f119b42159b03c02c39a29cc0914ab2f05523ddd03586ced3f"
+              }
+            ]
+          },
+          "releases": [
+            "v1.19.9",
+            "v1.19.10"
           ]
         },
         {
@@ -412724,6 +416025,75 @@
           },
           "releases": [
             "v1.19.22"
+          ]
+        },
+        {
+          "rule": {
+            "id": "mihomo.logging.level",
+            "path": [
+              "log-level"
+            ],
+            "declaration": "config#RawConfig",
+            "field": "LogLevel",
+            "constraint": {
+              "kind": "enum",
+              "values": [
+                "debug",
+                "info",
+                "warning",
+                "error",
+                "silent"
+              ],
+              "allowNull": true,
+              "caseInsensitive": true
+            },
+            "defaultValue": null,
+            "defaultWhen": [],
+            "buildConstraint": "",
+            "when": [],
+            "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+            "fieldHash": "9782f44cfe89b2e83a2a2944e0aebe1ec0771e36706e909525cd548ed70d6071",
+            "evidence": [
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.String",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"
+              },
+              {
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel.UnmarshalText",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "bodyHash": "2991f88cc9d369e859b2dbd2dbaa8b1546758b66ef8fd3cc0757c372e8940e65"
+              }
+            ]
+          },
+          "releases": [
+            "v1.19.11",
+            "v1.19.12",
+            "v1.19.13",
+            "v1.19.14",
+            "v1.19.15",
+            "v1.19.16",
+            "v1.19.17",
+            "v1.19.18",
+            "v1.19.19",
+            "v1.19.20",
+            "v1.19.21",
+            "v1.19.22",
+            "v1.19.23",
+            "v1.19.24",
+            "v1.19.25",
+            "v1.19.26",
+            "v1.19.27",
+            "v1.19.28",
+            "v1.19.29",
+            "v1.19.30",
+            "v1.19.31"
           ]
         },
         {

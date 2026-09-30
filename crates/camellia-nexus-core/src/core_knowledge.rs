@@ -186,6 +186,8 @@ pub enum KnowledgeValueConstraint {
     Enum {
         values: Vec<String>,
         allow_null: bool,
+        #[serde(default)]
+        case_insensitive: bool,
     },
     Platform {
         condition: String,

@@ -58,6 +58,15 @@ function parsePreviewJsonc(content: string): unknown {
   if (errors.length || value === undefined) throw new SyntaxError('Invalid JSON configuration');
   return value;
 }
+
+function parsePreviewSemantic(content: string): unknown {
+  try { return parsePreviewJsonc(content); }
+  catch {
+    const document: unknown = parseYaml(content);
+    if (!document || typeof document !== 'object') throw new SyntaxError('Invalid configuration');
+    return document;
+  }
+}
 const entitlement: EntitlementSnapshot = {
   generation: 1,
   entitlementState: {
@@ -995,7 +1004,7 @@ window.addEventListener('camellia-ui-preview:identity-ready', () => { identityRe
 const previewUpstreamDocuments = new Map<string, string>();
 const previewUpstreamContributions = new Map<string, {
   source: string;
-  writes: Array<{ owner: string; change: FinalChangeProjection }>;
+  writes: Array<{ owner: string; change: FinalChangeProjection; listEdit?: { original?: unknown; replacement?: unknown } }>;
 }>();
 const previewFinalDrafts = new Map<string, FinalEditorSession>();
 const previewConflictOperations = new Map<string, {
@@ -1026,32 +1035,37 @@ function previewGuidedSettings(kind: ProgramSpec['type']['kind']): {
   const descriptors: GuidedSettingDescriptor[] = [{
     id: 'logging.level',
     category: 'logging',
-    label: 'Log level',
-    description: 'Control the Core log verbosity, or follow the source configuration.',
+    label: 'Log detail',
+    description: '',
     control: 'select',
     allowedValues: kind === 'xray'
       ? ['debug', 'info', 'warning', 'error', 'none']
-      : ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'panic'],
+      : kind === 'mihomo' ? ['debug', 'info', 'warning', 'error', 'silent'] : ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'panic'],
   }];
   const values = new Map<string, unknown>([['logging.level', kind === 'xray' ? 'warning' : 'info']]);
   if (kind === 'singBox') {
     descriptors.push(
-      { id: 'dns.strategy', category: 'dns', label: 'IP strategy', description: 'Configure IP strategy, or follow the source configuration.', control: 'select', allowedValues: ['prefer_ipv4', 'prefer_ipv6', 'ipv4_only', 'ipv6_only'] },
-      { id: 'routing.autoDetectInterface', category: 'routing', label: 'Auto-detect interface', description: 'Configure interface detection, or follow the source configuration.', control: 'toggle', allowedValues: [] },
+      { id: 'dns.strategy', category: 'dns', label: 'DNS address preference', description: '', control: 'select', allowedValues: ['prefer_ipv4', 'prefer_ipv6', 'ipv4_only', 'ipv6_only'] },
+      { id: 'routing.autoDetectInterface', category: 'routing', label: 'Choose network interface automatically', description: '', control: 'toggle', allowedValues: [] },
+      { id: 'logging.timestamp', category: 'logging', label: 'Show log time', description: '', control: 'toggle', allowedValues: [], advanced: true },
+      { id: 'dns.disableCache', category: 'dns', label: 'Disable DNS cache', description: '', control: 'toggle', allowedValues: [], advanced: true },
+      { id: 'dns.timeout', category: 'dns', label: 'DNS timeout', description: '', control: 'text', allowedValues: [], advanced: true },
     );
     values.set('dns.strategy', 'prefer_ipv4');
     values.set('routing.autoDetectInterface', true);
   } else if (kind === 'xray') {
-    descriptors.push({ id: 'routing.domainStrategy', category: 'routing', label: 'Domain strategy', description: 'Configure domain strategy, or follow the source configuration.', control: 'select', allowedValues: ['AsIs', 'IPIfNonMatch', 'IPOnDemand'] });
+    descriptors.push({ id: 'routing.domainStrategy', category: 'routing', label: 'Domain matching', description: '', control: 'select', allowedValues: ['AsIs', 'IPIfNonMatch', 'IPOnDemand'] });
+    descriptors.push({ id: 'logging.dns', category: 'logging', label: 'Log DNS requests', description: '', control: 'toggle', allowedValues: [], advanced: true });
+    descriptors.push({ id: 'dns.queryStrategy', category: 'dns', label: 'DNS address preference', description: '', control: 'select', allowedValues: ['UseIP', 'UseIPv4', 'UseIPv6'] });
     values.set('routing.domainStrategy', 'AsIs');
   } else {
     descriptors.push(
-      { id: 'network.ipv6', category: 'network', label: 'IPv6', description: 'Configure IPv6, or follow the source configuration.', control: 'toggle', allowedValues: [] },
-      { id: 'tun.enabled', category: 'tun', label: 'TUN', description: 'Configure TUN, or follow the source configuration.', control: 'toggle', allowedValues: [] },
-      { id: 'tun.strictRoute', category: 'tun', label: 'Strict routing', description: 'Configure strict routing, or follow the source configuration.', control: 'toggle', allowedValues: [], enabledWhen: 'tun.enabled' },
-      { id: 'dns.enabled', category: 'dns', label: 'DNS', description: 'Configure DNS, or follow the source configuration.', control: 'toggle', allowedValues: [] },
+      { id: 'network.ipv6', category: 'routing', label: 'Allow IPv6 connections', description: '', control: 'toggle', allowedValues: [], advanced: true },
+      { id: 'tun.enabled', category: 'tun', label: 'Use a virtual network adapter', description: '', control: 'toggle', allowedValues: [] },
+      { id: 'tun.strictRoute', category: 'tun', label: 'Prevent traffic outside these routes', description: '', control: 'toggle', allowedValues: [], advanced: true, enabledWhen: 'tun.enabled' },
+      { id: 'dns.enabled', category: 'dns', label: 'Use program DNS', description: '', control: 'toggle', allowedValues: [] },
       { id: 'dns.mode', category: 'dns', label: 'DNS mode', description: 'Configure DNS mode, or follow the source configuration.', control: 'select', allowedValues: ['normal', 'fake-ip', 'redir-host'] },
-      { id: 'routing.mode', category: 'routing', label: 'Routing mode', description: 'Configure routing mode, or follow the source configuration.', control: 'select', allowedValues: ['rule', 'global', 'direct'] },
+      { id: 'routing.mode', category: 'routing', label: 'Traffic mode', description: '', control: 'select', allowedValues: ['rule', 'global', 'direct'] },
     );
     values.set('network.ipv6', true);
     values.set('tun.enabled', false);
@@ -1543,6 +1557,7 @@ function configurationWorkspaceSnapshot(programId: string): {
   editorSession: FinalEditorSession;
 } {
   const state = configurationState(programId);
+  projectPreviewIntent(programId, state);
   state.managedIntegrations = state.managedIntegrations?.map((integration) => {
     const settings = previewManagedSettingPaths(specs[programId]).filter((setting) => setting.settingId.startsWith(`${integration.integrationId}.`)).map((setting) => {
       let effectiveValue: import('../types').SemanticValue = { state: 'missing' };
@@ -1596,6 +1611,180 @@ function configurationWorkspaceSnapshot(programId: string): {
     } catch { /* Incomplete text is handled by editor syntax diagnostics. */ }
   }
   return { state, editorSession };
+}
+
+function projectPreviewIntent(programId: string, state: ConfigurationStateView): void {
+  const document = (state.format === 'yaml' ? parseYaml(state.desired.content) : parsePreviewJsonc(state.desired.content)) as Record<string, unknown>;
+  state.guidedProjection = state.guidedProjection.map((projection) => {
+    const path = previewGuidedPath(state.kind, projection.settingId);
+    return path ? { ...projection, value: previewConflictPathValue(document, path.map((key) => ({ kind: 'key', key }))).value } : projection;
+  });
+  const field = (key: string, label: string, control: import('../types').GuidedControl, allowedValues: string[] = [], required = false, advanced = false): import('../types').IntentObjectField => ({ key, label, control, allowedValues, required, advanced, secret: key === 'password' });
+  const descriptors: import('../types').IntentObjectDescriptor[] = [{
+    kind: 'listener', category: 'local', label: 'Local proxy', canCreate: true,
+    protocols: state.kind === 'xray' ? ['http', 'socks'] : ['mixed', 'http', 'socks'],
+    fields: [field('protocol', 'Proxy type', 'select', [], true), field('port', 'Port', 'number', [], true), field('access', 'Who can connect', 'select', ['local', 'lan'], true), field('listen', 'Listen address', 'text', [], false, true), field('username', 'Username', 'text'), field('password', 'Password', 'text'), ...(state.kind === 'xray' ? [field('udp', 'Allow UDP', 'toggle', [], false, true)] : [])],
+  }, {
+    kind: 'dnsServer', category: 'dns', label: 'DNS servers', canCreate: true,
+    protocols: state.kind === 'xray' ? ['system', 'udp', 'https'] : ['system', 'udp', 'tls', 'https'],
+    fields: [field('protocol', 'DNS connection', 'select', [], true), field('server', 'Server address', 'text'), ...(state.kind === 'singBox' ? [field('bootstrap', 'Resolve the server through', 'select', [], false, true)] : [])],
+  }];
+  if (state.kind === 'singBox') descriptors.push({ kind: 'tun', category: 'tun', label: 'Virtual network adapter', canCreate: true, protocols: [], fields: [field('address', 'Virtual network addresses', 'text', [], true), field('autoRoute', 'Route traffic automatically', 'toggle'), field('mtu', 'Packet size (MTU)', 'number', [], false, true)] });
+  descriptors.push({ kind: 'routeRule', category: 'routing', label: 'Traffic rule', canCreate: true, protocols: [], fields: [field('match', 'Match', 'select', ['domain', 'subdomain', 'ip'], true), field('value', 'Domain or IP network', 'text', [], true), field('target', 'Send through', 'select', [], true)] });
+  state.intentObjectDescriptors = descriptors;
+  const objects: import('../types').IntentObjectProjection[] = [];
+  const add = (kind: import('../types').IntentObjectKind, label: string, native: unknown, values: Record<string, unknown>) => {
+    const owned = previewUpstreamContributions.get(programId)?.writes.find((write) => write.listEdit && previewSemanticEqual(write.listEdit.replacement, native));
+    const objectId = owned ? owned.owner.slice('intent:'.length) : `${kind}:${label}`;
+    objects.push({ objectId, kind, label, values, contentHash: previewContentHash(JSON.stringify(native)), editable: true, removed: false,
+      canFollow: previewUpstreamContributions.get(programId)?.writes.some((write) => write.owner === `intent:${objectId}`) ?? false });
+  };
+  if (state.kind === 'mihomo') {
+    for (const [protocol, key] of [['mixed', 'mixed-port'], ['http', 'port'], ['socks', 'socks-port']]) {
+      if (Number(document[key]) > 0) add('listener', key, document[key], { protocol, port: document[key], access: document['allow-lan'] === true ? 'lan' : 'local', listen: document['bind-address'] });
+    }
+  } else {
+    for (const inbound of (document.inbounds ?? []) as Record<string, unknown>[]) {
+      const protocol = inbound.type ?? inbound.protocol;
+      if (!inbound.tag || !['mixed', 'http', 'socks', 'tun'].includes(String(protocol))) continue;
+      const listen = String(inbound.listen ?? '');
+      add(protocol === 'tun' ? 'tun' : 'listener', String(inbound.tag), inbound,
+        protocol === 'tun' ? { address: (inbound.address as string[] | undefined)?.join('\n'), autoRoute: inbound.auto_route, mtu: inbound.mtu }
+          : { protocol, port: inbound.listen_port ?? inbound.port, listen, access: listen.startsWith('127.') || listen === '::1' ? 'local' : 'lan' });
+    }
+  }
+  const dns = document.dns as { servers?: Record<string, unknown>[]; nameserver?: string[] } | undefined;
+  if (state.kind === 'mihomo') for (const address of dns?.nameserver ?? []) add('dnsServer', address, address, { protocol: address === 'system' ? 'system' : address.startsWith('https://') ? 'https' : address.startsWith('tls://') ? 'tls' : 'udp', server: address.replace(/^tls:\/\//, '') });
+  for (const server of dns?.servers ?? []) {
+    if (typeof server !== 'object' || !server.tag) continue;
+    const address = String(server.address ?? server.server ?? '');
+    const protocol = server.type === 'local' || address === 'localhost' ? 'system' : server.type ?? (address.startsWith('https://') ? 'https' : 'udp');
+    add('dnsServer', String(server.tag), server, { protocol, server: protocol === 'https' && state.kind === 'singBox' ? `https://${address}${server.path ?? '/dns-query'}` : address });
+  }
+  state.intentObjects = objects;
+  state.intentTargets = [...((document.outbounds ?? []) as Record<string, unknown>[]).flatMap((item) => item.tag ? [{ id: String(item.tag), label: String(item.tag), kind: 'connection' }] : []), ...objects.filter((item) => item.kind === 'dnsServer').map((item) => ({ id: item.label, label: item.label, kind: 'dns' }))];
+  if (state.kind === 'mihomo') state.intentTargets.push(...['DIRECT', 'REJECT'].map((id) => ({ id, label: id, kind: 'connection' })));
+  const rules = state.kind === 'mihomo' ? document.rules : (document[state.kind === 'singBox' ? 'route' : 'routing'] as Record<string, unknown> | undefined)?.rules;
+  for (const rule of (rules ?? []) as unknown[]) {
+    const fields = previewIntentRuleValues(state.kind, rule);
+    if (fields) add('routeRule', String(fields.value), rule, fields);
+  }
+}
+
+function previewIntentRuleValues(kind: string, rule: unknown): Record<string, unknown> | null {
+  if (kind === 'mihomo' && typeof rule === 'string') {
+    const [type, value, target, extra] = rule.split(',');
+    const match = ({ DOMAIN: 'domain', 'DOMAIN-SUFFIX': 'subdomain', 'IP-CIDR': 'ip', 'IP-CIDR6': 'ip' } as Record<string, string>)[type];
+    return match && !extra ? { match, value, target } : null;
+  }
+  if (!rule || typeof rule !== 'object') return null;
+  const fields = rule as Record<string, unknown>;
+  if (kind === 'singBox') {
+    for (const [key, match] of [['domain', 'domain'], ['domain_suffix', 'subdomain'], ['ip_cidr', 'ip']]) {
+      const values = fields[key] as string[] | undefined;
+      if (values?.length === 1 && fields.outbound) return { match, value: values[0], target: fields.outbound };
+    }
+  } else {
+    const values = (fields.domain ?? fields.ip) as string[] | undefined;
+    if (values?.length === 1 && fields.outboundTag) return { match: fields.ip ? 'ip' : values[0].startsWith('full:') ? 'domain' : 'subdomain', value: values[0].replace(/^(full|domain):/, ''), target: fields.outboundTag };
+  }
+  return null;
+}
+
+function recordPreviewIntentList(programId: string, owner: string, path: string[], original: unknown, replacement: unknown): void {
+  const contributions = previewUpstreamContributions.get(programId)!;
+  const previous = contributions.writes.find((write) => write.owner === owner && write.listEdit);
+  const entry = { original: previous?.listEdit ? previous.listEdit.original : original, replacement };
+  contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+  if (entry.original !== undefined || entry.replacement !== undefined) contributions.writes.push({ owner, listEdit: entry, change: { editId: owner, kind: 'modified', issues: [], semanticPath: '/' + path.join('/'), segments: path.map((key) => ({ kind: 'key', key })), upstreamValue: { state: 'missing' }, finalValue: { state: 'missing' } } });
+  updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, []));
+}
+
+function applyPreviewIntentObject(programId: string, change: Exclude<import('../types').ConfigurationIntentAction, { action: 'set' | 'follow' }>, document: unknown): void {
+  const state = configurationState(programId);
+  projectPreviewIntent(programId, state);
+  const root = document as Record<string, unknown>;
+  const creating = change.action === 'createObject';
+  const object = !creating ? state.intentObjects?.find((item) => item.objectId === change.objectId) : undefined;
+  if (!creating && (!object || object.contentHash !== change.expectedHash)) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_OBJECT_STALE', message: 'Setting changed' };
+  const kind = creating ? change.objectKind : object!.kind;
+  const values = change.action === 'createObject' || change.action === 'updateObject' ? change.values : {};
+  const fields = { ...object?.values, ...values };
+  const label = object?.label ?? `nexus-${crypto.randomUUID()}`;
+  let owner = `intent:${object?.objectId ?? `${kind}:${label}`}`;
+  if (change.action === 'followObject') {
+    const contributions = previewUpstreamContributions.get(programId)!;
+    contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+    updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, []));
+    return;
+  }
+  const removed = change.action === 'removeObject';
+  if (kind === 'routeRule') {
+    const path = state.kind === 'mihomo' ? ['rules'] : [state.kind === 'singBox' ? 'route' : 'routing', 'rules'];
+    const list = previewConflictPathValue(root, path.map((key) => ({ kind: 'key', key }))).value as unknown[] | undefined;
+    const original = list?.find((item) => previewIntentRuleValues(state.kind, item)?.value === object?.values.value);
+    if (creating && list?.some((rule) => typeof rule === 'string' ? rule.startsWith('MATCH,') : !!rule && typeof rule === 'object' && Object.keys(rule).every((key) => ['action', 'outbound'].includes(key)))) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_RULE_SHADOWED', message: 'Rule hidden by a catchall' };
+    if (!state.intentTargets?.some((target) => target.kind === 'connection' && target.id === fields.target)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_TARGET_MISSING', message: 'Choose a target' };
+    const replacement = removed ? undefined : state.kind === 'mihomo' ? `${fields.match === 'domain' ? 'DOMAIN' : fields.match === 'subdomain' ? 'DOMAIN-SUFFIX' : 'IP-CIDR'},${fields.value},${fields.target}` : state.kind === 'singBox' ? { [fields.match === 'domain' ? 'domain' : fields.match === 'subdomain' ? 'domain_suffix' : 'ip_cidr']: [fields.value], action: 'route', outbound: fields.target } : { type: 'field', [fields.match === 'ip' ? 'ip' : 'domain']: [fields.match === 'ip' ? fields.value : `${fields.match === 'domain' ? 'full' : 'domain'}:${fields.value}`], outboundTag: fields.target };
+    recordPreviewIntentList(programId, owner, path, original, replacement);
+    return;
+  }
+  if (kind === 'listener') {
+    const port = Number(fields.port);
+    if (!removed && (!Number.isInteger(port) || port < 1 || port > 65535)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_PORT_INVALID', message: 'Invalid port' };
+    if (fields.access === 'lan' && (creating || object?.values.access !== 'lan') && (!fields.username || !fields.password)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_AUTH_REQUIRED', message: 'Authentication required' };
+    const listen = fields.listen || (fields.access === 'lan' ? '0.0.0.0' : '127.0.0.1');
+    if (state.kind === 'mihomo') {
+      const key = fields.protocol === 'mixed' ? 'mixed-port' : fields.protocol === 'http' ? 'port' : 'socks-port';
+      owner = `intent:listener:${key}`;
+      if (removed) delete root[key]; else root[key] = port;
+      if (creating || Object.hasOwn(values, 'access')) { root['allow-lan'] = fields.access === 'lan'; root['bind-address'] = listen; }
+      if (fields.username && fields.password) root.authentication = [`${fields.username}:${fields.password}`];
+    } else {
+      const list = (root.inbounds ??= []) as Record<string, unknown>[];
+      const index = list.findIndex((item) => item.tag === label);
+      if (removed) list.splice(index, 1);
+      else {
+        const native = { ...(index >= 0 ? list[index] : {}), tag: label, listen };
+        if (state.kind === 'singBox') Object.assign(native, { type: fields.protocol, listen_port: port });
+        else Object.assign(native, { protocol: fields.protocol, port });
+        if (fields.username && fields.password) Object.assign(native, state.kind === 'singBox' ? { users: [{ username: fields.username, password: fields.password }] } : { settings: { accounts: [{ user: fields.username, pass: fields.password }], ...(fields.protocol === 'socks' ? { auth: 'password' } : {}) } });
+        if (index >= 0) list[index] = native; else list.push(native);
+      }
+    }
+  } else if (kind === 'dnsServer') {
+    const dns = (root.dns ??= {}) as Record<string, unknown>;
+    if (state.kind === 'mihomo') {
+      const address = fields.protocol === 'system' ? 'system' : fields.protocol === 'tls' ? `tls://${fields.server}` : fields.server;
+      recordPreviewIntentList(programId, owner, ['dns', 'nameserver'], object?.label, removed ? undefined : address);
+      return;
+    }
+    else {
+      const list = (dns.servers ??= []) as Record<string, unknown>[];
+      const index = list.findIndex((item) => item.tag === label);
+      if (removed) list.splice(index, 1);
+      else {
+        const native = { ...(index >= 0 ? list[index] : {}), tag: label };
+        if (state.kind === 'xray') Object.assign(native, { address: fields.protocol === 'system' ? 'localhost' : fields.server });
+        else {
+          const url = fields.protocol === 'https' ? new URL(String(fields.server)) : null;
+          Object.assign(native, { type: fields.protocol === 'system' ? 'local' : fields.protocol, ...(fields.protocol === 'system' ? {} : { server: url?.hostname ?? fields.server }), ...(url ? { path: url.pathname } : {}) });
+        }
+        if (index >= 0) list[index] = native; else list.push(native);
+      }
+    }
+  } else if (kind === 'tun') {
+    const list = (root.inbounds ??= []) as Record<string, unknown>[];
+    const index = list.findIndex((item) => item.tag === label);
+    if (removed) list.splice(index, 1);
+    else {
+      const native = { ...(index >= 0 ? list[index] : {}), tag: label, type: 'tun', address: String(fields.address).split(/\s+/), ...(fields.autoRoute !== undefined ? { auto_route: fields.autoRoute } : {}) };
+      if (index >= 0) list[index] = native; else list.push(native);
+    }
+  } else throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_SETTING_UNAVAILABLE', message: 'Unavailable setting' };
+  const upstream = previewUpstreamDocuments.get(programId) ?? state.desired.content;
+  const changes = previewFinalChanges(upstream, JSON.stringify(document));
+  updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, changes));
 }
 
 function refreshPreviewUnresolvedConflicts(draft: FinalEditorSession): void {
@@ -1704,7 +1893,12 @@ function previewContentHash(content: string): string {
 
 function previewGuidedPath(kind: ProgramKind, settingId: string): string[] | undefined {
   const paths: Record<string, string[]> = {
-    'logging.level': kind === 'xray' ? ['log', 'loglevel'] : ['log', 'level'],
+    'logging.level': kind === 'xray' ? ['log', 'loglevel'] : kind === 'mihomo' ? ['log-level'] : ['log', 'level'],
+    'logging.timestamp': ['log', 'timestamp'],
+    'logging.dns': ['log', 'dnsLog'],
+    'dns.disableCache': ['dns', kind === 'xray' ? 'disableCache' : 'disable_cache'],
+    'dns.timeout': ['dns', 'timeout'],
+    'dns.queryStrategy': ['dns', 'queryStrategy'],
     'dns.strategy': ['dns', 'strategy'],
     'routing.autoDetectInterface': ['route', 'auto_detect_interface'],
     'routing.domainStrategy': ['routing', 'domainStrategy'],
@@ -1892,9 +2086,17 @@ function recordPreviewContributions(programId: string, owner: string, changes: F
       || !change.segments.every((segment, index) => previewSemanticEqual(segment, write.change.segments[index])));
     contributions.writes.push({ owner, change: structuredClone(change) });
   }
-  let document: unknown = parsePreviewJsonc(contributions.source);
+  let document: unknown = parsePreviewSemantic(contributions.source);
   const source: unknown = structuredClone(document);
-  for (const { owner, change } of contributions.writes) {
+  for (const { owner, change, listEdit } of contributions.writes) {
+    if (listEdit) {
+      const values = [...((previewConflictPathValue(document, change.segments).value ?? []) as unknown[])];
+      const index = listEdit.original === undefined ? -1 : values.findIndex((value) => previewSemanticEqual(value, listEdit.original));
+      if (index >= 0) { if (listEdit.replacement === undefined) values.splice(index, 1); else values[index] = structuredClone(listEdit.replacement); }
+      else if (listEdit.replacement !== undefined && !values.some((value) => previewSemanticEqual(value, listEdit.replacement))) values.push(structuredClone(listEdit.replacement));
+      updatePreviewConflictPath(document, change.segments, { present: true, value: values });
+      continue;
+    }
     const value = owner === 'sources'
       ? previewConflictPathValue(source, change.segments)
       : change.finalValue.state === 'present'
@@ -1959,8 +2161,8 @@ function previewFinalChanges(
   let upstream: unknown;
   let finalValue: unknown;
   try {
-    upstream = parsePreviewJsonc(upstreamContent);
-    finalValue = parsePreviewJsonc(finalContent);
+    upstream = parsePreviewSemantic(upstreamContent);
+    finalValue = parsePreviewSemantic(finalContent);
   } catch {
     return [];
   }
@@ -3533,63 +3735,48 @@ export function installMockBackend() {
         }
         return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
       }
-      case 'set_guided_intent': {
+      case 'update_configuration_intent': {
         const programId = stringArg(args, 'programId');
-        const request = objectArgs(args).request;
-        const guided = request && typeof request === 'object'
-          ? request as { settingId?: string; value?: unknown }
-          : {};
-        const settingId = guided.settingId;
+        const request = objectArgs(args).request as import('../types').ConfigurationIntentRequest;
+        const context: ConfigurationMutationContext = {
+          operationId: request.operationId, kind: 'intent', expectedStateRevision: request.expectedStateRevision,
+          editorSessionId: request.editorSessionId, expectedDraftRevision: request.expectedDraftRevision,
+          payloadHash: previewContentHash(JSON.stringify(request.change)),
+        };
+        const receipt = previewOperationResult(programId, context);
+        if (receipt) return { ...configurationWorkspaceSnapshot(programId), operationResult: receipt };
         const current = configurationState(programId);
-        if (!settingId) throw { code: 'INVALID_SPEC', message: 'Preview Guided setting is required' };
-        const projection = current.guidedProjection.find((item) => item.settingId === settingId);
-        const descriptor = current.guidedDescriptors.find((item) => item.id === settingId);
-        if (!projection || !descriptor) {
-          throw { code: 'NOT_FOUND', message: `Preview Guided setting was not found: ${settingId}` };
+        if (current.stateRevision !== request.expectedStateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE', message: 'Configuration changed' };
         }
-        let nextValue = guided.value;
-        if (nextValue !== undefined && descriptor.control === 'select'
-          && !descriptor.allowedValues.includes(String(nextValue))) {
-          throw { code: 'INVALID_SPEC', message: `Preview Guided value is not allowed: ${settingId}` };
-        }
-        if (nextValue === undefined) {
-          nextValue = previewGuidedSettings(current.kind).projection
-            .find((item) => item.settingId === settingId)?.value;
-        }
-        let upstreamDocument: unknown;
-        try {
-          upstreamDocument = parsePreviewJsonc(
-            previewUpstreamDocuments.get(programId) ?? current.workspace.editor.document.content,
-          );
-        } catch {
-          upstreamDocument = {};
-        }
-        setPreviewGuidedPath(
-          upstreamDocument,
-          previewGuidedPath(current.kind, settingId) ?? [],
-          nextValue,
-        );
-        const upstreamContent = previewUpstreamDocuments.get(programId) ?? current.desired.content;
+        const change = request.change;
         const contributions = previewUpstreamContributions.get(programId)!;
-        const owner = `intent:${settingId}`;
-        if (guided.value === undefined) contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
-        const changes = guided.value === undefined ? []
-          : previewFinalChanges(upstreamContent, JSON.stringify(upstreamDocument));
-        updatePreviewUpstream(
-          programId,
-          recordPreviewContributions(programId, owner, changes),
-          (state) => {
-            state.guidedProjection = state.guidedProjection.map((item) => item.settingId === settingId
-              ? {
-                  ...item,
-                  status: guided.value === undefined ? 'inherited' : 'explicit',
-                  value: nextValue,
-                  intentValue: guided.value,
-                }
-              : item);
-          },
-        );
-        return configurationWorkspaceSnapshot(programId);
+        const upstreamContent = previewUpstreamDocuments.get(programId) ?? current.desired.content;
+        const parse = (content: string): unknown => current.format === 'yaml' ? parseYaml(content) : parsePreviewJsonc(content);
+        const document = parse(upstreamContent);
+        if (change.action === 'set' || change.action === 'follow') {
+          const descriptor = current.guidedDescriptors.find((item) => item.id === change.settingId);
+          const path = previewGuidedPath(current.kind, change.settingId);
+          if (!descriptor || !path) throw { code: 'INVALID_SPEC', message: 'Unknown setting' };
+          if (change.action === 'set' && descriptor.control === 'select' && !descriptor.allowedValues.includes(String(change.value))) {
+            throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_VALUE_INVALID', message: 'Invalid selection' };
+          }
+          const owner = `intent:${change.settingId}`;
+          if (change.action === 'follow') contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+          else setPreviewGuidedPath(document, path, change.value);
+          const changes = change.action === 'follow' ? [] : previewFinalChanges(upstreamContent, JSON.stringify(document));
+          updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, changes), (state) => {
+            state.guidedProjection = state.guidedProjection.map((item) => item.settingId === change.settingId
+              ? { ...item, status: change.action === 'follow' ? 'inherited' : 'explicit', intentValue: change.action === 'set' ? change.value : undefined } : item);
+          });
+        } else {
+          applyPreviewIntentObject(programId, change, document);
+        }
+        const result: ConfigurationOperationResult = {
+          operationId: request.operationId, status: 'updated', candidateGeneration: configurationState(programId).generation,
+        };
+        previewConfigurationOperations.set(`${programId}:${request.operationId}`, { request: structuredClone(context), result });
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
       }
       case 'get_configuration_operation': {
         const programId = stringArg(args, 'programId');

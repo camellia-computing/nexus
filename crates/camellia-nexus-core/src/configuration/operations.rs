@@ -9,6 +9,8 @@ pub struct ConfigurationMutationContext {
     pub expected_state_revision: u64,
     pub editor_session_id: Option<String>,
     pub expected_draft_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +18,7 @@ pub struct ConfigurationMutationContext {
 pub enum ConfigurationOperationKind {
     Save,
     Apply,
+    Intent,
 }
 
 impl ConfigurationMutationContext {
@@ -39,6 +42,7 @@ pub enum ConfigurationOperationStatus {
     Applied,
     Rejected,
     Interrupted,
+    Updated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

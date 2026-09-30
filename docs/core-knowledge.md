@@ -13,6 +13,10 @@ module-only alias tags do not define baselines. Every retained patch is assessed
 
 ## Evidence and rules / 证据与规则
 
+Intent resolves its scalar registry and native object adapters against the same capability profile used by configuration assessment. Field existence does not bypass reviewed platform/build rules. Parser-dependent enum behavior is catalog data: reviewed parser alternatives select the appropriate constraint without release thresholds in application code. Log parsing for sing-box and Mihomo is included in source extraction; Mihomo's choices are debug/info/warning/error/silent, and case handling follows each patch's parser. Unknown parser behavior requires review before regeneration.
+
+意图标量注册表与原生对象适配器使用配置检查的同一能力档案。字段存在不能绕过平台或构建规则；枚举随解析器变化的行为保存在知识库数据中，通过经审查的解析器证据选择，不在业务代码中加入版本阈值。源码提取覆盖 sing-box 与 Mihomo 的日志解析。Mihomo 的日志选项为 debug/info/warning/error/silent，大小写行为遵循对应补丁解析器；未审查的行为不能重新生成目录。
+
 The offline knowledge artifact pins release tags, commits, source files, and symbols. Go AST
 extraction inventories declarations, embedded fields, JSON/YAML/proxy tags, custom decoders, and
 build constraints. Program adapters resolve these declarations into configuration paths. Reviewed

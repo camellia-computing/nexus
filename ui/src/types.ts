@@ -376,6 +376,27 @@ export interface GuidedSettingDescriptor {
   control: GuidedControl;
   allowedValues: string[];
   enabledWhen?: string;
+  advanced?: boolean;
+  minimum?: number;
+  maximum?: number;
+  defaultValue?: unknown;
+  available?: boolean;
+  unavailableReason?: string;
+}
+export type IntentObjectKind = 'listener' | 'dnsServer' | 'tun' | 'routeRule';
+export interface IntentObjectField { key: string; label: string; control: GuidedControl; allowedValues: string[]; required: boolean; secret: boolean; advanced: boolean }
+export interface IntentObjectDescriptor { kind: IntentObjectKind; category: string; label: string; fields: IntentObjectField[]; protocols: string[]; canCreate: boolean }
+export interface IntentObjectProjection { objectId: string; kind: IntentObjectKind; label: string; contentHash: string; values: Record<string, unknown>; canFollow: boolean; editable: boolean; removed: boolean }
+export interface IntentTarget { id: string; label: string; kind: string }
+export type ConfigurationIntentAction =
+  | { action: 'set'; settingId: string; value: unknown }
+  | { action: 'follow'; settingId: string }
+  | { action: 'createObject'; objectKind: IntentObjectKind; values: Record<string, unknown> }
+  | { action: 'updateObject'; objectId: string; expectedHash: string; values: Record<string, unknown> }
+  | { action: 'removeObject' | 'followObject'; objectId: string; expectedHash: string };
+export interface ConfigurationIntentRequest {
+  operationId: string; expectedStateRevision: number; editorSessionId?: string; expectedDraftRevision?: number;
+  change: ConfigurationIntentAction;
 }
 export type GuidedProjectionStatus = 'inherited' | 'explicit' | 'custom' | 'overridden' | 'finalEdit';
 export interface GuidedProjection {
@@ -527,19 +548,23 @@ export interface ConfigurationStateView {
   lastKnownGoodRevision?: ConfigurationRevision;
   guidedDescriptors: GuidedSettingDescriptor[];
   guidedProjection: GuidedProjection[];
+  intentObjects?: IntentObjectProjection[];
+  intentObjectDescriptors?: IntentObjectDescriptor[];
+  intentTargets?: IntentTarget[];
   managedIntegrations?: ManagedIntegrationProjection[];
   workspace: ConfigurationWorkspaceView;
 }
 export interface ConfigurationMutationContext {
   operationId: string;
-  kind: 'save' | 'apply';
+  kind: 'save' | 'apply' | 'intent';
   expectedStateRevision: number;
   editorSessionId?: string;
   expectedDraftRevision?: number;
+  payloadHash?: string;
 }
 export interface ConfigurationOperationResult {
   operationId: string;
-  status: 'pending' | 'saved' | 'applied' | 'rejected' | 'interrupted';
+  status: 'pending' | 'saved' | 'applied' | 'rejected' | 'interrupted' | 'updated';
   candidateGeneration: number;
   savedCandidate?: ConfigurationRevision;
   messageKey?: string;

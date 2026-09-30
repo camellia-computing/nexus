@@ -21,8 +21,8 @@ REPORT = ROOT / "docs/core-knowledge-coverage.json"
 CHANGES = ROOT / "docs/core-knowledge-changes.json"
 RULES = ROOT / "scripts/core-knowledge-rules.json"
 PROGRAMS = (
-    {"program":"singBox","repository":"SagerNet/sing-box","familyPolicy":"majorMinor","prefixes":["option/","include/","constant/","protocol/"],"roots":["option#Options"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
-    {"program":"mihomo","repository":"MetaCubeX/mihomo","familyPolicy":"majorMinor","prefixes":["config/","adapter/","listener/","constant/","rules/","common/structure/","main.go"],"roots":["config#RawConfig"],"outboundCollection":"proxies","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"ss","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
+    {"program":"singBox","repository":"SagerNet/sing-box","familyPolicy":"majorMinor","prefixes":["option/","include/","constant/","protocol/","log/"],"roots":["option#Options"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
+    {"program":"mihomo","repository":"MetaCubeX/mihomo","familyPolicy":"majorMinor","prefixes":["config/","adapter/","listener/","constant/","rules/","log/","common/structure/","main.go"],"roots":["config#RawConfig"],"outboundCollection":"proxies","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"ss","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
     {"program":"xray","repository":"XTLS/Xray-core","familyPolicy":"releaseMonth","prefixes":["infra/conf/","transport/internet/sockopt"],"roots":["infra/conf#Config"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria","proxy.outbound.tuicV5":"tuic"}},
 )
 STABLE_TAG = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
@@ -343,6 +343,16 @@ def reviewed_rules(program: str, inventory: dict, rules: list[dict]) -> list[dic
         field_shape = {key: fields[0][key] for key in ("type", "embedded", "tags", "annotations")}
         if field_shape not in rule["fieldShapes"]:
             raise ValueError(f"semantic rule requires source review: {rule['id']}")
+        if "evidenceVariants" in rule:
+            variants = [variant for variant in rule["evidenceVariants"] if all(
+                any(fn["id"] == recipe["function"] and fn["source"]["path"] == recipe["path"]
+                    and fn["bodyHash"] in recipe["bodyHashes"] for fn in inventory["functions"])
+                for recipe in variant["evidence"])]
+            if not variants:
+                raise ValueError(f"semantic rule parser requires source review: {rule['id']}")
+            if any(variant["constraint"] != variants[0]["constraint"] for variant in variants):
+                raise ValueError(f"semantic rule parser is ambiguous: {rule['id']}")
+            rule = {**rule, **variants[0]}
         evidence = []
         for recipe in rule["evidence"]:
             functions = [fn for fn in inventory["functions"] if fn["id"] == recipe["function"]
@@ -356,7 +366,7 @@ def reviewed_rules(program: str, inventory: dict, rules: list[dict]) -> list[dic
             evidence.append({"source": fn["source"], "bodyHash": fn["bodyHash"]})
         if not evidence:
             raise ValueError(f"semantic rule lacks reviewed behavior: {rule['id']}")
-        result.append({**{key: value for key, value in rule.items() if key not in {"program", "evidence"}},
+        result.append({**{key: value for key, value in rule.items() if key not in {"program", "evidence", "evidenceVariants"}},
                        "fieldHash": digest(field_shape),
                        "evidence": evidence})
         result[-1].pop("fieldShapes")

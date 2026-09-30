@@ -108,6 +108,54 @@
   ],
   "rules": [
     {
+      "id": "singBox.logging.level",
+      "program": "singBox",
+      "path": ["log", "level"],
+      "declaration": "option#LogOptions",
+      "field": "Level",
+      "constraint": {"kind":"enum","values":["","trace","debug","info","warn","warning","error","fatal","panic"],"allowNull":true},
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+      "fieldShapes": [
+        {"type":"string","embedded":false,"tags":{"json":"level,omitempty"},"annotations":{}},
+        {"type":"string","embedded":false,"tags":{"json":"level,omitempty"},"annotations":{"enum":"trace,debug,info,warn,warning,error,fatal,panic"}}
+      ],
+      "evidence": [{"function":"log#ParseLevel","path":"log/level.go","bodyHashes":["9a3cba78d599f7b38dd9d0a8129a2cca8b4d72d387b9e75be948feae7f83ca0d"],"buildConstraints":[""]}]
+    },
+    {
+      "id": "mihomo.logging.level",
+      "program": "mihomo",
+      "path": ["log-level"],
+      "declaration": "config#RawConfig",
+      "field": "LogLevel",
+      "constraint": {"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true},
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+      "fieldShapes": [{"type":"log.LogLevel","embedded":false,"tags":{"json":"log-level","yaml":"log-level"},"annotations":{}}],
+      "evidenceVariants": [
+        {"constraint":{"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true,"caseInsensitive":false},"evidence":[
+          {"function":"log#LogLevel.String","path":"log/level.go","bodyHashes":["b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalJSON","path":"log/level.go","bodyHashes":["8b66dea3a855daf92a1c74f8a813e6dbb5b55e8f5e9a1872104625f054058cd5"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalYAML","path":"log/level.go","bodyHashes":["26ca440174ed343cb5b79f288117ae20497a4e37ab9c2ce676b5bf614a56d242"],"buildConstraints":[""]}
+        ]},
+        {"constraint":{"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true,"caseInsensitive":true},"evidence":[
+          {"function":"log#LogLevel.String","path":"log/level.go","bodyHashes":["b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalJSON","path":"log/level.go","bodyHashes":["716731e04cf988debac91267ab284ad181804f829dcd5f8f6593516e7427c485","249dc65bf691ccd940b60cc7f5939b6d842655969a030a4d52b923f372cfc246"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalYAML","path":"log/level.go","bodyHashes":["fdae817e437c90a8261d696ab9b041f6381b498c44be584cd3c6fb359eb2f0dc","c19009b3aaaa56f119b42159b03c02c39a29cc0914ab2f05523ddd03586ced3f"],"buildConstraints":[""]}
+        ]},
+        {"constraint":{"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true,"caseInsensitive":true},"evidence":[
+          {"function":"log#LogLevel.String","path":"log/level.go","bodyHashes":["b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalText","path":"log/level.go","bodyHashes":["e8e610dbf03aadc81d7ef7eb0fe35f40ca8f606dda39dcff4f6eedbb2ca26756","2991f88cc9d369e859b2dbd2dbaa8b1546758b66ef8fd3cc0757c372e8940e65"],"buildConstraints":[""]}
+        ]}
+      ]
+    },
+    {
       "id": "xray.mux.udp443-policy",
       "program": "xray",
       "path": [

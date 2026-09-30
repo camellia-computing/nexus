@@ -286,6 +286,23 @@ class SourceReviewTests(unittest.TestCase):
         inventory["declarations"][0]["fields"] = []
         self.assertEqual(reviewed_rules("fixture", inventory, [rule]), [])
 
+    def test_semantic_parser_variants_require_matching_reviewed_behavior(self):
+        shape = {key: value for key, value in self.declaration()["fields"][0].items() if key not in {"name", "source"}}
+        parser = {"id":"option#Parse", "bodyHash":"reviewed", "buildConstraint":"", "source":{"path":"option.go", "symbol":"Parse"}}
+        variant = {"constraint":{"kind":"enum", "values":["a"], "allowNull":False}, "evidence":[{"function":parser["id"], "path":"option.go", "bodyHashes":["reviewed"], "buildConstraints":[""]}]}
+        rule = {"id":"options", "program":"fixture", "declaration":"option#Options", "field":"Timeout", "fieldShapes":[shape], "evidenceVariants":[variant]}
+        inventory = {"declarations":[self.declaration()], "functions":[parser]}
+        resolved = reviewed_rules("fixture", inventory, [rule])[0]
+        self.assertEqual(resolved["constraint"], variant["constraint"])
+        self.assertNotIn("evidenceVariants", resolved)
+        parser["bodyHash"] = "unreviewed"
+        with self.assertRaises(ValueError): reviewed_rules("fixture", inventory, [rule])
+        parser["bodyHash"] = "reviewed"
+        ambiguous = deepcopy(variant)
+        ambiguous["constraint"]["values"] = ["b"]
+        rule["evidenceVariants"].append(ambiguous)
+        with self.assertRaises(ValueError): reviewed_rules("fixture", inventory, [rule])
+
     def test_type_reference_coverage_keeps_unresolved_dependencies_explicit(self):
         declarations = [{"id": "option#Options", "shape": {"kind": "structure"}, "fields": [
             {"shape": {"kind": "mapping", "key": {"kind": "builtin", "name": "string"},

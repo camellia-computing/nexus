@@ -4193,14 +4193,6 @@ pub async fn load_configuration_schema(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GuidedIntentCommand {
-    pub setting_id: String,
-    pub value: Option<Value>,
-    pub expected_generation: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ConfigurationSourcesCommand {
     pub sources: Vec<ConfigSourceSpec>,
     #[serde(default)]
@@ -4235,10 +4227,10 @@ pub async fn get_configuration_workspace(
 }
 
 #[tauri::command]
-pub async fn set_guided_intent(
+pub async fn update_configuration_intent(
     state: State<'_, AppState>,
     program_id: String,
-    request: GuidedIntentCommand,
+    request: camellia_nexus_core::ConfigurationIntentRequest,
 ) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
     let program_id = id(program_id)?;
     let lease = state
@@ -4249,14 +4241,7 @@ pub async fn set_guided_intent(
         authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
     state
         .configuration_state
-        .set_guided_with_lease(
-            &state.manager,
-            &program_id,
-            request.setting_id,
-            request.value,
-            request.expected_generation,
-            &lease,
-        )
+        .update_intent_with_lease(&state.manager, &program_id, request, &lease)
         .await
 }
 

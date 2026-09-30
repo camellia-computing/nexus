@@ -325,7 +325,45 @@ impl ConfigurationCoordinator {
         view_for_spec(&spec, &state)
     }
 
-    pub(crate) async fn set_guided_with_lease(
+    pub(crate) async fn update_intent_with_lease(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        request: camellia_nexus_core::ConfigurationIntentRequest,
+        lease: &ConfigurationLease,
+    ) -> Result<ConfigurationWorkspaceSnapshot> {
+        let (spec, mut state) = self.load_current(manager, id).await?;
+        let context = request.context()?;
+        if state.operation_receipt(&context)?.is_some() {
+            return self.operation_workspace(manager, id, &context, lease).await;
+        }
+        let metadata = spec
+            .executable
+            .metadata()
+            .ok_or_else(|| CamelliaNexusError::invalid_spec("Program identity is required"))?;
+        let probe = metadata.probe.as_ref().ok_or_else(|| {
+            CamelliaNexusError::invalid_spec("Program build observation is required")
+        })?;
+        let profile = camellia_nexus_core::CoreCapabilityProfile::resolve(
+            spec.program_type.kind(),
+            probe,
+            &metadata.fingerprint,
+        )?;
+        let revision = state.state_revision;
+        state.begin_operation(context.clone())?;
+        state.update_intent(&profile, &request.change, now_unix_ms())?;
+        state.finish_operation(
+            &context.operation_id,
+            ConfigurationOperationStatus::Updated,
+            state.generation,
+            None,
+        );
+        self.persist_candidate(manager, id, state, revision).await?;
+        self.operation_workspace(manager, id, &context, lease).await
+    }
+
+    #[cfg(test)]
+    async fn set_guided_with_lease(
         &self,
         manager: &ProgramManager,
         id: &ProgramId,
@@ -334,28 +372,32 @@ impl ConfigurationCoordinator {
         expected_generation: u64,
         lease: &ConfigurationLease,
     ) -> Result<ConfigurationWorkspaceSnapshot> {
-        let (spec, mut state) = self.load_current(manager, id).await?;
-        ensure_generation(&state, expected_generation)?;
-        let previous_state_revision = state.state_revision;
-        if state.guided_intent.values.get(&setting_id) == value.as_ref() {
-            state.claim_guided_setting(&setting_id)?;
-        }
-        if let Some(value) = value {
-            camellia_nexus_core::validate_guided_value(
-                spec.program_type.kind(),
-                &setting_id,
-                &value,
-            )?;
-            state.guided_intent.set(setting_id.clone(), value);
-        } else {
-            state.guided_intent.reset(&setting_id);
-        }
-        state.rebuild_desired(now_unix_ms())?;
-        self.persist_candidate(manager, id, state, previous_state_revision)
-            .await?;
-        self.load_editor_snapshot(manager, id, lease).await
+        let snapshot = self.load_editor_snapshot(manager, id, lease).await?;
+        ensure_generation(
+            &self.load_current(manager, id).await?.1,
+            expected_generation,
+        )?;
+        let request = camellia_nexus_core::ConfigurationIntentRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            expected_state_revision: snapshot.state.state_revision,
+            editor_session_id: snapshot
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.session_id.clone()),
+            expected_draft_revision: snapshot
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.draft_revision),
+            change: match value {
+                Some(value) => {
+                    camellia_nexus_core::ConfigurationIntentAction::Set { setting_id, value }
+                }
+                None => camellia_nexus_core::ConfigurationIntentAction::Follow { setting_id },
+            },
+        };
+        self.update_intent_with_lease(manager, id, request, lease)
+            .await
     }
-
     pub(crate) fn preview_import(
         &self,
         target: &CoreTargetIdentity,
@@ -932,11 +974,21 @@ impl ConfigurationCoordinator {
         request: &ConfigurationMutationContext,
         lease: &ConfigurationLease,
     ) -> Result<ConfigurationWorkspaceSnapshot> {
-        let mut snapshot = self.load_workspace_with_lease(manager, id, lease).await?;
-        let (_, state) = self.load_current(manager, id).await?;
-        snapshot.operation_result = state
+        let (spec, state) = self.load_current(manager, id).await?;
+        let result = state
             .operation_receipt(request)?
             .map(|receipt| receipt.result.clone());
+        let mut snapshot = if request.kind == ConfigurationOperationKind::Intent {
+            ConfigurationWorkspaceSnapshot {
+                state: view_for_spec(&spec, &state)?,
+                editor_session: Some(final_editor_session_for_state(&state)),
+                operation_result: None,
+            }
+        } else {
+            self.load_workspace_from_state(manager, id, state, lease)
+                .await?
+        };
+        snapshot.operation_result = result;
         Ok(snapshot)
     }
 
@@ -1809,6 +1861,23 @@ fn final_editor_session_for_state(state: &ConfigurationState) -> FinalEditorSess
 
 fn view_for_spec(spec: &ProgramSpec, state: &ConfigurationState) -> Result<ConfigurationStateView> {
     let mut view = state.view();
+    if let Some(metadata) = spec.executable.metadata()
+        && let Some(probe) = metadata.probe.as_ref()
+        && let Ok(profile) = camellia_nexus_core::CoreCapabilityProfile::resolve(
+            spec.program_type.kind(),
+            probe,
+            &metadata.fingerprint,
+        )
+    {
+        camellia_nexus_core::project_intent_capabilities(&profile, &mut view)?;
+        camellia_nexus_core::project_intent_objects(&profile, state, &mut view)?;
+    } else {
+        for descriptor in &mut view.guided_descriptors {
+            descriptor.available = false;
+            descriptor.unavailable_reason =
+                Some("Check the program in Compatibility before applying.".into());
+        }
+    }
     let report = match spec
         .executable
         .metadata()
@@ -2067,6 +2136,101 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn intent_receipts_and_storage_failure_preserve_the_authoritative_workspace() {
+        use camellia_nexus_core::{ConfigurationIntentAction, ConfigurationIntentRequest};
+        let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+        let snapshot = coordinator
+            .load_editor_snapshot(&manager, &id, &lease)
+            .await
+            .unwrap();
+        let state_before = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let spec_before = manager.get(&id).await.unwrap().0;
+        let active_before = manager.load_config(&id).await.unwrap();
+        let request = ConfigurationIntentRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            expected_state_revision: snapshot.state.state_revision,
+            editor_session_id: snapshot
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.session_id.clone()),
+            expected_draft_revision: snapshot
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.draft_revision),
+            change: ConfigurationIntentAction::Set {
+                setting_id: "logging.level".into(),
+                value: Value::from("debug"),
+            },
+        };
+        store.fail_next_configuration_write();
+        assert_eq!(
+            coordinator
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Storage
+        );
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            state_before
+        );
+        assert_eq!(manager.get(&id).await.unwrap().0, spec_before);
+        assert_eq!(
+            manager.load_config(&id).await.unwrap().base_hash,
+            active_before.base_hash
+        );
+        let updated = coordinator
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&updated.state.desired.content).unwrap()["log"]["loglevel"],
+            "debug"
+        );
+        assert_eq!(
+            updated.state.applied_revision,
+            snapshot.state.applied_revision
+        );
+        assert_eq!(
+            updated.state.last_known_good_revision,
+            snapshot.state.last_known_good_revision
+        );
+        let persisted = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let repeated = coordinator
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        assert_eq!(repeated.operation_result, updated.operation_result);
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            persisted
+        );
+        let mismatched = ConfigurationIntentRequest {
+            change: ConfigurationIntentAction::Set {
+                setting_id: "logging.level".into(),
+                value: Value::from("info"),
+            },
+            ..request
+        };
+        assert_eq!(
+            coordinator
+                .update_intent_with_lease(&manager, &id, mismatched, &lease)
+                .await
+                .unwrap_err()
+                .message_key
+                .as_deref(),
+            Some("CONFIGURATION_OPERATION_MISMATCH")
+        );
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            persisted
+        );
+    }
+
+    #[cfg(unix)]
     impl ConfigurationCoordinator {
         async fn save_configuration_candidate(
             &self,
@@ -2117,6 +2281,7 @@ mod tests {
                 .editor_session
                 .as_ref()
                 .map(|draft| draft.draft_revision),
+            payload_hash: None,
         }
     }
 
@@ -3473,7 +3638,6 @@ esac
             )
             .await
             .unwrap();
-        let revision = intent.state.state_revision;
         let repeated = coordinator
             .set_guided(
                 &manager,
@@ -3484,7 +3648,15 @@ esac
             )
             .await
             .unwrap();
-        assert_eq!(repeated.state.state_revision, revision);
+        assert_eq!(repeated.state.generation, intent.state.generation);
+        assert_eq!(
+            repeated.state.desired.revision,
+            intent.state.desired.revision
+        );
+        assert_eq!(
+            repeated.operation_result.as_ref().unwrap().status,
+            ConfigurationOperationStatus::Updated
+        );
         let refreshed = change_fixture_source(
             &coordinator,
             &manager,

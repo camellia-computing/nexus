@@ -43,6 +43,10 @@ export function configurationChoiceWasRejected(error: Pick<ErrorInfo, 'code' | '
     .includes(error.code ?? '') || (error.code?.startsWith('LICENSE_') ?? false);
 }
 
+export function intentErrorNeedsFinalEditor(error: Pick<ErrorInfo, 'messageKey'> | null | undefined): boolean {
+  return error?.messageKey === 'INTENT_RULE_SHADOWED' || error?.messageKey === 'INTENT_OBJECT_AMBIGUOUS';
+}
+
 export function publicErrorInfo(error: ErrorInfo | null | undefined): ErrorInfo | null {
   return error ? { ...error, details: '' } : null;
 }
@@ -372,7 +376,7 @@ const configurationContextLabels: Record<ConfigurationErrorContext, { title: str
   'configuration-load': { title: 'Configuration workspace could not be loaded' },
   'sources-save': { title: 'Configuration sources could not be saved' },
   'sources-refresh': { title: 'Configuration sources could not be updated' },
-  'guided-change': { title: 'Guided setting could not be applied' },
+  'guided-change': { title: 'Could not update this setting' },
   'final-editor-draft': { title: 'Final configuration draft could not be saved' },
   'configuration-save': { title: 'Configuration candidate could not be saved' },
   'configuration-apply': { title: 'Configuration could not be applied' },
@@ -478,6 +482,28 @@ export function configurationErrorInfo(
       details: base.details || base.message,
       suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
     };
+  }
+  if (base.messageKey?.startsWith('INTENT_')) {
+    const messages: Record<string, string> = {
+      INTENT_PORT_INVALID: 'Choose a port from 1 to 65535.',
+      INTENT_AUTH_REQUIRED: 'Set both a username and password for network access.',
+      INTENT_ADDRESS_INVALID: 'Enter a valid address.',
+      INTENT_LOCAL_ADDRESS_REQUIRED: 'Use a local-only address or select network access.',
+      INTENT_DNS_BOOTSTRAP_REQUIRED: 'Choose a DNS server to resolve this server address.',
+      INTENT_TARGET_MISSING: 'Choose an available connection or DNS server.',
+      INTENT_TARGET_IN_USE: 'This entry is still used by another setting. Choose a different target first.',
+      INTENT_OBJECT_STALE: 'This entry changed. Open it again to review the latest values.',
+      INTENT_OBJECT_MISSING: 'This entry changed. Open it again to review the latest values.',
+      INTENT_SETTING_UNAVAILABLE: 'This setting is not available in this program.',
+      INTENT_OBJECT_ALREADY_EXISTS: 'This proxy type already exists. Edit it instead.',
+      INTENT_SHARED_ACCESS_CONFLICT: 'These proxies share access settings. Match the existing access or change an existing proxy first.',
+      INTENT_RULE_SHADOWED: 'A rule already handles all traffic. Add this rule before it in Final configuration.',
+      INTENT_OBJECT_AMBIGUOUS: 'These entries are identical. Edit them in Final configuration first.',
+      INTENT_DNS_CYCLE: 'These DNS servers refer to each other. Choose a different resolving server.',
+      INTENT_DURATION_INVALID: 'Enter a duration such as 5s or 1m.',
+      INTENT_PROTOCOL_CHANGE_REQUIRES_NEW_OBJECT: 'To use another type, add a new entry.',
+    };
+    return { ...base, title: contextTitle, message: messages[base.messageKey] ?? 'Review these values and try again.', details: base.details || base.message, suggestion: '' };
   }
   if (base.messageKey === 'CONFIGURATION_DRAFT_UNCOMMITTED') {
     return {

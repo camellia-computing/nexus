@@ -50,6 +50,8 @@ Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listene
 
 ### 架构
 
+意图页根据当前程序的精确稳定补丁、平台与构建能力提供常用设置。日志、本地代理、DNS、基础流量规则与适用的虚拟网卡设置使用等宽纵向分组、统一对齐的控件与主题色图标；分组与高级选项可按需折叠，展开或切换语言不更改配置。新建代理仅允许本机访问，选择局域网访问时必须设置认证。添加或修改只管理选中的字段，保留其他内容；取消不写配置并恢复焦点。DNS 与轻量规则引用已有目标，不创建远端节点。缺少目标时显示下一步；已有兜底规则遮蔽新规则或条目无法安全区分时，直接提供最终配置入口。复杂规则、无稳定身份的条目和无法安全表达的配置继续在最终配置中编辑。当前条目完成或取消后，使用标题区唯一的“应用更改”，不会启动已停止的程序。
+
 冲突在最终配置编辑器内逐项对比“最新设置”和“我的修改”，并可直接选择或手工合并。删除的字段定位到最近存在的父级，错误选择可用编辑器撤销／重做恢复；重试沿用原请求，避免重复修改。
 
 项目由领域核心、授权核心、桌面集成和 Svelte 管理界面组成。Program Controller 负责单个程序的状态机；每种具体程序类型拥有独立模块，其 Adapter 只生成执行计划；平台层负责进程、文件系统和系统集成。
@@ -152,6 +154,8 @@ Windows 数据保存在 `%LOCALAPPDATA%\camellia-nexus`。Linux 与 macOS 使用
 Camellia Nexus 是需要 Camellia Computing 明确授权的专有软件。源代码可见性、仓库访问权或收到副本均不构成使用、复制、修改、分发、托管或再许可授权。完整条款见 [LICENSE](LICENSE)；第三方组件继续适用各自许可证，详见 [NOTICE](NOTICE)。
 
 ## English
+
+Intent offers common settings for the exact maintained patch, platform, and observed build. Full-width sections with aligned controls and theme-colored icons cover logging, local proxies, DNS, basic traffic rules, and applicable virtual adapters. Sections and advanced options can fold without changing configuration; changing language also writes nothing. A new proxy is local-only; network access requires authentication. Changes touch selected fields and retain unrelated content; Cancel writes nothing and restores focus. DNS and traffic rules use existing targets rather than creating remote nodes. Missing targets show a next step. A preceding catch-all rule or indistinguishable entries offer a direct route to Final configuration. Complex rules, entries without stable identities, and configurations that cannot be expressed safely remain editable there. Finish or cancel the open entry before using the single Apply changes action in the heading; stopped programs stay stopped.
 
 Camellia Nexus is a Windows-first desktop lifecycle manager for local background binaries, with Linux and macOS support. It manages executable paths, arguments, working directories, environment variables, runtime state, logs, configuration and licensing state for generic commands, sing-box, Xray, Mihomo and future specialized program types.
 

@@ -6,6 +6,15 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
 
 ## Product and authority model
 
+- Resolve Intent controls from the current capability profile. Scalar and native object edits share
+  one operation-bound transaction and return a complete workspace snapshot. Never expose arbitrary
+  writable paths or replay an unchanged form. Local listeners default to loopback; creating or
+  switching to network access requires authentication. Keep credentials out of object projections.
+- Preserve unrelated object fields and Source list entries. Native identities and value-bound list
+  edits have explicit references; duplicate references cannot select an arbitrary entry. Complex
+  or unsafe shapes remain editable in Final configuration. No page-open, expansion, or language
+  change may create configuration content.
+
 - Camellia Nexus is a Windows-first Tauri 2 desktop lifecycle manager with supported Linux and macOS
   builds. It manages local generic commands, sing-box, Xray, and Mihomo profiles.
 - A profile owns executable selection, arguments, working directory, environment, lifecycle state,

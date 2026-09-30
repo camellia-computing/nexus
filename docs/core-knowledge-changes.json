@@ -1,5 +1,5 @@
 {
-  "knowledgeHash": "f32b7c456847514fb36cde484ebed9a646276a717b667980dd8d06350d7136cb",
+  "knowledgeHash": "ecf9c479623d7330a8eb6857ce57fe72c235c5976b242ebd28b63b049c16fe11",
   "programs": [
     {
       "program": "singBox",
@@ -23933,6 +23933,90 @@
               }
             },
             {
+              "id": "log#ContextWithID",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/id.go",
+                "symbol": "ContextWithID",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "53940011d3b6fec6f238de31daef6c581e1c535e6a62eba9c9190a491b200746",
+              "afterHash": "53940011d3b6fec6f238de31daef6c581e1c535e6a62eba9c9190a491b200746",
+              "beforeImports": {
+                "context": "context",
+                "rand": "math/rand",
+                "random": "github.com/sagernet/sing/common/random",
+                "time": "time"
+              },
+              "afterImports": {
+                "context": "context",
+                "rand": "math/rand",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#ContextWithNewID",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/id.go",
+                "symbol": "ContextWithNewID",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "adbbdd7e760bd6395dd8e19c9f1313cc1a826b444e36c0503c0c36fd5c7fdcce",
+              "afterHash": "adbbdd7e760bd6395dd8e19c9f1313cc1a826b444e36c0503c0c36fd5c7fdcce",
+              "beforeImports": {
+                "context": "context",
+                "rand": "math/rand",
+                "random": "github.com/sagernet/sing/common/random",
+                "time": "time"
+              },
+              "afterImports": {
+                "context": "context",
+                "rand": "math/rand",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#IDFromContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/id.go",
+                "symbol": "IDFromContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "987ed5e49a51df8d3f1300c2b85b576f9ac2768d70786711e3ea1ab7ff50dc72",
+              "afterHash": "987ed5e49a51df8d3f1300c2b85b576f9ac2768d70786711e3ea1ab7ff50dc72",
+              "beforeImports": {
+                "context": "context",
+                "rand": "math/rand",
+                "random": "github.com/sagernet/sing/common/random",
+                "time": "time"
+              },
+              "afterImports": {
+                "context": "context",
+                "rand": "math/rand",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#init@1",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/id.go",
+                "symbol": "init@1",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "1cbeb9f96158026323b33fa4d260164250a25ea3ba7178337b320ed32cfc88bb",
+              "afterHash": null,
+              "beforeImports": {
+                "context": "context",
+                "rand": "math/rand",
+                "random": "github.com/sagernet/sing/common/random",
+                "time": "time"
+              },
+              "afterImports": null
+            },
+            {
               "id": "option#NetworkList.UnmarshalJSON",
               "buildConstraint": "",
               "source": {
@@ -31823,6 +31907,37 @@
                 "netip": "net/netip",
                 "netipx": "go4.org/netipx",
                 "nftables": "github.com/sagernet/nftables"
+              }
+            },
+            {
+              "id": "log#observableLogger.Log",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Log",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "67b34dc5a4f65e1ebfd3bf391530f2a66f16c3b1e4aa514190b51b4f21299e43",
+              "afterHash": "b9ada3500211f8cfda245ef7883e0866e5faa4db258afe4fad3eb4e88c9e0544",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
               }
             },
             {
@@ -45133,6 +45248,15 @@
           "structure": {
             "added": [
               {
+                "id": "log#pendingEntry",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "pendingEntry",
+                  "modulePath": "github.com/sagernet/sing-box"
+                }
+              },
+              {
                 "id": "protocol/group#urlTestResult",
                 "buildConstraint": "",
                 "source": {
@@ -45182,6 +45306,22 @@
                   "modulePath": "github.com/sagernet/sing-tun"
                 },
                 "addedFields": [],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
+                "id": "log#defaultFactory",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [
+                  "pendingEntries",
+                  "startAccess",
+                  "started"
+                ],
                 "removedFields": [],
                 "changedFields": []
               },
@@ -46828,6 +46968,1196 @@
                 "tcpip": "github.com/sagernet/gvisor/pkg/tcpip",
                 "time": "time",
                 "waiter": "github.com/sagernet/gvisor/pkg/waiter"
+              }
+            },
+            {
+              "id": "log#Debug",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "Debug",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "783e44b84ee61d6522601d118ab6f5c0af3bc68b00b2e3edbce40aa28fc52da6",
+              "afterHash": "783e44b84ee61d6522601d118ab6f5c0af3bc68b00b2e3edbce40aa28fc52da6",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#DebugContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "DebugContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "4ed348d69a2d291a1c5ae84199bdff31e77c5f4e97ab4b7c6da5bca6c6e76b91",
+              "afterHash": "4ed348d69a2d291a1c5ae84199bdff31e77c5f4e97ab4b7c6da5bca6c6e76b91",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Error",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "Error",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "d6ba9e719412e39247f3804cbc0706027b180adb6448a364d875403c0a5c551a",
+              "afterHash": "d6ba9e719412e39247f3804cbc0706027b180adb6448a364d875403c0a5c551a",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#ErrorContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "ErrorContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "ca0781d758480d2d40575f9103185b43a6683fcd64b97e7cd2d12a0a1fb7a4a6",
+              "afterHash": "ca0781d758480d2d40575f9103185b43a6683fcd64b97e7cd2d12a0a1fb7a4a6",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Fatal",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "Fatal",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "e3f3fe143169f510d480a8adf2a03127d97b503ca9752d8b6d8d5f726fbcc0f0",
+              "afterHash": "e3f3fe143169f510d480a8adf2a03127d97b503ca9752d8b6d8d5f726fbcc0f0",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#FatalContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "FatalContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "2356ba77558fa724e8261108cce106b40b6e4f1286ee0d6f26c96897071d3e61",
+              "afterHash": "2356ba77558fa724e8261108cce106b40b6e4f1286ee0d6f26c96897071d3e61",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Info",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "Info",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "c832339a1c134fdfc2de308491fd71b8727705701be90cbc370c8ac373f69a1e",
+              "afterHash": "c832339a1c134fdfc2de308491fd71b8727705701be90cbc370c8ac373f69a1e",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#InfoContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "InfoContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "4c764d5ca04bea32c7d92a40433874310017fa86309f32568bef57fe51c8c1ed",
+              "afterHash": "4c764d5ca04bea32c7d92a40433874310017fa86309f32568bef57fe51c8c1ed",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#NewDefaultFactory",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "NewDefaultFactory",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "323ffca518d592ccfdf27b186bef4a446b8222dae3fda0de0512d6f7b800804a",
+              "afterHash": "323ffca518d592ccfdf27b186bef4a446b8222dae3fda0de0512d6f7b800804a",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Panic",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "Panic",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "bb1827b0c2235f82bfca4e42d83aae95be69d1cedfff9986ab6daa977c9df8b4",
+              "afterHash": "bb1827b0c2235f82bfca4e42d83aae95be69d1cedfff9986ab6daa977c9df8b4",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#PanicContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "PanicContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "06b329e9637192d88e82e27da82b90c8a338e5b4e237daa82858e14b78364698",
+              "afterHash": "06b329e9637192d88e82e27da82b90c8a338e5b4e237daa82858e14b78364698",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#SetStdLogger",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "SetStdLogger",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "dd43678b098e4f599782e8427c06e96844c104abe9513ebfbf33c5854438889c",
+              "afterHash": "dd43678b098e4f599782e8427c06e96844c104abe9513ebfbf33c5854438889c",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#StdLogger",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "StdLogger",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "0019719ca68e5b3ac857778a19cc680a030f9e4e2dd63e3d19a5070f6beada2f",
+              "afterHash": "0019719ca68e5b3ac857778a19cc680a030f9e4e2dd63e3d19a5070f6beada2f",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Trace",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "Trace",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "ff69a1d1380a97ef963de9236b8e825d99eeb202392df9915c6c5628b6614e84",
+              "afterHash": "ff69a1d1380a97ef963de9236b8e825d99eeb202392df9915c6c5628b6614e84",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#TraceContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "TraceContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "f9369fd8926ab59eeeafbf69d49912ae1a4ca9561538e4722a20ff134d009a3f",
+              "afterHash": "f9369fd8926ab59eeeafbf69d49912ae1a4ca9561538e4722a20ff134d009a3f",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Warn",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "Warn",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "a0262ec2c8f454f60786caa0f2b5434af8531e449e4e0c40a46cf192711b6f8e",
+              "afterHash": "a0262ec2c8f454f60786caa0f2b5434af8531e449e4e0c40a46cf192711b6f8e",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#WarnContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "WarnContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "a56b9b1d5a136695f5eebb595d69f1e11a8a60a91c7d511cff0f015d23031297",
+              "afterHash": "a56b9b1d5a136695f5eebb595d69f1e11a8a60a91c7d511cff0f015d23031297",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.Close",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.Close",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "48b26a87f82add766d672543ac8439386677ed0102881fbd4fc27675bef50bae",
+              "afterHash": "d1cf9455885cbe6fe5feaadefe4f41b6185afcb8aff98535739eb3732c2588d3",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.Level",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.Level",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "554c7604369ee031857b8d8e342b1d61ca4d9830c88db33d8165e59094ec6f82",
+              "afterHash": "554c7604369ee031857b8d8e342b1d61ca4d9830c88db33d8165e59094ec6f82",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.Logger",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.Logger",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "4ce9779eb643903e401deb571b37fc74ebe62fb6d593ca972482ae9686a81af8",
+              "afterHash": "4ce9779eb643903e401deb571b37fc74ebe62fb6d593ca972482ae9686a81af8",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.NewLogger",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.NewLogger",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "a33127c999c2bf9e7ab46ff604b9ddb67cd547c84b219715ca8f3171b37869e1",
+              "afterHash": "a33127c999c2bf9e7ab46ff604b9ddb67cd547c84b219715ca8f3171b37869e1",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.SetLevel",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.SetLevel",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "0706adaf3eef49d7068ac803ccc70e3205201fe567f1f28ab4a23ce18934c498",
+              "afterHash": "0706adaf3eef49d7068ac803ccc70e3205201fe567f1f28ab4a23ce18934c498",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.Start",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.Start",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "d90009f407d6be0b3bf7f8639f764c8146f22c8d988108cb7596c8d0f7bbdc51",
+              "afterHash": "eb31c35fe4da72008f7d00f163e1d722c8c38e30593f2422b5cdee619b99ef9b",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.Subscribe",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.Subscribe",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "4155d7c25431b1da40c703b0be3963774e110391dee6b0d765010195a96d6427",
+              "afterHash": "4155d7c25431b1da40c703b0be3963774e110391dee6b0d765010195a96d6427",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.UnSubscribe",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.UnSubscribe",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "44b6a893b2ae64100e7f4dffd5b17e40ea5fd612ea8479248184611ce5b36b70",
+              "afterHash": "44b6a893b2ae64100e7f4dffd5b17e40ea5fd612ea8479248184611ce5b36b70",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.output",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.output",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "9e39d3fb44103321a83e600ffaed6c8c4f1841f00c5f3e6b8c190fc4a32ed93b",
+              "beforeImports": null,
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#init@1",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/export.go",
+                "symbol": "init@1",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "6079a5b162041984e86fdd6d985e8c40d81ffffd659c4d1ce949d7efef7d5f75",
+              "afterHash": "be81bd9a6aa2041e219622ec2e6af0ed69f8cf594c10125d3de8f58ec41495cc",
+              "beforeImports": {
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "os": "os",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Debug",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Debug",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "2859d9f4e162e3c93d24698bf0f3dff96675ebf022192fca440bdfc24a905377",
+              "afterHash": "2859d9f4e162e3c93d24698bf0f3dff96675ebf022192fca440bdfc24a905377",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.DebugContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.DebugContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "aa426ec4743f438c98d851840120033a63f1954a78b366a75d6f5667bbd24900",
+              "afterHash": "aa426ec4743f438c98d851840120033a63f1954a78b366a75d6f5667bbd24900",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Error",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Error",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "456626e210a97e088f543e509a2bc54ca2c3d0b6c87801acd9b365645c477e6a",
+              "afterHash": "456626e210a97e088f543e509a2bc54ca2c3d0b6c87801acd9b365645c477e6a",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.ErrorContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.ErrorContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "c97d9cd2732725424f3260783d6979d0802b8e43e61eddbce88a7b1a000d50f5",
+              "afterHash": "c97d9cd2732725424f3260783d6979d0802b8e43e61eddbce88a7b1a000d50f5",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Fatal",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Fatal",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "1aed77bb21ebd39bad0220fad908afa4549c18261e82afcb6df6eaa8249ab5ac",
+              "afterHash": "1aed77bb21ebd39bad0220fad908afa4549c18261e82afcb6df6eaa8249ab5ac",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.FatalContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.FatalContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "f8611168ffded1c7c5e9c3e8a1bbd15daacede81bdf48531085edd25d67575b8",
+              "afterHash": "f8611168ffded1c7c5e9c3e8a1bbd15daacede81bdf48531085edd25d67575b8",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Info",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Info",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "dd6f6a95f25c6e69f97e74ee47a37a24c0d9d59ff7c95038beca8ff0e09b52e0",
+              "afterHash": "dd6f6a95f25c6e69f97e74ee47a37a24c0d9d59ff7c95038beca8ff0e09b52e0",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.InfoContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.InfoContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "b222e8e0970bd604ee4dfcbc8eb7f71d2df3fe6849a9a1223639fa845e2c0151",
+              "afterHash": "b222e8e0970bd604ee4dfcbc8eb7f71d2df3fe6849a9a1223639fa845e2c0151",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Log",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Log",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "b9ada3500211f8cfda245ef7883e0866e5faa4db258afe4fad3eb4e88c9e0544",
+              "afterHash": "a2deb54a156be3ff13e27cc5c013e83dc85f0ad24381b83911b3ff9d584f442d",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Panic",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Panic",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "7dd51549d0038de7785d0958b7dfdc0004eda7e65bc80788bffe1556304589c0",
+              "afterHash": "7dd51549d0038de7785d0958b7dfdc0004eda7e65bc80788bffe1556304589c0",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.PanicContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.PanicContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "36a0f68b09f5a104e10330611ddcfa7c5d287dc5cedc4ba90bbc7d27fee63736",
+              "afterHash": "36a0f68b09f5a104e10330611ddcfa7c5d287dc5cedc4ba90bbc7d27fee63736",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Trace",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Trace",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "0787226beea384a5dc04b08a7aceb40b6859758105e1c1e33ee41b5245e1e3b3",
+              "afterHash": "0787226beea384a5dc04b08a7aceb40b6859758105e1c1e33ee41b5245e1e3b3",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.TraceContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.TraceContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "83d6637fe2dc7e9ad1deb929859527178fe02c7d9f2c7de1df7f31ddbef8783a",
+              "afterHash": "83d6637fe2dc7e9ad1deb929859527178fe02c7d9f2c7de1df7f31ddbef8783a",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.Warn",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Warn",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "1a0b193459b5e0280bb2770e95db745530f5f00366aec7ed9f9b337ed28a88e0",
+              "afterHash": "1a0b193459b5e0280bb2770e95db745530f5f00366aec7ed9f9b337ed28a88e0",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#observableLogger.WarnContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.WarnContext",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "a37d05fec55c0f2616ec5c7532ee2d83a695ed2d5cb70e1b232e7768326aa344",
+              "afterHash": "a37d05fec55c0f2616ec5c7532ee2d83a695ed2d5cb70e1b232e7768326aa344",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
               }
             },
             {
@@ -49936,6 +51266,46 @@
                   "commentMode",
                   "commentStep"
                 ],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
+                "id": "log#ObservableFactory",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/factory.go",
+                  "symbol": "ObservableFactory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
+                "id": "log#defaultFactory",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [
+                  "platformWriters"
+                ],
+                "removedFields": [
+                  "platformWriter"
+                ],
+                "changedFields": []
+              },
+              {
+                "id": "log#nopFactory",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/nop.go",
+                  "symbol": "nopFactory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [],
                 "removedFields": [],
                 "changedFields": []
               },
@@ -70457,6 +71827,211 @@
               "afterImports": {
                 "service": "github.com/sagernet/sing-box/adapter/service",
                 "usbip": "github.com/sagernet/sing-box/service/usbip"
+              }
+            },
+            {
+              "id": "log#NewDefaultFactory",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "NewDefaultFactory",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "323ffca518d592ccfdf27b186bef4a446b8222dae3fda0de0512d6f7b800804a",
+              "afterHash": "3eadcfacfe895877d380d525415c1dcb7b8a6c3846a65d08b247e3b4191e53ce",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.AttachPlatformWriter",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.AttachPlatformWriter",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "372aa1cccdb4fc2750ada308cdcb9415e23caa32e03e530338d5814e7f6a1e8b",
+              "beforeImports": null,
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.Start",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.Start",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "eb31c35fe4da72008f7d00f163e1d722c8c38e30593f2422b5cdee619b99ef9b",
+              "afterHash": "b6c38dfe61de22340585161b2fc6979f1e7f1bd13a2b83362525dda50bb221b4",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.loadPlatformWriters",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.loadPlatformWriters",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "56db4e19026de4adf8c00723afd48fc952807cfa6158ba0dd8c2fd4a27d9b2fa",
+              "beforeImports": null,
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.output",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.output",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "9e39d3fb44103321a83e600ffaed6c8c4f1841f00c5f3e6b8c190fc4a32ed93b",
+              "afterHash": "553768df3a6faa7a05a708c388fc80b667e9be893bf035158dabcf5f5ddcddc6",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#nopFactory.AttachPlatformWriter",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/nop.go",
+                "symbol": "nopFactory.AttachPlatformWriter",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "8eb95bcbc154530931e15fc418c8b1fe991095671409552099ea1aa596999ede",
+              "beforeImports": null,
+              "afterImports": {
+                "context": "context",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os"
+              }
+            },
+            {
+              "id": "log#observableLogger.Log",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "observableLogger.Log",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "a2deb54a156be3ff13e27cc5c013e83dc85f0ad24381b83911b3ff9d584f442d",
+              "afterHash": "f1b46288b3ab210cbc738351dff9dc075bb8bc4fff86e17df78ba8c34ce308a9",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
               }
             },
             {
@@ -113514,6 +115089,56 @@
             "removed": [],
             "changed": [
               {
+                "id": "log#Factory",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/factory.go",
+                  "symbol": "Factory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
+                "id": "log#Formatter",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/format.go",
+                  "symbol": "Formatter",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
+                "id": "log#ObservableFactory",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/factory.go",
+                  "symbol": "ObservableFactory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
+                "id": "log#defaultFactory",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/observable.go",
+                  "symbol": "defaultFactory",
+                  "modulePath": "github.com/sagernet/sing-box"
+                },
+                "addedFields": [
+                  "needConsole"
+                ],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
                 "id": "option#ClashAPIOptions",
                 "buildConstraint": "",
                 "source": {
@@ -114147,6 +115772,355 @@
                 "log": "github.com/sagernet/sing-box/log",
                 "option": "github.com/sagernet/sing-box/option"
               }
+            },
+            {
+              "id": "log#FormatDuration",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "FormatDuration",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "267e5ca6a9531981dbed374a393f13e72816106f2e5aef418b8b2b1d9a118d2d",
+              "afterHash": "c8ae1689bd77f5c29b71533cbe72741f6958117287a71ffe42a9e9e136ebfedd",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              },
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Formatter.Format",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "Formatter.Format",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "f423f66fed2f6ed93a6e22b07e28c74deb10a8eb31a49b14ecd849fbf4a05387",
+              "afterHash": "6d478dc780214e8a6df0688faa5099db1cb867ced12cd73aa8ce1a5f676e79d3",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              },
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Formatter.FormatSimple",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "Formatter.FormatSimple",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "12fbd32edb90a1f31ca4b4280d5aaa4928c6669505dc87d09dd9d749c08c74d0",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Formatter.FormatWithSimple",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "Formatter.FormatWithSimple",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "04d2b40fd1dbb8f424e3ad9fad7b9273a8c9d8bfddf77ec75452eed5eb23c3cf",
+              "afterHash": null,
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              },
+              "afterImports": null
+            },
+            {
+              "id": "log#Formatter.writeIdPrefix",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "Formatter.writeIdPrefix",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "31b3be186a603093f01ad1013eab056e816f23d11ebdfb6e8249e7363a5198f1",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#Formatter.writePrefix",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "Formatter.writePrefix",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "4ca818a5a882a40801c96313134a7b5c9eabab5fbac1d76e3e17bdcc820eb133",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#NewDefaultFactory",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "NewDefaultFactory",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "3eadcfacfe895877d380d525415c1dcb7b8a6c3846a65d08b247e3b4191e53ce",
+              "afterHash": "fed0b39ec784e242c649e705ee8d1d06d42357749637f26dcd3d2f0bcc594f1f",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#colorForID",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "colorForID",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "6f78ece6648ae38b5d0bf5b82ed638b0889109bb2a9de76a0cdde47a764c0c1d",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.Start",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.Start",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "b6c38dfe61de22340585161b2fc6979f1e7f1bd13a2b83362525dda50bb221b4",
+              "afterHash": "ec8ec619097151408e2a41f5dd54bb108c28965d5940d9c7a744a478159ed084",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#defaultFactory.output",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/observable.go",
+                "symbol": "defaultFactory.output",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "553768df3a6faa7a05a708c388fc80b667e9be893bf035158dabcf5f5ddcddc6",
+              "afterHash": "9e9fba352eb0e3a06868b71dd2b297effcf02b70507ab9e3a5f9667c12c62a3a",
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              },
+              "afterImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "atomic": "sync/atomic",
+                "common": "github.com/sagernet/sing/common",
+                "context": "context",
+                "filemanager": "github.com/sagernet/sing/service/filemanager",
+                "io": "io",
+                "observable": "github.com/sagernet/sing/common/observable",
+                "os": "os",
+                "sync": "sync",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#init@1",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "init@1",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "8aa1429cd214fc5762a9c5553818ed9c13e971fb7fe4c767ede3337067171c82",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#writeDuration",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "writeDuration",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "0d1f12eee2e7ec4681b541a7cbd9d3ff453148ab69df75bf09997344951d8074",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#writeInt",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "writeInt",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "05873552a3fdb7256d6a33a65d2811a32b86efb4800e2cd49cf340590cd59faa",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#writeUint",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "writeUint",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": null,
+              "afterHash": "f112c0a2a78e055f04cb96281042789e0356cec8fa5b4d27ad31c91075bf4b65",
+              "beforeImports": null,
+              "afterImports": {
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              }
+            },
+            {
+              "id": "log#xd",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/format.go",
+                "symbol": "xd",
+                "modulePath": "github.com/sagernet/sing-box"
+              },
+              "beforeHash": "d76f88194c82e3e44f2bbb7c57ee925ba76cd29213ae6be0280debbe03bd29c1",
+              "afterHash": null,
+              "beforeImports": {
+                "F": "github.com/sagernet/sing/common/format",
+                "aurora": "github.com/logrusorgru/aurora",
+                "context": "context",
+                "strconv": "strconv",
+                "strings": "strings",
+                "time": "time"
+              },
+              "afterImports": null
             },
             {
               "id": "protocol/direct#Outbound.fetchMyAddresses",
@@ -162543,6 +164517,18 @@
                 "addedFields": [],
                 "removedFields": [],
                 "changedFields": []
+              },
+              {
+                "id": "log#LogLevel",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "addedFields": [],
+                "removedFields": [],
+                "changedFields": []
               }
             ],
             "relocated": []
@@ -175898,6 +177884,140 @@
               }
             },
             {
+              "id": "log#LogLevel.MarshalJSON",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.MarshalJSON",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "565aae1b6f6e2c4012125faf47b6f2cbf852cc7d433d0e5ae5ecf6bcd36cc048",
+              "afterHash": "565aae1b6f6e2c4012125faf47b6f2cbf852cc7d433d0e5ae5ecf6bcd36cc048",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.MarshalText",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.MarshalText",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": null,
+              "afterHash": "b5ec2f43e78b4996686fae8f1b72012c1cb8388d8c8987d6004886f9fe07e438",
+              "beforeImports": null,
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.MarshalYAML",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.MarshalYAML",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "44be75fce801b1e3c8c5ba3b05abdffef8d660193181cacb9a566e4052617255",
+              "afterHash": "44be75fce801b1e3c8c5ba3b05abdffef8d660193181cacb9a566e4052617255",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.String",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.String",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23",
+              "afterHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalJSON",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalJSON",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "8b66dea3a855daf92a1c74f8a813e6dbb5b55e8f5e9a1872104625f054058cd5",
+              "afterHash": "716731e04cf988debac91267ab284ad181804f829dcd5f8f6593516e7427c485",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalText",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalText",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": null,
+              "afterHash": "e8e610dbf03aadc81d7ef7eb0fe35f40ca8f606dda39dcff4f6eedbb2ca26756",
+              "beforeImports": null,
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalYAML",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalYAML",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "26ca440174ed343cb5b79f288117ae20497a4e37ab9c2ce676b5bf614a56d242",
+              "afterHash": "fdae817e437c90a8261d696ab9b041f6381b498c44be584cd3c6fb359eb2f0dc",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
               "id": "rules/common#GEOIP.GetIPMatcher",
               "buildConstraint": "",
               "source": {
@@ -188524,6 +190644,29 @@
                 "context": "context",
                 "fmt": "fmt",
                 "utils": "github.com/metacubex/mihomo/common/utils"
+              }
+            },
+            {
+              "id": "log#init@1",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/log.go",
+                "symbol": "init@1",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "0172db1f4c8d71cd0b6dff25a630cb816586e86ead09146d25e9703632651976",
+              "afterHash": "aa4a7d4fc258e327007f31d229625db1e3d6d70aa9f010ce7b48f389553980b5",
+              "beforeImports": {
+                "fmt": "fmt",
+                "log": "github.com/sirupsen/logrus",
+                "observable": "github.com/metacubex/mihomo/common/observable",
+                "os": "os"
+              },
+              "afterImports": {
+                "fmt": "fmt",
+                "log": "github.com/sirupsen/logrus",
+                "observable": "github.com/metacubex/mihomo/common/observable",
+                "os": "os"
               }
             },
             {
@@ -203779,6 +205922,15 @@
                   "symbol": "AddrType",
                   "modulePath": "github.com/metacubex/mihomo"
                 }
+              },
+              {
+                "id": "log#singInfoToDebugLogger",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/sing.go",
+                  "symbol": "singInfoToDebugLogger",
+                  "modulePath": "github.com/metacubex/mihomo"
+                }
               }
             ],
             "removed": [
@@ -217951,6 +220103,40 @@
                 "tls": "crypto/tls",
                 "tuic": "github.com/metacubex/mihomo/transport/tuic",
                 "v5": "github.com/gofrs/uuid/v5"
+              }
+            },
+            {
+              "id": "log#singInfoToDebugLogger.Info",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singInfoToDebugLogger.Info",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": null,
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": null,
+              "afterImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singInfoToDebugLogger.InfoContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singInfoToDebugLogger.InfoContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": null,
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": null,
+              "afterImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
               }
             }
           ]
@@ -235387,6 +237573,342 @@
               }
             },
             {
+              "id": "log#singInfoToDebugLogger.Info",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singInfoToDebugLogger.Info",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singInfoToDebugLogger.InfoContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singInfoToDebugLogger.InfoContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.Debug",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.Debug",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.DebugContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.DebugContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.Error",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.Error",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "779c343fc815c75e07799d8785c43faedeef56b2b3251704e5afe7497b1ffe8f",
+              "afterHash": "779c343fc815c75e07799d8785c43faedeef56b2b3251704e5afe7497b1ffe8f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.ErrorContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.ErrorContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "779c343fc815c75e07799d8785c43faedeef56b2b3251704e5afe7497b1ffe8f",
+              "afterHash": "779c343fc815c75e07799d8785c43faedeef56b2b3251704e5afe7497b1ffe8f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.Fatal",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.Fatal",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "afterHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.FatalContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.FatalContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "afterHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.Info",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.Info",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "c56674de80a111a036b33a3481d69defe3b1e4d674f307128e33174a5c79cc16",
+              "afterHash": "c56674de80a111a036b33a3481d69defe3b1e4d674f307128e33174a5c79cc16",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.InfoContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.InfoContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "c56674de80a111a036b33a3481d69defe3b1e4d674f307128e33174a5c79cc16",
+              "afterHash": "c56674de80a111a036b33a3481d69defe3b1e4d674f307128e33174a5c79cc16",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.Panic",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.Panic",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "afterHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.PanicContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.PanicContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "afterHash": "a6d9f8e26e1ae2dd97462f4b03b6c15e4e1bbb98bfa07103560d4ab32821f921",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.Trace",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.Trace",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.TraceContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.TraceContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "afterHash": "cdd58bf096922e91984ca8a28ded6afa4f94747035245ec4b15d923759cc538f",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.Warn",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.Warn",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "4c0e0242b68ef3737403479fe5beacd377bc561fcd623794b894e2b5ae9405c7",
+              "afterHash": "4c0e0242b68ef3737403479fe5beacd377bc561fcd623794b894e2b5ae9405c7",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
+              "id": "log#singLogger.WarnContext",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/sing.go",
+                "symbol": "singLogger.WarnContext",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "4c0e0242b68ef3737403479fe5beacd377bc561fcd623794b894e2b5ae9405c7",
+              "afterHash": "4c0e0242b68ef3737403479fe5beacd377bc561fcd623794b894e2b5ae9405c7",
+              "beforeImports": {
+                "L": "github.com/sagernet/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              },
+              "afterImports": {
+                "L": "github.com/metacubex/sing/common/logger",
+                "context": "context",
+                "fmt": "fmt"
+              }
+            },
+            {
               "id": "rules/provider#NewRuleSetProvider",
               "buildConstraint": "",
               "source": {
@@ -248140,6 +250662,69 @@
                 "tuic": "github.com/metacubex/mihomo/transport/tuic",
                 "v5": "github.com/gofrs/uuid/v5"
               }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalJSON",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalJSON",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "716731e04cf988debac91267ab284ad181804f829dcd5f8f6593516e7427c485",
+              "afterHash": "249dc65bf691ccd940b60cc7f5939b6d842655969a030a4d52b923f372cfc246",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalText",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalText",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "e8e610dbf03aadc81d7ef7eb0fe35f40ca8f606dda39dcff4f6eedbb2ca26756",
+              "afterHash": "2991f88cc9d369e859b2dbd2dbaa8b1546758b66ef8fd3cc0757c372e8940e65",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalYAML",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalYAML",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "fdae817e437c90a8261d696ab9b041f6381b498c44be584cd3c6fb359eb2f0dc",
+              "afterHash": "c19009b3aaaa56f119b42159b03c02c39a29cc0914ab2f05523ddd03586ced3f",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              }
             }
           ]
         },
@@ -258774,6 +261359,18 @@
                 "changedFields": []
               },
               {
+                "id": "log#LogLevel",
+                "buildConstraint": "",
+                "source": {
+                  "path": "log/level.go",
+                  "symbol": "LogLevel",
+                  "modulePath": "github.com/metacubex/mihomo"
+                },
+                "addedFields": [],
+                "removedFields": [],
+                "changedFields": []
+              },
+              {
                 "id": "rules/common#ASN",
                 "buildConstraint": "",
                 "source": {
@@ -260039,6 +262636,134 @@
                 "sync": "sync",
                 "tun": "github.com/metacubex/sing-tun"
               }
+            },
+            {
+              "id": "log#LogLevel.MarshalJSON",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.MarshalJSON",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "565aae1b6f6e2c4012125faf47b6f2cbf852cc7d433d0e5ae5ecf6bcd36cc048",
+              "afterHash": null,
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": null
+            },
+            {
+              "id": "log#LogLevel.MarshalText",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.MarshalText",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "b5ec2f43e78b4996686fae8f1b72012c1cb8388d8c8987d6004886f9fe07e438",
+              "afterHash": "b5ec2f43e78b4996686fae8f1b72012c1cb8388d8c8987d6004886f9fe07e438",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.MarshalYAML",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.MarshalYAML",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "44be75fce801b1e3c8c5ba3b05abdffef8d660193181cacb9a566e4052617255",
+              "afterHash": null,
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": null
+            },
+            {
+              "id": "log#LogLevel.String",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.String",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23",
+              "afterHash": "b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalJSON",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalJSON",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "249dc65bf691ccd940b60cc7f5939b6d842655969a030a4d52b923f372cfc246",
+              "afterHash": null,
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": null
+            },
+            {
+              "id": "log#LogLevel.UnmarshalText",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalText",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "2991f88cc9d369e859b2dbd2dbaa8b1546758b66ef8fd3cc0757c372e8940e65",
+              "afterHash": "2991f88cc9d369e859b2dbd2dbaa8b1546758b66ef8fd3cc0757c372e8940e65",
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": {
+                "errors": "errors",
+                "strings": "strings"
+              }
+            },
+            {
+              "id": "log#LogLevel.UnmarshalYAML",
+              "buildConstraint": "",
+              "source": {
+                "path": "log/level.go",
+                "symbol": "LogLevel.UnmarshalYAML",
+                "modulePath": "github.com/metacubex/mihomo"
+              },
+              "beforeHash": "c19009b3aaaa56f119b42159b03c02c39a29cc0914ab2f05523ddd03586ced3f",
+              "afterHash": null,
+              "beforeImports": {
+                "errors": "errors",
+                "json": "encoding/json",
+                "strings": "strings"
+              },
+              "afterImports": null
             },
             {
               "id": "rules/common#ASN.Match",

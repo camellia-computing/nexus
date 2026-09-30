@@ -1,5 +1,5 @@
 {
-  "knowledgeHash": "f32b7c456847514fb36cde484ebed9a646276a717b667980dd8d06350d7136cb",
+  "knowledgeHash": "ecf9c479623d7330a8eb6857ce57fe72c235c5976b242ebd28b63b049c16fe11",
   "programs": [
     {
       "program": "singBox",
@@ -7,8 +7,8 @@
         {
           "tag": "v1.13.0",
           "typeReferences": {
-            "namedReferences": 371,
-            "resolvedNamedReferences": 219,
+            "namedReferences": 378,
+            "resolvedNamedReferences": 226,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -101,6 +101,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -129,8 +131,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -164,19 +164,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 238,
-          "declarations": 421,
+          "sourceFiles": 248,
+          "declarations": 436,
           "taggedFields": {
             "json": 800
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 47,
           "decodedObjectLayouts": 47,
           "reportedBuildTags": 0,
@@ -185,8 +185,8 @@
         {
           "tag": "v1.13.1",
           "typeReferences": {
-            "namedReferences": 370,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 377,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -279,6 +279,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -307,8 +309,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -342,19 +342,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 237,
-          "declarations": 418,
+          "sourceFiles": 247,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -363,8 +363,8 @@
         {
           "tag": "v1.13.2",
           "typeReferences": {
-            "namedReferences": 370,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 377,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -457,6 +457,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -485,8 +487,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -520,19 +520,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 237,
-          "declarations": 418,
+          "sourceFiles": 247,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -541,8 +541,8 @@
         {
           "tag": "v1.13.3",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -637,6 +637,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -665,8 +667,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -700,19 +700,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -721,8 +721,8 @@
         {
           "tag": "v1.13.4",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -817,6 +817,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -845,8 +847,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -880,19 +880,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -901,8 +901,8 @@
         {
           "tag": "v1.13.5",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -997,6 +997,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -1025,8 +1027,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -1060,19 +1060,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -1081,8 +1081,8 @@
         {
           "tag": "v1.13.6",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -1177,6 +1177,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -1205,8 +1207,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -1240,19 +1240,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -1261,8 +1261,8 @@
         {
           "tag": "v1.13.7",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -1357,6 +1357,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -1385,8 +1387,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -1420,19 +1420,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -1441,8 +1441,8 @@
         {
           "tag": "v1.13.8",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -1537,6 +1537,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -1565,8 +1567,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -1600,19 +1600,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -1621,8 +1621,8 @@
         {
           "tag": "v1.13.9",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -1717,6 +1717,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -1745,8 +1747,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -1780,19 +1780,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -1801,8 +1801,8 @@
         {
           "tag": "v1.13.10",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -1897,6 +1897,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -1925,8 +1927,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -1960,19 +1960,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -1981,8 +1981,8 @@
         {
           "tag": "v1.13.11",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -2077,6 +2077,8 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -2105,8 +2107,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -2140,19 +2140,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 36,
+              "dynamic": 39,
               "opaque": 32
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -2161,8 +2161,8 @@
         {
           "tag": "v1.13.12",
           "typeReferences": {
-            "namedReferences": 370,
-            "resolvedNamedReferences": 217,
+            "namedReferences": 377,
+            "resolvedNamedReferences": 224,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -2256,6 +2256,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -2284,8 +2286,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -2319,19 +2319,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 236,
-          "declarations": 416,
+          "sourceFiles": 246,
+          "declarations": 431,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -2340,8 +2340,8 @@
         {
           "tag": "v1.13.13",
           "typeReferences": {
-            "namedReferences": 370,
-            "resolvedNamedReferences": 217,
+            "namedReferences": 377,
+            "resolvedNamedReferences": 224,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -2435,6 +2435,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -2463,8 +2465,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -2498,19 +2498,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 236,
-          "declarations": 416,
+          "sourceFiles": 246,
+          "declarations": 431,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -2519,8 +2519,8 @@
         {
           "tag": "v1.13.14",
           "typeReferences": {
-            "namedReferences": 371,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 378,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -2614,6 +2614,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -2642,8 +2644,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -2677,19 +2677,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 236,
-          "declarations": 417,
+          "sourceFiles": 246,
+          "declarations": 432,
           "taggedFields": {
             "json": 784
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -2698,8 +2698,8 @@
         {
           "tag": "v1.13.15",
           "typeReferences": {
-            "namedReferences": 372,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 379,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -2793,6 +2793,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -2821,8 +2823,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -2857,19 +2857,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 236,
-          "declarations": 418,
+          "sourceFiles": 246,
+          "declarations": 433,
           "taggedFields": {
             "json": 785
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -2878,8 +2878,8 @@
         {
           "tag": "v1.13.16",
           "typeReferences": {
-            "namedReferences": 374,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 381,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -2974,6 +2974,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -3003,8 +3005,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -3039,19 +3039,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 237,
-          "declarations": 418,
+          "sourceFiles": 247,
+          "declarations": 433,
           "taggedFields": {
             "json": 786
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -3060,8 +3060,8 @@
         {
           "tag": "v1.13.18",
           "typeReferences": {
-            "namedReferences": 374,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 381,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -3156,6 +3156,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -3185,8 +3187,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -3221,19 +3221,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 237,
-          "declarations": 419,
+          "sourceFiles": 247,
+          "declarations": 434,
           "taggedFields": {
             "json": 786
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -3242,8 +3242,8 @@
         {
           "tag": "v1.13.19",
           "typeReferences": {
-            "namedReferences": 374,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 381,
+            "resolvedNamedReferences": 225,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -3338,6 +3338,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -3367,8 +3369,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -3403,19 +3403,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 237,
-          "declarations": 419,
+          "sourceFiles": 247,
+          "declarations": 434,
           "taggedFields": {
             "json": 786
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -3424,8 +3424,8 @@
         {
           "tag": "v1.13.20",
           "typeReferences": {
-            "namedReferences": 375,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 383,
+            "resolvedNamedReferences": 226,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -3520,6 +3520,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -3549,8 +3551,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -3586,19 +3586,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 237,
-          "declarations": 420,
+          "sourceFiles": 247,
+          "declarations": 436,
           "taggedFields": {
             "json": 786
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -3607,8 +3607,8 @@
         {
           "tag": "v1.13.21",
           "typeReferences": {
-            "namedReferences": 375,
-            "resolvedNamedReferences": 218,
+            "namedReferences": 383,
+            "resolvedNamedReferences": 226,
             "unresolvedNamedReferences": [
               "adapter#ConnectionManager",
               "adapter#ConnectionRouterEx",
@@ -3703,6 +3703,8 @@
               "github.com/sagernet/sing/common/network#Dialer",
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -3732,8 +3734,6 @@
               "io#Closer",
               "io#Reader",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -3769,19 +3769,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 38,
+              "dynamic": 41,
               "opaque": 33
             }
           },
-          "sourceFiles": 237,
-          "declarations": 420,
+          "sourceFiles": 247,
+          "declarations": 436,
           "taggedFields": {
             "json": 786
           },
           "customDecoders": 56,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 2,
+          "reviewedSemanticRules": 3,
           "decoderBindings": 45,
           "decodedObjectLayouts": 45,
           "reportedBuildTags": 0,
@@ -3790,8 +3790,8 @@
         {
           "tag": "v1.14.0",
           "typeReferences": {
-            "namedReferences": 543,
-            "resolvedNamedReferences": 340,
+            "namedReferences": 551,
+            "resolvedNamedReferences": 348,
             "unresolvedNamedReferences": [
               "adapter#BridgeSession",
               "adapter#ConnectionManager",
@@ -3913,6 +3913,8 @@
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#ReadWaitOptions",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -3952,8 +3954,6 @@
               "io#Reader",
               "io#WriteCloser",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#HardwareAddr",
@@ -3998,19 +3998,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 50,
+              "dynamic": 53,
               "opaque": 71
             }
           },
-          "sourceFiles": 321,
-          "declarations": 610,
+          "sourceFiles": 331,
+          "declarations": 626,
           "taggedFields": {
             "json": 1207
           },
           "customDecoders": 71,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 183,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 50,
           "decodedObjectLayouts": 50,
           "reportedBuildTags": 0,
@@ -4019,8 +4019,8 @@
         {
           "tag": "v1.14.1",
           "typeReferences": {
-            "namedReferences": 543,
-            "resolvedNamedReferences": 340,
+            "namedReferences": 551,
+            "resolvedNamedReferences": 348,
             "unresolvedNamedReferences": [
               "adapter#BridgeSession",
               "adapter#ConnectionManager",
@@ -4142,6 +4142,8 @@
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#ReadWaitOptions",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -4181,8 +4183,6 @@
               "io#Reader",
               "io#WriteCloser",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#HardwareAddr",
@@ -4227,19 +4227,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 50,
+              "dynamic": 53,
               "opaque": 71
             }
           },
-          "sourceFiles": 321,
-          "declarations": 611,
+          "sourceFiles": 331,
+          "declarations": 627,
           "taggedFields": {
             "json": 1207
           },
           "customDecoders": 71,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 183,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 50,
           "decodedObjectLayouts": 50,
           "reportedBuildTags": 0,
@@ -4248,8 +4248,8 @@
         {
           "tag": "v1.14.2",
           "typeReferences": {
-            "namedReferences": 544,
-            "resolvedNamedReferences": 340,
+            "namedReferences": 552,
+            "resolvedNamedReferences": 348,
             "unresolvedNamedReferences": [
               "adapter#BridgeSession",
               "adapter#ConnectionManager",
@@ -4372,6 +4372,8 @@
               "github.com/sagernet/sing/common/network#PacketWriter",
               "github.com/sagernet/sing/common/network#ReadWaitOptions",
               "github.com/sagernet/sing/common/network#TCPConnectionHandlerEx",
+              "github.com/sagernet/sing/common/observable#Observer",
+              "github.com/sagernet/sing/common/observable#Subscriber",
               "github.com/sagernet/sing/common/ranges#Range",
               "github.com/sagernet/sing/common/uot#Client",
               "github.com/sagernet/sing/common/x/collections#MapEntry",
@@ -4411,8 +4413,6 @@
               "io#Reader",
               "io#WriteCloser",
               "io#Writer",
-              "log#ContextLogger",
-              "log#Logger",
               "net#Addr",
               "net#Conn",
               "net#HardwareAddr",
@@ -4457,19 +4457,19 @@
               "transport/wireguard#Endpoint"
             ],
             "opaqueShapes": {
-              "dynamic": 50,
+              "dynamic": 53,
               "opaque": 73
             }
           },
-          "sourceFiles": 322,
-          "declarations": 614,
+          "sourceFiles": 332,
+          "declarations": 630,
           "taggedFields": {
             "json": 1207
           },
           "customDecoders": 71,
           "reviewedValueDecoders": 1,
           "schemaAnnotatedFields": 183,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 50,
           "decodedObjectLayouts": 50,
           "reportedBuildTags": 0,
@@ -4484,7 +4484,7 @@
           "tag": "v1.18.0",
           "typeReferences": {
             "namedReferences": 202,
-            "resolvedNamedReferences": 125,
+            "resolvedNamedReferences": 126,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -4534,7 +4534,6 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/wireguard-go/device#Device",
               "github.com/wk8/go-ordered-map/v2#OrderedMap",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -4569,17 +4568,17 @@
               "opaque": 15
             }
           },
-          "sourceFiles": 174,
-          "declarations": 259,
+          "sourceFiles": 177,
+          "declarations": 262,
           "taggedFields": {
             "json": 233,
             "proxy": 227,
             "yaml": 246
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 1,
+          "reviewedSemanticRules": 2,
           "decoderBindings": 14,
           "decodedObjectLayouts": 14,
           "reportedBuildTags": 4,
@@ -4589,7 +4588,7 @@
           "tag": "v1.18.1",
           "typeReferences": {
             "namedReferences": 202,
-            "resolvedNamedReferences": 125,
+            "resolvedNamedReferences": 126,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -4639,7 +4638,6 @@
               "github.com/sagernet/sing/common/network#NetPacketConn",
               "github.com/sagernet/wireguard-go/device#Device",
               "github.com/wk8/go-ordered-map/v2#OrderedMap",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -4674,17 +4672,17 @@
               "opaque": 15
             }
           },
-          "sourceFiles": 175,
-          "declarations": 260,
+          "sourceFiles": 178,
+          "declarations": 263,
           "taggedFields": {
             "json": 235,
             "proxy": 228,
             "yaml": 247
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 1,
+          "reviewedSemanticRules": 2,
           "decoderBindings": 14,
           "decodedObjectLayouts": 14,
           "reportedBuildTags": 4,
@@ -4694,7 +4692,7 @@
           "tag": "v1.18.2",
           "typeReferences": {
             "namedReferences": 206,
-            "resolvedNamedReferences": 127,
+            "resolvedNamedReferences": 128,
             "unresolvedNamedReferences": [
               "common/atomic#Bool",
               "common/atomic#TypedValue",
@@ -4746,7 +4744,6 @@
               "github.com/wk8/go-ordered-map/v2#OrderedMap",
               "golang.org/x/crypto/ssh#Client",
               "golang.org/x/crypto/ssh#ClientConfig",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -4781,17 +4778,17 @@
               "opaque": 18
             }
           },
-          "sourceFiles": 179,
-          "declarations": 269,
+          "sourceFiles": 182,
+          "declarations": 272,
           "taggedFields": {
             "json": 241,
             "proxy": 240,
             "yaml": 252
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 1,
+          "reviewedSemanticRules": 2,
           "decoderBindings": 16,
           "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
@@ -4801,7 +4798,7 @@
           "tag": "v1.18.3",
           "typeReferences": {
             "namedReferences": 206,
-            "resolvedNamedReferences": 127,
+            "resolvedNamedReferences": 128,
             "unresolvedNamedReferences": [
               "common/atomic#Bool",
               "common/atomic#TypedValue",
@@ -4853,7 +4850,6 @@
               "github.com/wk8/go-ordered-map/v2#OrderedMap",
               "golang.org/x/crypto/ssh#Client",
               "golang.org/x/crypto/ssh#ClientConfig",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -4888,17 +4884,17 @@
               "opaque": 18
             }
           },
-          "sourceFiles": 179,
-          "declarations": 269,
+          "sourceFiles": 182,
+          "declarations": 272,
           "taggedFields": {
             "json": 241,
             "proxy": 240,
             "yaml": 252
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 1,
+          "reviewedSemanticRules": 2,
           "decoderBindings": 16,
           "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
@@ -4908,7 +4904,7 @@
           "tag": "v1.18.4",
           "typeReferences": {
             "namedReferences": 209,
-            "resolvedNamedReferences": 127,
+            "resolvedNamedReferences": 128,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -4963,7 +4959,6 @@
               "github.com/wk8/go-ordered-map/v2#OrderedMap",
               "golang.org/x/crypto/ssh#Client",
               "golang.org/x/crypto/ssh#ClientConfig",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -4998,17 +4993,17 @@
               "opaque": 16
             }
           },
-          "sourceFiles": 178,
-          "declarations": 268,
+          "sourceFiles": 181,
+          "declarations": 271,
           "taggedFields": {
             "json": 241,
             "proxy": 240,
             "yaml": 253
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 1,
+          "reviewedSemanticRules": 2,
           "decoderBindings": 16,
           "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
@@ -5018,7 +5013,7 @@
           "tag": "v1.18.5",
           "typeReferences": {
             "namedReferences": 210,
-            "resolvedNamedReferences": 127,
+            "resolvedNamedReferences": 128,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -5074,7 +5069,6 @@
               "golang.org/x/crypto/ssh#Client",
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -5109,17 +5103,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 178,
-          "declarations": 269,
+          "sourceFiles": 181,
+          "declarations": 272,
           "taggedFields": {
             "json": 242,
             "proxy": 240,
             "yaml": 255
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 1,
+          "reviewedSemanticRules": 2,
           "decoderBindings": 16,
           "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
@@ -5129,7 +5123,7 @@
           "tag": "v1.18.6",
           "typeReferences": {
             "namedReferences": 214,
-            "resolvedNamedReferences": 128,
+            "resolvedNamedReferences": 129,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -5188,7 +5182,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -5223,17 +5216,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 183,
-          "declarations": 273,
+          "sourceFiles": 186,
+          "declarations": 276,
           "taggedFields": {
             "json": 258,
             "proxy": 245,
             "yaml": 272
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 16,
           "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
@@ -5243,7 +5236,7 @@
           "tag": "v1.18.7",
           "typeReferences": {
             "namedReferences": 213,
-            "resolvedNamedReferences": 128,
+            "resolvedNamedReferences": 129,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -5301,7 +5294,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -5336,17 +5328,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 185,
-          "declarations": 275,
+          "sourceFiles": 188,
+          "declarations": 278,
           "taggedFields": {
             "json": 258,
             "proxy": 245,
             "yaml": 273
           },
-          "customDecoders": 3,
+          "customDecoders": 4,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 16,
           "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
@@ -5356,7 +5348,7 @@
           "tag": "v1.18.8",
           "typeReferences": {
             "namedReferences": 219,
-            "resolvedNamedReferences": 135,
+            "resolvedNamedReferences": 136,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -5413,7 +5405,117 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
+              "net#Addr",
+              "net#Conn",
+              "net#Listener",
+              "net#PacketConn",
+              "net/netip#Addr",
+              "net/netip#AddrPort",
+              "net/netip#Prefix",
+              "strings#Replacer",
+              "sync#Mutex",
+              "sync#Once",
+              "time#Duration",
+              "time#Time",
+              "transport/gun#Config",
+              "transport/gun#TransportWrap",
+              "transport/hysteria/core#Client",
+              "transport/hysteria/core#UDPConn",
+              "transport/shadowsocks/core#Cipher",
+              "transport/sing-shadowtls#ShadowTLSOption",
+              "transport/snell#Pool",
+              "transport/socks5#Addr",
+              "transport/ssr/obfs#Obfs",
+              "transport/ssr/protocol#Protocol",
+              "transport/trojan#Trojan",
+              "transport/tuic#PoolClient",
+              "transport/tuic#Server",
+              "transport/v2ray-plugin#Option",
+              "transport/vless#Client",
+              "tunnel#TunnelMode"
+            ],
+            "opaqueShapes": {
+              "dynamic": 49,
+              "opaque": 17
+            }
+          },
+          "sourceFiles": 185,
+          "declarations": 282,
+          "taggedFields": {
+            "json": 313,
+            "proxy": 245,
+            "yaml": 252
+          },
+          "customDecoders": 5,
+          "reviewedValueDecoders": 0,
+          "schemaAnnotatedFields": 0,
+          "reviewedSemanticRules": 4,
+          "decoderBindings": 16,
+          "decodedObjectLayouts": 16,
+          "reportedBuildTags": 4,
+          "rejectedConstructors": 0
+        },
+        {
+          "tag": "v1.18.9",
+          "typeReferences": {
+            "namedReferences": 224,
+            "resolvedNamedReferences": 141,
+            "unresolvedNamedReferences": [
+              "adapter/outbound#error",
+              "common/atomic#Bool",
+              "common/atomic#TypedValue",
+              "common/atomic#Uint32",
+              "common/net#EnhancePacketConn",
+              "common/net#ExtendedConn",
+              "common/queue#Queue",
+              "common/singledo#Single",
+              "common/utils#IntRanges",
+              "component/auth#AuthUser",
+              "component/auth#Authenticator",
+              "component/cidr#IpCidrSet",
+              "component/fakeip#Pool",
+              "component/loopback#Detector",
+              "component/process#FindProcessMode",
+              "component/proxydialer#SingDialer",
+              "component/resolver#HostValue",
+              "component/resource#Fetcher",
+              "component/sniffer#Config",
+              "component/tls#RealityConfig",
+              "component/trie#DomainSet",
+              "component/trie#DomainTrie",
+              "context#CancelFunc",
+              "context#Context",
+              "crypto/tls#Config",
+              "dns#NameServer",
+              "dns#Policy",
+              "dns#Resolver",
+              "github.com/3andne/restls-client-go#Config",
+              "github.com/dlclark/regexp2#Regexp",
+              "github.com/metacubex/sing-quic/hysteria2#Client",
+              "github.com/metacubex/sing-quic/hysteria2#Service",
+              "github.com/metacubex/sing-shadowsocks#Service",
+              "github.com/metacubex/sing-shadowsocks2#Method",
+              "github.com/metacubex/sing-tun#AutoRedirect",
+              "github.com/metacubex/sing-tun#DefaultInterfaceMonitor",
+              "github.com/metacubex/sing-tun#NetworkUpdateMonitor",
+              "github.com/metacubex/sing-tun#PackageManager",
+              "github.com/metacubex/sing-tun#Stack",
+              "github.com/metacubex/sing-tun#Tun",
+              "github.com/metacubex/sing-vmess#Client",
+              "github.com/metacubex/sing-vmess#Service",
+              "github.com/metacubex/sing-wireguard#ClientBind",
+              "github.com/metacubex/sing-wireguard#Device",
+              "github.com/sagernet/sing-mux#Client",
+              "github.com/sagernet/sing-mux#Service",
+              "github.com/sagernet/sing/common/buf#Buffer",
+              "github.com/sagernet/sing/common/metadata#Socksaddr",
+              "github.com/sagernet/sing/common/network#NetPacketConn",
+              "github.com/wk8/go-ordered-map/v2#OrderedMap",
+              "go4.org/netipx#IPSet",
+              "golang.org/x/crypto/ssh#Client",
+              "golang.org/x/crypto/ssh#ClientConfig",
+              "io#Closer",
+              "io#ReadCloser",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -5449,128 +5551,16 @@
             }
           },
           "sourceFiles": 182,
-          "declarations": 279,
-          "taggedFields": {
-            "json": 313,
-            "proxy": 245,
-            "yaml": 252
-          },
-          "customDecoders": 4,
-          "reviewedValueDecoders": 0,
-          "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
-          "decoderBindings": 16,
-          "decodedObjectLayouts": 16,
-          "reportedBuildTags": 4,
-          "rejectedConstructors": 0
-        },
-        {
-          "tag": "v1.18.9",
-          "typeReferences": {
-            "namedReferences": 224,
-            "resolvedNamedReferences": 140,
-            "unresolvedNamedReferences": [
-              "adapter/outbound#error",
-              "common/atomic#Bool",
-              "common/atomic#TypedValue",
-              "common/atomic#Uint32",
-              "common/net#EnhancePacketConn",
-              "common/net#ExtendedConn",
-              "common/queue#Queue",
-              "common/singledo#Single",
-              "common/utils#IntRanges",
-              "component/auth#AuthUser",
-              "component/auth#Authenticator",
-              "component/cidr#IpCidrSet",
-              "component/fakeip#Pool",
-              "component/loopback#Detector",
-              "component/process#FindProcessMode",
-              "component/proxydialer#SingDialer",
-              "component/resolver#HostValue",
-              "component/resource#Fetcher",
-              "component/sniffer#Config",
-              "component/tls#RealityConfig",
-              "component/trie#DomainSet",
-              "component/trie#DomainTrie",
-              "context#CancelFunc",
-              "context#Context",
-              "crypto/tls#Config",
-              "dns#NameServer",
-              "dns#Policy",
-              "dns#Resolver",
-              "github.com/3andne/restls-client-go#Config",
-              "github.com/dlclark/regexp2#Regexp",
-              "github.com/metacubex/sing-quic/hysteria2#Client",
-              "github.com/metacubex/sing-quic/hysteria2#Service",
-              "github.com/metacubex/sing-shadowsocks#Service",
-              "github.com/metacubex/sing-shadowsocks2#Method",
-              "github.com/metacubex/sing-tun#AutoRedirect",
-              "github.com/metacubex/sing-tun#DefaultInterfaceMonitor",
-              "github.com/metacubex/sing-tun#NetworkUpdateMonitor",
-              "github.com/metacubex/sing-tun#PackageManager",
-              "github.com/metacubex/sing-tun#Stack",
-              "github.com/metacubex/sing-tun#Tun",
-              "github.com/metacubex/sing-vmess#Client",
-              "github.com/metacubex/sing-vmess#Service",
-              "github.com/metacubex/sing-wireguard#ClientBind",
-              "github.com/metacubex/sing-wireguard#Device",
-              "github.com/sagernet/sing-mux#Client",
-              "github.com/sagernet/sing-mux#Service",
-              "github.com/sagernet/sing/common/buf#Buffer",
-              "github.com/sagernet/sing/common/metadata#Socksaddr",
-              "github.com/sagernet/sing/common/network#NetPacketConn",
-              "github.com/wk8/go-ordered-map/v2#OrderedMap",
-              "go4.org/netipx#IPSet",
-              "golang.org/x/crypto/ssh#Client",
-              "golang.org/x/crypto/ssh#ClientConfig",
-              "io#Closer",
-              "io#ReadCloser",
-              "log#LogLevel",
-              "net#Addr",
-              "net#Conn",
-              "net#Listener",
-              "net#PacketConn",
-              "net/netip#Addr",
-              "net/netip#AddrPort",
-              "net/netip#Prefix",
-              "strings#Replacer",
-              "sync#Mutex",
-              "sync#Once",
-              "time#Duration",
-              "time#Time",
-              "transport/gun#Config",
-              "transport/gun#TransportWrap",
-              "transport/hysteria/core#Client",
-              "transport/hysteria/core#UDPConn",
-              "transport/shadowsocks/core#Cipher",
-              "transport/sing-shadowtls#ShadowTLSOption",
-              "transport/snell#Pool",
-              "transport/socks5#Addr",
-              "transport/ssr/obfs#Obfs",
-              "transport/ssr/protocol#Protocol",
-              "transport/trojan#Trojan",
-              "transport/tuic#PoolClient",
-              "transport/tuic#Server",
-              "transport/v2ray-plugin#Option",
-              "transport/vless#Client",
-              "tunnel#TunnelMode"
-            ],
-            "opaqueShapes": {
-              "dynamic": 49,
-              "opaque": 17
-            }
-          },
-          "sourceFiles": 179,
-          "declarations": 285,
+          "declarations": 288,
           "taggedFields": {
             "json": 319,
             "proxy": 255,
             "yaml": 257
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 16,
           "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
@@ -5580,118 +5570,6 @@
           "tag": "v1.18.10",
           "typeReferences": {
             "namedReferences": 224,
-            "resolvedNamedReferences": 140,
-            "unresolvedNamedReferences": [
-              "adapter/outbound#error",
-              "common/atomic#Bool",
-              "common/atomic#TypedValue",
-              "common/atomic#Uint32",
-              "common/net#EnhancePacketConn",
-              "common/net#ExtendedConn",
-              "common/queue#Queue",
-              "common/singledo#Single",
-              "common/utils#IntRanges",
-              "component/auth#AuthUser",
-              "component/auth#Authenticator",
-              "component/cidr#IpCidrSet",
-              "component/fakeip#Pool",
-              "component/loopback#Detector",
-              "component/process#FindProcessMode",
-              "component/proxydialer#SingDialer",
-              "component/resolver#HostValue",
-              "component/resolver#Resolver",
-              "component/resource#Fetcher",
-              "component/sniffer#Config",
-              "component/tls#RealityConfig",
-              "component/trie#DomainSet",
-              "component/trie#DomainTrie",
-              "context#CancelFunc",
-              "context#Context",
-              "crypto/tls#Config",
-              "dns#NameServer",
-              "dns#Policy",
-              "github.com/3andne/restls-client-go#Config",
-              "github.com/dlclark/regexp2#Regexp",
-              "github.com/metacubex/sing-quic/hysteria2#Client",
-              "github.com/metacubex/sing-quic/hysteria2#Service",
-              "github.com/metacubex/sing-shadowsocks#Service",
-              "github.com/metacubex/sing-shadowsocks2#Method",
-              "github.com/metacubex/sing-tun#AutoRedirect",
-              "github.com/metacubex/sing-tun#DefaultInterfaceMonitor",
-              "github.com/metacubex/sing-tun#NetworkUpdateMonitor",
-              "github.com/metacubex/sing-tun#PackageManager",
-              "github.com/metacubex/sing-tun#Stack",
-              "github.com/metacubex/sing-tun#Tun",
-              "github.com/metacubex/sing-vmess#Client",
-              "github.com/metacubex/sing-vmess#Service",
-              "github.com/metacubex/sing-wireguard#ClientBind",
-              "github.com/metacubex/sing-wireguard#Device",
-              "github.com/sagernet/sing-mux#Client",
-              "github.com/sagernet/sing-mux#Service",
-              "github.com/sagernet/sing/common/buf#Buffer",
-              "github.com/sagernet/sing/common/metadata#Socksaddr",
-              "github.com/sagernet/sing/common/network#NetPacketConn",
-              "github.com/wk8/go-ordered-map/v2#OrderedMap",
-              "go4.org/netipx#IPSet",
-              "golang.org/x/crypto/ssh#Client",
-              "golang.org/x/crypto/ssh#ClientConfig",
-              "io#Closer",
-              "io#ReadCloser",
-              "log#LogLevel",
-              "net#Addr",
-              "net#Conn",
-              "net#Listener",
-              "net#PacketConn",
-              "net/netip#Addr",
-              "net/netip#AddrPort",
-              "net/netip#Prefix",
-              "strings#Replacer",
-              "sync#Mutex",
-              "sync#Once",
-              "time#Duration",
-              "time#Time",
-              "transport/gun#Config",
-              "transport/gun#TransportWrap",
-              "transport/hysteria/core#Client",
-              "transport/hysteria/core#UDPConn",
-              "transport/shadowsocks/core#Cipher",
-              "transport/sing-shadowtls#ShadowTLSOption",
-              "transport/snell#Pool",
-              "transport/socks5#Addr",
-              "transport/ssr/obfs#Obfs",
-              "transport/ssr/protocol#Protocol",
-              "transport/trojan#Trojan",
-              "transport/tuic#PoolClient",
-              "transport/tuic#Server",
-              "transport/v2ray-plugin#Option",
-              "transport/vless#Client",
-              "tunnel#TunnelMode"
-            ],
-            "opaqueShapes": {
-              "dynamic": 49,
-              "opaque": 17
-            }
-          },
-          "sourceFiles": 179,
-          "declarations": 285,
-          "taggedFields": {
-            "json": 324,
-            "proxy": 255,
-            "yaml": 259
-          },
-          "customDecoders": 4,
-          "reviewedValueDecoders": 0,
-          "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
-          "decoderBindings": 16,
-          "decodedObjectLayouts": 16,
-          "reportedBuildTags": 4,
-          "rejectedConstructors": 0
-        },
-        {
-          "tag": "v1.19.0",
-          "typeReferences": {
-            "namedReferences": 226,
             "resolvedNamedReferences": 141,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
@@ -5724,7 +5602,6 @@
               "dns#Policy",
               "github.com/3andne/restls-client-go#Config",
               "github.com/dlclark/regexp2#Regexp",
-              "github.com/enfein/mieru/v3/apis/client#Client",
               "github.com/metacubex/sing-quic/hysteria2#Client",
               "github.com/metacubex/sing-quic/hysteria2#Service",
               "github.com/metacubex/sing-shadowsocks#Service",
@@ -5750,7 +5627,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -5785,27 +5661,27 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 180,
+          "sourceFiles": 182,
           "declarations": 288,
           "taggedFields": {
             "json": 324,
-            "proxy": 262,
+            "proxy": 255,
             "yaml": 259
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
-          "decoderBindings": 17,
-          "decodedObjectLayouts": 17,
+          "reviewedSemanticRules": 4,
+          "decoderBindings": 16,
+          "decodedObjectLayouts": 16,
           "reportedBuildTags": 4,
           "rejectedConstructors": 0
         },
         {
-          "tag": "v1.19.1",
+          "tag": "v1.19.0",
           "typeReferences": {
-            "namedReferences": 230,
-            "resolvedNamedReferences": 145,
+            "namedReferences": 226,
+            "resolvedNamedReferences": 142,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -5863,7 +5739,118 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
+              "net#Addr",
+              "net#Conn",
+              "net#Listener",
+              "net#PacketConn",
+              "net/netip#Addr",
+              "net/netip#AddrPort",
+              "net/netip#Prefix",
+              "strings#Replacer",
+              "sync#Mutex",
+              "sync#Once",
+              "time#Duration",
+              "time#Time",
+              "transport/gun#Config",
+              "transport/gun#TransportWrap",
+              "transport/hysteria/core#Client",
+              "transport/hysteria/core#UDPConn",
+              "transport/shadowsocks/core#Cipher",
+              "transport/sing-shadowtls#ShadowTLSOption",
+              "transport/snell#Pool",
+              "transport/socks5#Addr",
+              "transport/ssr/obfs#Obfs",
+              "transport/ssr/protocol#Protocol",
+              "transport/trojan#Trojan",
+              "transport/tuic#PoolClient",
+              "transport/tuic#Server",
+              "transport/v2ray-plugin#Option",
+              "transport/vless#Client",
+              "tunnel#TunnelMode"
+            ],
+            "opaqueShapes": {
+              "dynamic": 49,
+              "opaque": 17
+            }
+          },
+          "sourceFiles": 183,
+          "declarations": 291,
+          "taggedFields": {
+            "json": 324,
+            "proxy": 262,
+            "yaml": 259
+          },
+          "customDecoders": 5,
+          "reviewedValueDecoders": 0,
+          "schemaAnnotatedFields": 0,
+          "reviewedSemanticRules": 4,
+          "decoderBindings": 17,
+          "decodedObjectLayouts": 17,
+          "reportedBuildTags": 4,
+          "rejectedConstructors": 0
+        },
+        {
+          "tag": "v1.19.1",
+          "typeReferences": {
+            "namedReferences": 230,
+            "resolvedNamedReferences": 146,
+            "unresolvedNamedReferences": [
+              "adapter/outbound#error",
+              "common/atomic#Bool",
+              "common/atomic#TypedValue",
+              "common/atomic#Uint32",
+              "common/net#EnhancePacketConn",
+              "common/net#ExtendedConn",
+              "common/queue#Queue",
+              "common/singledo#Single",
+              "common/utils#IntRanges",
+              "component/auth#AuthUser",
+              "component/auth#Authenticator",
+              "component/cidr#IpCidrSet",
+              "component/fakeip#Pool",
+              "component/loopback#Detector",
+              "component/process#FindProcessMode",
+              "component/proxydialer#SingDialer",
+              "component/resolver#HostValue",
+              "component/resolver#Resolver",
+              "component/resource#Fetcher",
+              "component/sniffer#Config",
+              "component/tls#RealityConfig",
+              "component/trie#DomainSet",
+              "component/trie#DomainTrie",
+              "context#CancelFunc",
+              "context#Context",
+              "crypto/tls#Config",
+              "dns#NameServer",
+              "dns#Policy",
+              "github.com/3andne/restls-client-go#Config",
+              "github.com/dlclark/regexp2#Regexp",
+              "github.com/enfein/mieru/v3/apis/client#Client",
+              "github.com/metacubex/sing-quic/hysteria2#Client",
+              "github.com/metacubex/sing-quic/hysteria2#Service",
+              "github.com/metacubex/sing-shadowsocks#Service",
+              "github.com/metacubex/sing-shadowsocks2#Method",
+              "github.com/metacubex/sing-tun#AutoRedirect",
+              "github.com/metacubex/sing-tun#DefaultInterfaceMonitor",
+              "github.com/metacubex/sing-tun#NetworkUpdateMonitor",
+              "github.com/metacubex/sing-tun#PackageManager",
+              "github.com/metacubex/sing-tun#Stack",
+              "github.com/metacubex/sing-tun#Tun",
+              "github.com/metacubex/sing-vmess#Client",
+              "github.com/metacubex/sing-vmess#Service",
+              "github.com/metacubex/sing-wireguard#ClientBind",
+              "github.com/metacubex/sing-wireguard#Device",
+              "github.com/sagernet/sing-mux#Client",
+              "github.com/sagernet/sing-mux#Service",
+              "github.com/sagernet/sing/common/buf#Buffer",
+              "github.com/sagernet/sing/common/metadata#Socksaddr",
+              "github.com/sagernet/sing/common/network#NetPacketConn",
+              "github.com/wk8/go-ordered-map/v2#OrderedMap",
+              "go4.org/netipx#IPSet",
+              "golang.org/x/crypto/ssh#Client",
+              "golang.org/x/crypto/ssh#ClientConfig",
+              "io#Closer",
+              "io#ReadCloser",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -5898,17 +5885,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 180,
-          "declarations": 296,
+          "sourceFiles": 183,
+          "declarations": 299,
           "taggedFields": {
             "json": 340,
             "proxy": 263,
             "yaml": 259
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 17,
           "decodedObjectLayouts": 17,
           "reportedBuildTags": 4,
@@ -5918,7 +5905,7 @@
           "tag": "v1.19.2",
           "typeReferences": {
             "namedReferences": 239,
-            "resolvedNamedReferences": 151,
+            "resolvedNamedReferences": 152,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -5979,7 +5966,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6014,17 +6000,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 185,
-          "declarations": 308,
+          "sourceFiles": 188,
+          "declarations": 311,
           "taggedFields": {
             "json": 345,
             "proxy": 267,
             "yaml": 264
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 17,
           "decodedObjectLayouts": 17,
           "reportedBuildTags": 4,
@@ -6034,7 +6020,7 @@
           "tag": "v1.19.3",
           "typeReferences": {
             "namedReferences": 251,
-            "resolvedNamedReferences": 160,
+            "resolvedNamedReferences": 161,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -6096,7 +6082,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6133,17 +6118,17 @@
               "opaque": 18
             }
           },
-          "sourceFiles": 195,
-          "declarations": 324,
+          "sourceFiles": 198,
+          "declarations": 327,
           "taggedFields": {
             "json": 351,
             "proxy": 280,
             "yaml": 270
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -6153,7 +6138,7 @@
           "tag": "v1.19.4",
           "typeReferences": {
             "namedReferences": 252,
-            "resolvedNamedReferences": 160,
+            "resolvedNamedReferences": 161,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -6215,7 +6200,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6253,17 +6237,17 @@
               "opaque": 18
             }
           },
-          "sourceFiles": 195,
-          "declarations": 327,
+          "sourceFiles": 198,
+          "declarations": 330,
           "taggedFields": {
             "json": 351,
             "proxy": 281,
             "yaml": 270
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -6272,8 +6256,8 @@
         {
           "tag": "v1.19.5",
           "typeReferences": {
-            "namedReferences": 249,
-            "resolvedNamedReferences": 158,
+            "namedReferences": 250,
+            "resolvedNamedReferences": 160,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -6334,7 +6318,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6372,17 +6355,17 @@
               "opaque": 15
             }
           },
-          "sourceFiles": 195,
-          "declarations": 328,
+          "sourceFiles": 198,
+          "declarations": 332,
           "taggedFields": {
             "json": 359,
             "proxy": 281,
             "yaml": 278
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -6391,8 +6374,8 @@
         {
           "tag": "v1.19.6",
           "typeReferences": {
-            "namedReferences": 255,
-            "resolvedNamedReferences": 163,
+            "namedReferences": 256,
+            "resolvedNamedReferences": 165,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -6454,7 +6437,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6492,17 +6474,17 @@
               "opaque": 15
             }
           },
-          "sourceFiles": 198,
-          "declarations": 335,
+          "sourceFiles": 201,
+          "declarations": 339,
           "taggedFields": {
             "json": 360,
             "proxy": 281,
             "yaml": 279
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -6511,8 +6493,8 @@
         {
           "tag": "v1.19.7",
           "typeReferences": {
-            "namedReferences": 255,
-            "resolvedNamedReferences": 163,
+            "namedReferences": 256,
+            "resolvedNamedReferences": 165,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -6574,7 +6556,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6612,17 +6593,17 @@
               "opaque": 15
             }
           },
-          "sourceFiles": 198,
-          "declarations": 335,
+          "sourceFiles": 201,
+          "declarations": 339,
           "taggedFields": {
             "json": 360,
             "proxy": 281,
             "yaml": 279
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -6631,8 +6612,8 @@
         {
           "tag": "v1.19.8",
           "typeReferences": {
-            "namedReferences": 255,
-            "resolvedNamedReferences": 163,
+            "namedReferences": 256,
+            "resolvedNamedReferences": 165,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -6694,7 +6675,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6732,17 +6712,17 @@
               "opaque": 15
             }
           },
-          "sourceFiles": 198,
-          "declarations": 336,
+          "sourceFiles": 201,
+          "declarations": 340,
           "taggedFields": {
             "json": 360,
             "proxy": 281,
             "yaml": 279
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -6751,8 +6731,8 @@
         {
           "tag": "v1.19.9",
           "typeReferences": {
-            "namedReferences": 258,
-            "resolvedNamedReferences": 164,
+            "namedReferences": 259,
+            "resolvedNamedReferences": 166,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -6816,7 +6796,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -6854,17 +6833,17 @@
               "opaque": 15
             }
           },
-          "sourceFiles": 199,
-          "declarations": 337,
+          "sourceFiles": 202,
+          "declarations": 341,
           "taggedFields": {
             "json": 364,
             "proxy": 291,
             "yaml": 283
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -6873,129 +6852,7 @@
         {
           "tag": "v1.19.10",
           "typeReferences": {
-            "namedReferences": 258,
-            "resolvedNamedReferences": 164,
-            "unresolvedNamedReferences": [
-              "adapter/outbound#error",
-              "common/atomic#Bool",
-              "common/atomic#TypedValue",
-              "common/net#EnhancePacketConn",
-              "common/net#ExtendedConn",
-              "common/queue#Queue",
-              "common/singledo#Single",
-              "common/utils#IntRanges",
-              "component/auth#AuthStore",
-              "component/auth#AuthUser",
-              "component/auth#Authenticator",
-              "component/cidr#IpCidrSet",
-              "component/dialer#InterfaceFinder",
-              "component/ech#Config",
-              "component/fakeip#Pool",
-              "component/loopback#Detector",
-              "component/process#FindProcessMode",
-              "component/proxydialer#SingDialer",
-              "component/resolver#HostValue",
-              "component/resolver#Resolver",
-              "component/resource#Fetcher",
-              "component/sniffer#Config",
-              "component/tls#Config",
-              "component/tls#RealityConfig",
-              "component/trie#DomainSet",
-              "component/trie#DomainTrie",
-              "context#CancelFunc",
-              "context#Context",
-              "crypto/tls#Config",
-              "dns#NameServer",
-              "dns#Policy",
-              "github.com/dlclark/regexp2#Regexp",
-              "github.com/enfein/mieru/v3/apis/client#Client",
-              "github.com/metacubex/sing-mux#Client",
-              "github.com/metacubex/sing-mux#Service",
-              "github.com/metacubex/sing-quic/hysteria2#Client",
-              "github.com/metacubex/sing-quic/hysteria2#Service",
-              "github.com/metacubex/sing-shadowsocks#Service",
-              "github.com/metacubex/sing-shadowsocks2#Method",
-              "github.com/metacubex/sing-shadowtls#Service",
-              "github.com/metacubex/sing-tun#AutoRedirect",
-              "github.com/metacubex/sing-tun#DefaultInterfaceMonitor",
-              "github.com/metacubex/sing-tun#NetworkUpdateMonitor",
-              "github.com/metacubex/sing-tun#PackageManager",
-              "github.com/metacubex/sing-tun#Stack",
-              "github.com/metacubex/sing-tun#Tun",
-              "github.com/metacubex/sing-vmess#Client",
-              "github.com/metacubex/sing-vmess#Service",
-              "github.com/metacubex/sing-vmess/vless#Service",
-              "github.com/metacubex/sing-wireguard#ClientBind",
-              "github.com/metacubex/sing-wireguard#Device",
-              "github.com/metacubex/sing/common/buf#Buffer",
-              "github.com/metacubex/sing/common/metadata#Socksaddr",
-              "github.com/metacubex/sing/common/network#NetPacketWriter",
-              "github.com/metacubex/utls#Conn",
-              "github.com/metacubex/utls#RealityConfig",
-              "github.com/wk8/go-ordered-map/v2#OrderedMap",
-              "go4.org/netipx#IPSet",
-              "golang.org/x/crypto/ssh#Client",
-              "golang.org/x/crypto/ssh#ClientConfig",
-              "io#Closer",
-              "io#ReadCloser",
-              "log#LogLevel",
-              "net#Addr",
-              "net#Conn",
-              "net#Listener",
-              "net#PacketConn",
-              "net/netip#Addr",
-              "net/netip#AddrPort",
-              "net/netip#Prefix",
-              "strings#Replacer",
-              "sync#Mutex",
-              "sync#Once",
-              "time#Duration",
-              "time#Time",
-              "transport/anytls#Client",
-              "transport/anytls/padding#PaddingFactory",
-              "transport/gost-plugin#Option",
-              "transport/gun#Config",
-              "transport/gun#TransportWrap",
-              "transport/hysteria/core#Client",
-              "transport/hysteria/core#UDPConn",
-              "transport/restls#Config",
-              "transport/shadowsocks/core#Cipher",
-              "transport/sing-shadowtls#ShadowTLSOption",
-              "transport/snell#Pool",
-              "transport/socks5#Addr",
-              "transport/ssr/obfs#Obfs",
-              "transport/ssr/protocol#Protocol",
-              "transport/tuic#PoolClient",
-              "transport/tuic#Server",
-              "transport/v2ray-plugin#Option",
-              "transport/vless#Client",
-              "tunnel#TunnelMode"
-            ],
-            "opaqueShapes": {
-              "dynamic": 53,
-              "opaque": 17
-            }
-          },
-          "sourceFiles": 199,
-          "declarations": 339,
-          "taggedFields": {
-            "json": 364,
-            "proxy": 291,
-            "yaml": 283
-          },
-          "customDecoders": 4,
-          "reviewedValueDecoders": 0,
-          "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
-          "decoderBindings": 18,
-          "decodedObjectLayouts": 18,
-          "reportedBuildTags": 4,
-          "rejectedConstructors": 0
-        },
-        {
-          "tag": "v1.19.11",
-          "typeReferences": {
-            "namedReferences": 261,
+            "namedReferences": 259,
             "resolvedNamedReferences": 166,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
@@ -7054,6 +6911,127 @@
               "github.com/metacubex/sing/common/network#NetPacketWriter",
               "github.com/metacubex/utls#Conn",
               "github.com/metacubex/utls#RealityConfig",
+              "github.com/wk8/go-ordered-map/v2#OrderedMap",
+              "go4.org/netipx#IPSet",
+              "golang.org/x/crypto/ssh#Client",
+              "golang.org/x/crypto/ssh#ClientConfig",
+              "io#Closer",
+              "io#ReadCloser",
+              "net#Addr",
+              "net#Conn",
+              "net#Listener",
+              "net#PacketConn",
+              "net/netip#Addr",
+              "net/netip#AddrPort",
+              "net/netip#Prefix",
+              "strings#Replacer",
+              "sync#Mutex",
+              "sync#Once",
+              "time#Duration",
+              "time#Time",
+              "transport/anytls#Client",
+              "transport/anytls/padding#PaddingFactory",
+              "transport/gost-plugin#Option",
+              "transport/gun#Config",
+              "transport/gun#TransportWrap",
+              "transport/hysteria/core#Client",
+              "transport/hysteria/core#UDPConn",
+              "transport/restls#Config",
+              "transport/shadowsocks/core#Cipher",
+              "transport/sing-shadowtls#ShadowTLSOption",
+              "transport/snell#Pool",
+              "transport/socks5#Addr",
+              "transport/ssr/obfs#Obfs",
+              "transport/ssr/protocol#Protocol",
+              "transport/tuic#PoolClient",
+              "transport/tuic#Server",
+              "transport/v2ray-plugin#Option",
+              "transport/vless#Client",
+              "tunnel#TunnelMode"
+            ],
+            "opaqueShapes": {
+              "dynamic": 53,
+              "opaque": 17
+            }
+          },
+          "sourceFiles": 202,
+          "declarations": 343,
+          "taggedFields": {
+            "json": 364,
+            "proxy": 291,
+            "yaml": 283
+          },
+          "customDecoders": 5,
+          "reviewedValueDecoders": 0,
+          "schemaAnnotatedFields": 0,
+          "reviewedSemanticRules": 4,
+          "decoderBindings": 18,
+          "decodedObjectLayouts": 18,
+          "reportedBuildTags": 4,
+          "rejectedConstructors": 0
+        },
+        {
+          "tag": "v1.19.11",
+          "typeReferences": {
+            "namedReferences": 262,
+            "resolvedNamedReferences": 168,
+            "unresolvedNamedReferences": [
+              "adapter/outbound#error",
+              "common/atomic#Bool",
+              "common/atomic#TypedValue",
+              "common/net#EnhancePacketConn",
+              "common/net#ExtendedConn",
+              "common/queue#Queue",
+              "common/singledo#Single",
+              "common/utils#IntRanges",
+              "component/auth#AuthStore",
+              "component/auth#AuthUser",
+              "component/auth#Authenticator",
+              "component/cidr#IpCidrSet",
+              "component/dialer#InterfaceFinder",
+              "component/ech#Config",
+              "component/fakeip#Pool",
+              "component/loopback#Detector",
+              "component/process#FindProcessMode",
+              "component/proxydialer#SingDialer",
+              "component/resolver#HostValue",
+              "component/resolver#Resolver",
+              "component/resource#Fetcher",
+              "component/sniffer#Config",
+              "component/tls#Config",
+              "component/tls#RealityConfig",
+              "component/trie#DomainSet",
+              "component/trie#DomainTrie",
+              "context#CancelFunc",
+              "context#Context",
+              "crypto/tls#Config",
+              "dns#NameServer",
+              "dns#Policy",
+              "github.com/dlclark/regexp2#Regexp",
+              "github.com/enfein/mieru/v3/apis/client#Client",
+              "github.com/metacubex/sing-mux#Client",
+              "github.com/metacubex/sing-mux#Service",
+              "github.com/metacubex/sing-quic/hysteria2#Client",
+              "github.com/metacubex/sing-quic/hysteria2#Service",
+              "github.com/metacubex/sing-shadowsocks#Service",
+              "github.com/metacubex/sing-shadowsocks2#Method",
+              "github.com/metacubex/sing-shadowtls#Service",
+              "github.com/metacubex/sing-tun#AutoRedirect",
+              "github.com/metacubex/sing-tun#DefaultInterfaceMonitor",
+              "github.com/metacubex/sing-tun#NetworkUpdateMonitor",
+              "github.com/metacubex/sing-tun#PackageManager",
+              "github.com/metacubex/sing-tun#Stack",
+              "github.com/metacubex/sing-tun#Tun",
+              "github.com/metacubex/sing-vmess#Client",
+              "github.com/metacubex/sing-vmess#Service",
+              "github.com/metacubex/sing-vmess/vless#Service",
+              "github.com/metacubex/sing-wireguard#ClientBind",
+              "github.com/metacubex/sing-wireguard#Device",
+              "github.com/metacubex/sing/common/buf#Buffer",
+              "github.com/metacubex/sing/common/metadata#Socksaddr",
+              "github.com/metacubex/sing/common/network#NetPacketWriter",
+              "github.com/metacubex/utls#Conn",
+              "github.com/metacubex/utls#RealityConfig",
               "github.com/metacubex/utls#RealityLimitFallback",
               "github.com/wk8/go-ordered-map/v2#OrderedMap",
               "go4.org/netipx#IPSet",
@@ -7061,7 +7039,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -7099,17 +7076,17 @@
               "opaque": 19
             }
           },
-          "sourceFiles": 199,
-          "declarations": 342,
+          "sourceFiles": 202,
+          "declarations": 346,
           "taggedFields": {
             "json": 366,
             "proxy": 291,
             "yaml": 285
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -7118,8 +7095,8 @@
         {
           "tag": "v1.19.12",
           "typeReferences": {
-            "namedReferences": 263,
-            "resolvedNamedReferences": 167,
+            "namedReferences": 264,
+            "resolvedNamedReferences": 169,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -7185,7 +7162,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -7223,17 +7199,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 201,
-          "declarations": 343,
+          "sourceFiles": 204,
+          "declarations": 347,
           "taggedFields": {
             "json": 371,
             "proxy": 291,
             "yaml": 290
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -7242,8 +7218,8 @@
         {
           "tag": "v1.19.13",
           "typeReferences": {
-            "namedReferences": 266,
-            "resolvedNamedReferences": 167,
+            "namedReferences": 267,
+            "resolvedNamedReferences": 169,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -7309,7 +7285,6 @@
               "golang.org/x/crypto/ssh#ClientConfig",
               "io#Closer",
               "io#ReadCloser",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -7350,17 +7325,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 201,
-          "declarations": 342,
+          "sourceFiles": 204,
+          "declarations": 346,
           "taggedFields": {
             "json": 371,
             "proxy": 302,
             "yaml": 290
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -7369,8 +7344,8 @@
         {
           "tag": "v1.19.14",
           "typeReferences": {
-            "namedReferences": 274,
-            "resolvedNamedReferences": 171,
+            "namedReferences": 275,
+            "resolvedNamedReferences": 173,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -7438,7 +7413,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -7481,17 +7455,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 205,
-          "declarations": 349,
+          "sourceFiles": 208,
+          "declarations": 353,
           "taggedFields": {
             "json": 383,
             "proxy": 315,
             "yaml": 301
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -7500,8 +7474,8 @@
         {
           "tag": "v1.19.15",
           "typeReferences": {
-            "namedReferences": 274,
-            "resolvedNamedReferences": 171,
+            "namedReferences": 275,
+            "resolvedNamedReferences": 173,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -7569,7 +7543,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -7612,17 +7585,17 @@
               "opaque": 17
             }
           },
-          "sourceFiles": 205,
-          "declarations": 349,
+          "sourceFiles": 208,
+          "declarations": 353,
           "taggedFields": {
             "json": 383,
             "proxy": 315,
             "yaml": 301
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -7631,8 +7604,8 @@
         {
           "tag": "v1.19.16",
           "typeReferences": {
-            "namedReferences": 277,
-            "resolvedNamedReferences": 172,
+            "namedReferences": 278,
+            "resolvedNamedReferences": 174,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -7702,7 +7675,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -7745,17 +7717,17 @@
               "opaque": 18
             }
           },
-          "sourceFiles": 207,
-          "declarations": 353,
+          "sourceFiles": 210,
+          "declarations": 357,
           "taggedFields": {
             "json": 384,
             "proxy": 315,
             "yaml": 302
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 18,
           "decodedObjectLayouts": 18,
           "reportedBuildTags": 4,
@@ -7764,8 +7736,8 @@
         {
           "tag": "v1.19.17",
           "typeReferences": {
-            "namedReferences": 284,
-            "resolvedNamedReferences": 177,
+            "namedReferences": 285,
+            "resolvedNamedReferences": 179,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -7837,7 +7809,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -7880,17 +7851,17 @@
               "opaque": 18
             }
           },
-          "sourceFiles": 211,
-          "declarations": 361,
+          "sourceFiles": 214,
+          "declarations": 365,
           "taggedFields": {
             "json": 394,
             "proxy": 324,
             "yaml": 303
           },
-          "customDecoders": 4,
+          "customDecoders": 5,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 19,
           "decodedObjectLayouts": 19,
           "reportedBuildTags": 4,
@@ -7899,8 +7870,8 @@
         {
           "tag": "v1.19.18",
           "typeReferences": {
-            "namedReferences": 283,
-            "resolvedNamedReferences": 177,
+            "namedReferences": 284,
+            "resolvedNamedReferences": 179,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -7968,7 +7939,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -8014,17 +7984,17 @@
               "opaque": 19
             }
           },
-          "sourceFiles": 209,
-          "declarations": 362,
+          "sourceFiles": 212,
+          "declarations": 366,
           "taggedFields": {
             "json": 397,
             "proxy": 328,
             "yaml": 303
           },
-          "customDecoders": 5,
+          "customDecoders": 6,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 19,
           "decodedObjectLayouts": 19,
           "reportedBuildTags": 4,
@@ -8033,8 +8003,8 @@
         {
           "tag": "v1.19.19",
           "typeReferences": {
-            "namedReferences": 290,
-            "resolvedNamedReferences": 178,
+            "namedReferences": 291,
+            "resolvedNamedReferences": 180,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -8102,7 +8072,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -8154,17 +8123,17 @@
               "opaque": 19
             }
           },
-          "sourceFiles": 208,
-          "declarations": 365,
+          "sourceFiles": 211,
+          "declarations": 369,
           "taggedFields": {
             "json": 400,
             "proxy": 333,
             "yaml": 303
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 19,
           "decodedObjectLayouts": 19,
           "reportedBuildTags": 4,
@@ -8173,8 +8142,8 @@
         {
           "tag": "v1.19.20",
           "typeReferences": {
-            "namedReferences": 291,
-            "resolvedNamedReferences": 179,
+            "namedReferences": 292,
+            "resolvedNamedReferences": 181,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -8242,7 +8211,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -8294,17 +8262,17 @@
               "opaque": 20
             }
           },
-          "sourceFiles": 210,
-          "declarations": 367,
+          "sourceFiles": 213,
+          "declarations": 371,
           "taggedFields": {
             "json": 403,
             "proxy": 349,
             "yaml": 306
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 20,
           "decodedObjectLayouts": 20,
           "reportedBuildTags": 4,
@@ -8313,8 +8281,8 @@
         {
           "tag": "v1.19.21",
           "typeReferences": {
-            "namedReferences": 298,
-            "resolvedNamedReferences": 184,
+            "namedReferences": 299,
+            "resolvedNamedReferences": 186,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -8382,7 +8350,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -8436,17 +8403,17 @@
               "opaque": 20
             }
           },
-          "sourceFiles": 214,
-          "declarations": 375,
+          "sourceFiles": 217,
+          "declarations": 379,
           "taggedFields": {
             "json": 415,
             "proxy": 375,
             "yaml": 317
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 21,
           "decodedObjectLayouts": 21,
           "reportedBuildTags": 4,
@@ -8455,8 +8422,8 @@
         {
           "tag": "v1.19.22",
           "typeReferences": {
-            "namedReferences": 302,
-            "resolvedNamedReferences": 188,
+            "namedReferences": 303,
+            "resolvedNamedReferences": 190,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -8524,7 +8491,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -8578,17 +8544,17 @@
               "opaque": 20
             }
           },
-          "sourceFiles": 214,
-          "declarations": 379,
+          "sourceFiles": 217,
+          "declarations": 383,
           "taggedFields": {
             "json": 415,
             "proxy": 401,
             "yaml": 317
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 21,
           "decodedObjectLayouts": 21,
           "reportedBuildTags": 4,
@@ -8597,8 +8563,8 @@
         {
           "tag": "v1.19.23",
           "typeReferences": {
-            "namedReferences": 303,
-            "resolvedNamedReferences": 189,
+            "namedReferences": 304,
+            "resolvedNamedReferences": 191,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -8666,7 +8632,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -8720,17 +8685,17 @@
               "opaque": 20
             }
           },
-          "sourceFiles": 214,
-          "declarations": 380,
+          "sourceFiles": 217,
+          "declarations": 384,
           "taggedFields": {
             "json": 419,
             "proxy": 416,
             "yaml": 321
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 21,
           "decodedObjectLayouts": 21,
           "reportedBuildTags": 4,
@@ -8739,8 +8704,8 @@
         {
           "tag": "v1.19.24",
           "typeReferences": {
-            "namedReferences": 304,
-            "resolvedNamedReferences": 189,
+            "namedReferences": 305,
+            "resolvedNamedReferences": 191,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -8809,7 +8774,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -8863,17 +8827,17 @@
               "opaque": 22
             }
           },
-          "sourceFiles": 214,
-          "declarations": 380,
+          "sourceFiles": 217,
+          "declarations": 384,
           "taggedFields": {
             "json": 422,
             "proxy": 451,
             "yaml": 324
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 21,
           "decodedObjectLayouts": 21,
           "reportedBuildTags": 4,
@@ -8882,8 +8846,8 @@
         {
           "tag": "v1.19.25",
           "typeReferences": {
-            "namedReferences": 323,
-            "resolvedNamedReferences": 203,
+            "namedReferences": 324,
+            "resolvedNamedReferences": 205,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "common/atomic#Bool",
@@ -8954,7 +8918,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -9011,17 +8974,17 @@
               "opaque": 30
             }
           },
-          "sourceFiles": 227,
-          "declarations": 405,
+          "sourceFiles": 230,
+          "declarations": 409,
           "taggedFields": {
             "json": 452,
             "proxy": 498,
             "yaml": 351
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 25,
           "decodedObjectLayouts": 25,
           "reportedBuildTags": 5,
@@ -9030,8 +8993,8 @@
         {
           "tag": "v1.19.26",
           "typeReferences": {
-            "namedReferences": 329,
-            "resolvedNamedReferences": 206,
+            "namedReferences": 330,
+            "resolvedNamedReferences": 208,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "bufio#Reader",
@@ -9104,7 +9067,6 @@
               "io#Closer",
               "io#ReadCloser",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -9162,17 +9124,17 @@
               "opaque": 31
             }
           },
-          "sourceFiles": 229,
-          "declarations": 411,
+          "sourceFiles": 232,
+          "declarations": 415,
           "taggedFields": {
             "json": 454,
             "proxy": 502,
             "yaml": 353
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 25,
           "decodedObjectLayouts": 25,
           "reportedBuildTags": 5,
@@ -9181,8 +9143,8 @@
         {
           "tag": "v1.19.27",
           "typeReferences": {
-            "namedReferences": 330,
-            "resolvedNamedReferences": 206,
+            "namedReferences": 331,
+            "resolvedNamedReferences": 208,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "bufio#Reader",
@@ -9256,7 +9218,6 @@
               "io#ReadCloser",
               "io/fs#File",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -9314,17 +9275,17 @@
               "opaque": 32
             }
           },
-          "sourceFiles": 230,
-          "declarations": 412,
+          "sourceFiles": 233,
+          "declarations": 416,
           "taggedFields": {
             "json": 454,
             "proxy": 504,
             "yaml": 354
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 25,
           "decodedObjectLayouts": 25,
           "reportedBuildTags": 5,
@@ -9333,8 +9294,8 @@
         {
           "tag": "v1.19.28",
           "typeReferences": {
-            "namedReferences": 362,
-            "resolvedNamedReferences": 232,
+            "namedReferences": 363,
+            "resolvedNamedReferences": 234,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "bufio#Reader",
@@ -9408,7 +9369,6 @@
               "io#ReadCloser",
               "io/fs#File",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -9472,17 +9432,17 @@
               "opaque": 34
             }
           },
-          "sourceFiles": 243,
-          "declarations": 446,
+          "sourceFiles": 246,
+          "declarations": 450,
           "taggedFields": {
             "json": 508,
             "proxy": 563,
             "yaml": 398
           },
-          "customDecoders": 6,
+          "customDecoders": 7,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 26,
           "decodedObjectLayouts": 26,
           "reportedBuildTags": 5,
@@ -9491,8 +9451,8 @@
         {
           "tag": "v1.19.29",
           "typeReferences": {
-            "namedReferences": 397,
-            "resolvedNamedReferences": 260,
+            "namedReferences": 398,
+            "resolvedNamedReferences": 262,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "bufio#Reader",
@@ -9566,7 +9526,6 @@
               "io#ReadCloser",
               "io/fs#File",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -9637,17 +9596,17 @@
               "opaque": 38
             }
           },
-          "sourceFiles": 257,
-          "declarations": 501,
+          "sourceFiles": 260,
+          "declarations": 505,
           "taggedFields": {
             "json": 553,
             "proxy": 627,
             "yaml": 443
           },
-          "customDecoders": 7,
+          "customDecoders": 8,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 27,
           "decodedObjectLayouts": 27,
           "reportedBuildTags": 5,
@@ -9656,8 +9615,8 @@
         {
           "tag": "v1.19.30",
           "typeReferences": {
-            "namedReferences": 414,
-            "resolvedNamedReferences": 268,
+            "namedReferences": 415,
+            "resolvedNamedReferences": 270,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "bufio#Reader",
@@ -9739,7 +9698,6 @@
               "io#ReadCloser",
               "io/fs#File",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -9811,17 +9769,17 @@
               "opaque": 43
             }
           },
-          "sourceFiles": 261,
-          "declarations": 518,
+          "sourceFiles": 264,
+          "declarations": 522,
           "taggedFields": {
             "json": 552,
             "proxy": 687,
             "yaml": 442
           },
-          "customDecoders": 7,
+          "customDecoders": 8,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 29,
           "decodedObjectLayouts": 29,
           "reportedBuildTags": 6,
@@ -9830,8 +9788,8 @@
         {
           "tag": "v1.19.31",
           "typeReferences": {
-            "namedReferences": 420,
-            "resolvedNamedReferences": 270,
+            "namedReferences": 421,
+            "resolvedNamedReferences": 272,
             "unresolvedNamedReferences": [
               "adapter/outbound#error",
               "bufio#Reader",
@@ -9917,7 +9875,6 @@
               "io#ReadCloser",
               "io/fs#File",
               "listener/sing_vless#T",
-              "log#LogLevel",
               "net#Addr",
               "net#Conn",
               "net#Listener",
@@ -9989,17 +9946,17 @@
               "opaque": 44
             }
           },
-          "sourceFiles": 265,
-          "declarations": 523,
+          "sourceFiles": 268,
+          "declarations": 527,
           "taggedFields": {
             "json": 554,
             "proxy": 751,
             "yaml": 444
           },
-          "customDecoders": 7,
+          "customDecoders": 8,
           "reviewedValueDecoders": 0,
           "schemaAnnotatedFields": 0,
-          "reviewedSemanticRules": 3,
+          "reviewedSemanticRules": 4,
           "decoderBindings": 31,
           "decodedObjectLayouts": 31,
           "reportedBuildTags": 7,

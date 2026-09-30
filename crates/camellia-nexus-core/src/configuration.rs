@@ -4,9 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 mod conflict_operations;
+mod intent;
+mod intent_objects;
 mod operations;
 mod upstream;
 pub use conflict_operations::*;
+pub use intent::*;
+pub use intent_objects::*;
 pub use operations::*;
 pub use upstream::{SourceUpdateKind, UpstreamState};
 
@@ -1645,6 +1649,8 @@ pub struct FinalEditorSession {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GuidedIntent {
     pub values: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub path_edits: BTreeMap<String, IntentPathEdit>,
 }
 
 /// Settings owned by the Details surface (currently the managed dashboard
@@ -1788,6 +1794,18 @@ pub struct GuidedSettingDescriptor {
     pub allowed_values: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_when: Option<String>,
+    #[serde(default)]
+    pub advanced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<Value>,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1812,83 +1830,7 @@ pub struct GuidedProjection {
 }
 
 pub fn guided_setting_descriptors(kind: ProgramKind) -> Vec<GuidedSettingDescriptor> {
-    let mut descriptors = vec![GuidedSettingDescriptor {
-        id: "logging.level".into(),
-        category: "logging".into(),
-        label: "Log level".into(),
-        description: "Control the Core log verbosity, or follow the source configuration.".into(),
-        control: GuidedControl::Select,
-        allowed_values: match kind {
-            ProgramKind::Xray => vec!["debug", "info", "warning", "error", "none"],
-            ProgramKind::SingBox | ProgramKind::Mihomo => {
-                vec!["trace", "debug", "info", "warn", "error", "fatal", "panic"]
-            }
-            ProgramKind::Generic => Vec::new(),
-        }
-        .into_iter()
-        .map(str::to_owned)
-        .collect(),
-        enabled_when: None,
-    }];
-    match kind {
-        ProgramKind::Mihomo => descriptors.extend([
-            descriptor(
-                "network.ipv6",
-                "network",
-                "IPv6",
-                GuidedControl::Toggle,
-                &[],
-            ),
-            descriptor("tun.enabled", "tun", "TUN", GuidedControl::Toggle, &[]),
-            descriptor(
-                "tun.strictRoute",
-                "tun",
-                "Strict routing",
-                GuidedControl::Toggle,
-                &[],
-            ),
-            descriptor("dns.enabled", "dns", "DNS", GuidedControl::Toggle, &[]),
-            descriptor(
-                "dns.mode",
-                "dns",
-                "DNS mode",
-                GuidedControl::Select,
-                &["normal", "fake-ip", "redir-host"],
-            ),
-            descriptor(
-                "routing.mode",
-                "routing",
-                "Routing mode",
-                GuidedControl::Select,
-                &["rule", "global", "direct"],
-            ),
-        ]),
-        ProgramKind::SingBox => descriptors.extend([
-            descriptor(
-                "dns.strategy",
-                "dns",
-                "IP strategy",
-                GuidedControl::Select,
-                &["prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only"],
-            ),
-            descriptor(
-                "routing.autoDetectInterface",
-                "routing",
-                "Auto-detect interface",
-                GuidedControl::Toggle,
-                &[],
-            ),
-        ]),
-        ProgramKind::Xray => descriptors.push(descriptor(
-            "routing.domainStrategy",
-            "routing",
-            "Domain strategy",
-            GuidedControl::Select,
-            &["AsIs", "IPIfNonMatch", "IPOnDemand"],
-        )),
-        ProgramKind::Generic => descriptors.clear(),
-    }
-    descriptors
+    intent_setting_descriptors(kind)
 }
 
 pub fn validate_guided_value(kind: ProgramKind, setting_id: &str, value: &Value) -> Result<()> {
@@ -1929,7 +1871,10 @@ pub fn validate_guided_value(kind: ProgramKind, setting_id: &str, value: &Value)
             }
         }
         GuidedControl::Number => {
-            if !value.is_number() {
+            if !value.as_u64().is_some_and(|number| {
+                descriptor.minimum.is_none_or(|minimum| number >= minimum)
+                    && descriptor.maximum.is_none_or(|maximum| number <= maximum)
+            }) {
                 return Err(CamelliaNexusError::new(
                     ErrorCode::ConfigInvalid,
                     format!("Guided setting {setting_id} expects a number"),
@@ -1948,24 +1893,6 @@ pub fn validate_guided_value(kind: ProgramKind, setting_id: &str, value: &Value)
     Ok(())
 }
 
-fn descriptor(
-    id: &str,
-    category: &str,
-    label: &str,
-    control: GuidedControl,
-    values: &[&str],
-) -> GuidedSettingDescriptor {
-    GuidedSettingDescriptor {
-        id: id.into(),
-        category: category.into(),
-        label: label.into(),
-        description: format!("Configure {label}, or follow the source configuration."),
-        control,
-        allowed_values: values.iter().map(|value| (*value).to_owned()).collect(),
-        enabled_when: (id == "tun.strictRoute").then(|| "tun.enabled".into()),
-    }
-}
-
 pub fn apply_guided_intent(
     kind: ProgramKind,
     base: &Value,
@@ -1974,27 +1901,9 @@ pub fn apply_guided_intent(
     let mut effective = base.clone();
     for (setting, value) in &intent.values {
         validate_guided_value(kind, setting, value)?;
-        let path: &[&str] = match (kind, setting.as_str()) {
-            (ProgramKind::SingBox, "logging.level") => &["log", "level"],
-            (ProgramKind::SingBox, "dns.strategy") => &["dns", "strategy"],
-            (ProgramKind::SingBox, "routing.autoDetectInterface") => {
-                &["route", "auto_detect_interface"]
-            }
-            (ProgramKind::Xray, "logging.level") => &["log", "loglevel"],
-            (ProgramKind::Xray, "routing.domainStrategy") => &["routing", "domainStrategy"],
-            (ProgramKind::Mihomo, "logging.level") => &["log-level"],
-            (ProgramKind::Mihomo, "network.ipv6") => &["ipv6"],
-            (ProgramKind::Mihomo, "tun.enabled") => &["tun", "enable"],
-            (ProgramKind::Mihomo, "tun.strictRoute") => &["tun", "strict-route"],
-            (ProgramKind::Mihomo, "dns.enabled") => &["dns", "enable"],
-            (ProgramKind::Mihomo, "dns.mode") => &["dns", "enhanced-mode"],
-            (ProgramKind::Mihomo, "routing.mode") => &["mode"],
-            _ => {
-                return Err(CamelliaNexusError::invalid_spec(format!(
-                    "Unsupported Guided setting {setting} for {kind:?}",
-                )));
-            }
-        };
+        let path = guided_path(kind, setting).ok_or_else(|| {
+            CamelliaNexusError::invalid_spec("Intent setting has no registered path")
+        })?;
         set_object_path(&mut effective, path, value.clone())?;
     }
     Ok(effective)
@@ -2352,23 +2261,7 @@ fn guided_value_is_representable(descriptor: &GuidedSettingDescriptor, value: &V
 }
 
 fn guided_path(kind: ProgramKind, setting: &str) -> Option<&'static [&'static str]> {
-    match (kind, setting) {
-        (ProgramKind::SingBox, "logging.level") => Some(&["log", "level"]),
-        (ProgramKind::SingBox, "dns.strategy") => Some(&["dns", "strategy"]),
-        (ProgramKind::SingBox, "routing.autoDetectInterface") => {
-            Some(&["route", "auto_detect_interface"])
-        }
-        (ProgramKind::Xray, "logging.level") => Some(&["log", "loglevel"]),
-        (ProgramKind::Xray, "routing.domainStrategy") => Some(&["routing", "domainStrategy"]),
-        (ProgramKind::Mihomo, "logging.level") => Some(&["log-level"]),
-        (ProgramKind::Mihomo, "network.ipv6") => Some(&["ipv6"]),
-        (ProgramKind::Mihomo, "tun.enabled") => Some(&["tun", "enable"]),
-        (ProgramKind::Mihomo, "tun.strictRoute") => Some(&["tun", "strict-route"]),
-        (ProgramKind::Mihomo, "dns.enabled") => Some(&["dns", "enable"]),
-        (ProgramKind::Mihomo, "dns.mode") => Some(&["dns", "enhanced-mode"]),
-        (ProgramKind::Mihomo, "routing.mode") => Some(&["mode"]),
-        _ => None,
-    }
+    intent_setting_path(kind, setting)
 }
 
 fn set_object_path(root: &mut Value, path: &[&str], value: Value) -> Result<()> {
@@ -4266,6 +4159,9 @@ impl ConfigurationState {
                 .as_ref()
                 .map(|candidate| candidate.revision.clone()),
             guided_descriptors: guided_setting_descriptors(self.kind),
+            intent_objects: Vec::new(),
+            intent_object_descriptors: Vec::new(),
+            intent_targets: Vec::new(),
             guided_projection: project_guided_settings(
                 self.kind,
                 &upstream,
@@ -5121,6 +5017,12 @@ pub struct ConfigurationStateView {
     pub last_known_good_revision: Option<ConfigurationRevision>,
     pub guided_descriptors: Vec<GuidedSettingDescriptor>,
     pub guided_projection: Vec<GuidedProjection>,
+    #[serde(default)]
+    pub intent_objects: Vec<IntentObjectProjection>,
+    #[serde(default)]
+    pub intent_object_descriptors: Vec<IntentObjectDescriptor>,
+    #[serde(default)]
+    pub intent_targets: Vec<IntentTarget>,
     #[serde(default)]
     pub managed_integrations: Vec<ManagedIntegrationProjection>,
     pub workspace: ConfigurationWorkspaceView,

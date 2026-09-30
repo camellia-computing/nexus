@@ -522,7 +522,7 @@ pub fn run() {
             commands::load_configuration_schema,
             commands::get_configuration_workspace_preview,
             commands::get_configuration_workspace,
-            commands::set_guided_intent,
+            commands::update_configuration_intent,
             commands::preview_configuration_import,
             commands::update_final_configuration_draft,
             commands::rebase_final_configuration_draft,
