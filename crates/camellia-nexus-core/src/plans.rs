@@ -130,7 +130,8 @@ pub struct CommandOutput {
 
 #[derive(Debug, Clone)]
 pub struct DetectedBinary {
-    pub version: Option<String>,
+    pub probe: Option<crate::CoreProbeReport>,
+    pub core_target: Option<crate::CoreTargetIdentity>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +143,6 @@ pub struct ActionContext {
 
 #[derive(Debug, Clone)]
 pub enum ActionPlan {
-    Run(CommandPlan),
     Format {
         command: CommandPlan,
         validate_after: CommandPlan,
@@ -160,12 +160,6 @@ pub struct StagedConfig {
     pub path: PathBuf,
     pub target: PathBuf,
     pub backup: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProgramConfigTransaction {
-    pub program_id: ProgramId,
-    pub config_target: PathBuf,
 }
 
 #[derive(Debug, Clone)]

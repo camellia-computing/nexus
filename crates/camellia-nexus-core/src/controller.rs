@@ -34,6 +34,7 @@ pub enum Mutation {
     Restart {
         interactive: bool,
     },
+    RefreshBinaryIdentity,
     UpdateSpec {
         expected_spec: Box<ProgramSpec>,
         next_spec: Box<ProgramSpec>,
@@ -45,17 +46,12 @@ pub enum Mutation {
     CommitPreparedPackage {
         expected_spec: Box<ProgramSpec>,
         next_spec: Box<ProgramSpec>,
-        staged: StagedPackage,
+        staged: Box<StagedPackage>,
+        configuration: Option<Box<crate::PackageConfigurationUpdate>>,
     },
     ApplyPreparedConfig {
         expected_spec: Box<ProgramSpec>,
-        prepared: PreparedConfigGuard,
-        interactive: bool,
-    },
-    UpdateSpecAndApplyPreparedConfig {
-        expected_spec: Box<ProgramSpec>,
-        next_spec: Box<ProgramSpec>,
-        prepared: PreparedConfigGuard,
+        prepared: Box<PreparedConfigGuard>,
         interactive: bool,
     },
     Shutdown,
@@ -384,6 +380,7 @@ impl ProgramController {
             Mutation::Restart { interactive } => {
                 self.restart_process(interactive).await.map(|_| None)
             }
+            Mutation::RefreshBinaryIdentity => self.refresh_binary_identity().await.map(|_| None),
             Mutation::UpdateSpec {
                 expected_spec,
                 next_spec,
@@ -402,8 +399,14 @@ impl ProgramController {
                 expected_spec,
                 next_spec,
                 staged,
+                configuration,
             } => self
-                .commit_prepared_package(*expected_spec, *next_spec, staged)
+                .commit_prepared_package(
+                    *expected_spec,
+                    *next_spec,
+                    *staged,
+                    configuration.map(|value| *value),
+                )
                 .await
                 .map(|_| None),
             Mutation::ApplyPreparedConfig {
@@ -411,16 +414,7 @@ impl ProgramController {
                 prepared,
                 interactive,
             } => self
-                .apply_config(*expected_spec, prepared, interactive)
-                .await
-                .map(Some),
-            Mutation::UpdateSpecAndApplyPreparedConfig {
-                expected_spec,
-                next_spec,
-                prepared,
-                interactive,
-            } => self
-                .update_spec_and_apply_config(*expected_spec, *next_spec, prepared, interactive)
+                .apply_config(*expected_spec, *prepared, interactive)
                 .await
                 .map(Some),
             Mutation::Shutdown => {
@@ -436,6 +430,15 @@ impl ProgramController {
     }
 
     async fn start_process(&mut self, interactive: bool) -> Result<()> {
+        self.start_process_with_validated_config(interactive, None)
+            .await
+    }
+
+    async fn start_process_with_validated_config(
+        &mut self,
+        interactive: bool,
+        validated_config_hash: Option<&str>,
+    ) -> Result<()> {
         if self.process.is_some() {
             return Ok(());
         }
@@ -444,6 +447,9 @@ impl ProgramController {
         let prepared = async {
             self.refresh_binary_identity().await?;
             let spec = self.spec.read().await.clone();
+            self.config_service
+                .activation_preflight(&spec, validated_config_hash)
+                .await?;
             let adapter = self.adapters.get(spec.program_type.kind());
             let mut plan = adapter.launch_plan(&spec, &self.workspace)?;
             plan.interactive = interactive;
@@ -501,6 +507,11 @@ impl ProgramController {
     }
 
     async fn restart_process(&mut self, interactive: bool) -> Result<()> {
+        self.refresh_binary_identity().await?;
+        let spec = self.spec.read().await.clone();
+        self.config_service
+            .activation_preflight(&spec, None)
+            .await?;
         // A restart is two explicit lifecycle operations. Suppress policy-driven restarts
         // throughout the stop phase; only restore the running intent after it completed.
         self.desired_running = false;
@@ -598,14 +609,14 @@ impl ProgramController {
 
     async fn refresh_binary_identity(&mut self) -> Result<()> {
         let mut spec = self.spec.read().await.clone();
-        let mut current = self.store.executable_metadata(&spec).await?;
+        let current = self.store.executable_metadata(&spec).await?;
         let changed = spec.executable.metadata().is_none_or(|recorded| {
-            recorded.size != current.size || recorded.modified_unix_ms != current.modified_unix_ms
+            !recorded.observations_match(&current, spec.program_type.kind())
         });
         if !changed {
             return Ok(());
         }
-        current.detected_version = self.config_service.probe_binary(&spec).await?;
+        let current = self.config_service.probe_binary(&spec).await?;
         spec.executable.set_metadata(current);
         self.store.save(&spec).await?;
         *self.spec.write().await = spec;
@@ -617,6 +628,7 @@ impl ProgramController {
         expected_spec: ProgramSpec,
         next_spec: ProgramSpec,
         staged: StagedPackage,
+        configuration: Option<crate::PackageConfigurationUpdate>,
     ) -> Result<()> {
         if self.process.is_some() || self.restart_deadline.is_some() {
             let _ = self.store.discard_package(staged).await;
@@ -647,7 +659,7 @@ impl ProgramController {
         let discard = staged.clone();
         if let Err(error) = self
             .store
-            .commit_package(staged, &expected_spec, &next_spec)
+            .commit_package(staged, &expected_spec, &next_spec, configuration)
             .await
         {
             let _ = self.store.discard_package(discard).await;
@@ -686,6 +698,10 @@ impl ProgramController {
                 "Program settings changed while the configuration was being prepared",
             ));
         }
+        if let Err(error) = self.config_service.verify_prepared(&spec, &prepared).await {
+            let _ = self.config_service.discard(prepared).await;
+            return Err(error);
+        }
         let was_running = self.process.is_some();
         if was_running && let Err(error) = self.stop_process().await {
             let _ = self.config_service.discard(prepared).await;
@@ -694,18 +710,33 @@ impl ProgramController {
         let committed = match self.config_service.commit(prepared).await {
             Ok(committed) => committed,
             Err(error) => {
-                if was_running {
-                    let _ = self.start_process(interactive).await;
+                if was_running && let Err(restart_error) = self.start_process(interactive).await {
+                    let recovery = CamelliaNexusError::new(
+                        ErrorCode::Storage,
+                        "The previous program could not be restored",
+                    )
+                    .with_message_key("CONFIGURATION_RECOVERY_REQUIRED")
+                    .with_details(format!(
+                        "commit: {:?}; restart: {:?}",
+                        error.code, restart_error.code
+                    ));
+                    self.publish_error(recovery.clone());
+                    return Err(recovery);
                 }
                 return Err(error);
             }
         };
         if !was_running {
             self.set_state(ProgramState::Stopped);
-            return self.config_service.finalize(&spec, committed).await;
+            return self
+                .finalize_applied_config(&spec, committed, interactive, false)
+                .await;
         }
 
-        if let Err(new_error) = self.start_process(interactive).await {
+        if let Err(new_error) = self
+            .start_process_with_validated_config(interactive, Some(committed.new_hash()))
+            .await
+        {
             return self
                 .rollback_after_failed_apply(&spec, new_error, interactive)
                 .await;
@@ -718,7 +749,10 @@ impl ProgramController {
             tokio::time::timeout(Duration::from_secs(2), process.wait()).await
         };
         match early_exit {
-            Err(_) => self.config_service.finalize(&spec, committed).await,
+            Err(_) => {
+                self.finalize_applied_config(&spec, committed, interactive, true)
+                    .await
+            }
             Ok(exit_result) => {
                 self.process = None;
                 let error = match exit_result {
@@ -739,190 +773,40 @@ impl ProgramController {
         }
     }
 
-    async fn update_spec_and_apply_config(
+    async fn finalize_applied_config(
         &mut self,
-        expected_spec: ProgramSpec,
-        next_spec: ProgramSpec,
-        prepared: PreparedConfigGuard,
+        spec: &ProgramSpec,
+        committed: crate::config_service::CommittedConfigGuard,
         interactive: bool,
+        was_running: bool,
     ) -> Result<String> {
-        let state = self.state_tx.borrow().clone();
-        if !matches!(
-            state,
-            ProgramState::Stopped
-                | ProgramState::Running { .. }
-                | ProgramState::Exited { .. }
-                | ProgramState::Error { .. }
-        ) {
-            let _ = self.config_service.discard(prepared).await;
-            return Err(CamelliaNexusError::new(
-                ErrorCode::InvalidState,
-                "Configuration cannot be applied in the current state",
-            ));
-        }
-        if let Err(error) = next_spec.validate() {
-            let _ = self.config_service.discard(prepared).await;
-            return Err(error);
-        }
-        let current = self.spec.read().await.clone();
-        if current != expected_spec {
-            let _ = self.config_service.discard(prepared).await;
-            return Err(CamelliaNexusError::new(
-                ErrorCode::ConfigConflict,
-                "Program settings changed while the transaction was being prepared",
-            ));
-        }
-        if runtime_fields_changed(&current, &next_spec)
-            && (self.process.is_some() || self.restart_deadline.is_some())
-        {
-            let _ = self.config_service.discard(prepared).await;
-            return Err(CamelliaNexusError::new(
-                ErrorCode::InvalidState,
-                "Stop the active program or pending retry before changing runtime settings",
-            ));
-        }
-
-        let was_running = self.process.is_some();
-        if was_running && let Err(error) = self.stop_process().await {
-            let _ = self.config_service.discard(prepared).await;
-            return Err(error);
-        }
-        let committed = match self
-            .config_service
-            .commit_program_update(&current, &next_spec, prepared)
-            .await
-        {
-            Ok(committed) => committed,
+        match self.config_service.finalize(spec, committed).await {
+            Ok(hash) => Ok(hash),
+            Err(error)
+                if error.message_key.as_deref()
+                    == Some("CONFIGURATION_COMMIT_RECOVERY_REQUIRED") =>
+            {
+                Err(error)
+            }
+            Err(error) if was_running => {
+                self.rollback_after_failed_apply(spec, error, interactive)
+                    .await
+            }
             Err(error) => {
-                if was_running {
-                    let _ = self.start_process(interactive).await;
-                }
-                return Err(error);
-            }
-        };
-        *self.spec.write().await = next_spec;
-        if !was_running {
-            match self
-                .config_service
-                .finalize_program_update(&committed)
-                .await
-            {
-                Ok(hash) => {
-                    self.set_state(ProgramState::Stopped);
-                    return Ok(hash);
-                }
-                Err(error) => {
-                    return self
-                        .rollback_program_config_update(
-                            &current,
-                            committed,
-                            error,
-                            interactive,
-                            false,
-                        )
-                        .await;
-                }
-            }
-        }
-
-        self.desired_running = true;
-        if let Err(new_error) = self.start_process(interactive).await {
-            return self
-                .rollback_program_config_update(&current, committed, new_error, interactive, true)
-                .await;
-        }
-        let early_exit = {
-            let process = self.process.as_mut().ok_or_else(|| {
-                CamelliaNexusError::new(ErrorCode::Internal, "Started process handle is missing")
-            })?;
-            tokio::time::timeout(Duration::from_secs(2), process.wait()).await
-        };
-        match early_exit {
-            Err(_) => match self
-                .config_service
-                .finalize_program_update(&committed)
-                .await
-            {
-                Ok(hash) => Ok(hash),
-                Err(error) => {
-                    self.rollback_program_config_update(
-                        &current,
-                        committed,
-                        error,
-                        interactive,
-                        true,
+                if let Err(restore_error) = self.config_service.restore_backup(spec).await {
+                    let recovery = CamelliaNexusError::new(
+                        ErrorCode::Storage,
+                        "The previous configuration could not be restored",
                     )
-                    .await
+                    .with_message_key("CONFIGURATION_RECOVERY_REQUIRED")
+                    .with_details(format!(
+                        "commit: {:?}; restore: {:?}",
+                        error.code, restore_error.code
+                    ));
+                    self.publish_error(recovery.clone());
+                    return Err(recovery);
                 }
-            },
-            Ok(exit_result) => {
-                self.process = None;
-                let error = match exit_result {
-                    Ok(exit) => CamelliaNexusError::new(
-                        ErrorCode::ConfigInvalid,
-                        "Program exited during configuration stabilization",
-                    )
-                    .with_details(format!("exit code: {:?}", exit.code)),
-                    Err(error) => CamelliaNexusError::new(
-                        ErrorCode::ConfigInvalid,
-                        "Program could not be observed after applying configuration",
-                    )
-                    .with_details(error.to_string()),
-                };
-                self.rollback_program_config_update(&current, committed, error, interactive, true)
-                    .await
-            }
-        }
-    }
-
-    async fn rollback_program_config_update(
-        &mut self,
-        previous_spec: &ProgramSpec,
-        committed: crate::config_service::CommittedProgramConfigGuard,
-        new_error: CamelliaNexusError,
-        interactive: bool,
-        restart_previous: bool,
-    ) -> Result<String> {
-        self.desired_running = false;
-        if self.process.is_some()
-            && let Err(stop_error) = self.stop_process().await
-        {
-            return Err(CamelliaNexusError::new(
-                ErrorCode::StopFailed,
-                "The rejected program/configuration transaction could not be rolled back while active",
-            )
-            .with_details(format!(
-                "transaction failed: {new_error}; stop before rollback failed: {stop_error}"
-            )));
-        }
-        if let Err(restore_error) = self.config_service.rollback_program_update(committed).await {
-            let error = CamelliaNexusError::new(
-                ErrorCode::Storage,
-                "The previous program settings and configuration could not be restored",
-            )
-            .with_details(format!(
-                "transaction failed: {new_error}; restore failed: {restore_error}"
-            ));
-            self.publish_error(error.clone());
-            return Err(error);
-        }
-        *self.spec.write().await = previous_spec.clone();
-        if !matches!(self.state_tx.borrow().clone(), ProgramState::Stopped) {
-            self.set_state(ProgramState::Stopped);
-        }
-        if !restart_previous {
-            return Err(new_error);
-        }
-        self.desired_running = true;
-        match self.start_process(interactive).await {
-            Ok(()) => Err(new_error),
-            Err(old_error) => {
-                let error = CamelliaNexusError::new(
-                    ErrorCode::ConfigInvalid,
-                    "New program settings failed and rollback could not restart the old configuration",
-                )
-                .with_details(format!("new: {new_error}; rollback: {old_error}"));
-                self.publish_error(error.clone());
+                self.set_state(ProgramState::Stopped);
                 Err(error)
             }
         }
@@ -942,6 +826,7 @@ impl ProgramController {
                 ErrorCode::StopFailed,
                 "The rejected configuration could not be rolled back while the program was active",
             )
+            .with_message_key("CONFIGURATION_RECOVERY_REQUIRED")
             .with_details(format!(
                 "configuration failed: {new_error}; stop before rollback failed: {stop_error}"
             )));
@@ -951,6 +836,7 @@ impl ProgramController {
                 ErrorCode::Storage,
                 "The previous configuration could not be restored",
             )
+            .with_message_key("CONFIGURATION_RECOVERY_REQUIRED")
             .with_details(format!(
                 "configuration failed: {new_error}; restore failed: {restore_error}"
             ));
@@ -965,6 +851,7 @@ impl ProgramController {
                     ErrorCode::ConfigInvalid,
                     "New configuration failed and rollback could not restart the old one",
                 )
+                .with_message_key("CONFIGURATION_RECOVERY_REQUIRED")
                 .with_details(format!("new: {new_error}; rollback: {old_error}"));
                 self.publish_error(error.clone());
                 Err(error)

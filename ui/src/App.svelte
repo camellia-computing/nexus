@@ -6,6 +6,11 @@
   import ArgumentPreview from './ArgumentPreview.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ConfigSourceEditor from './ConfigSourceEditor.svelte';
+  import GuidedConfigurationEditor from './GuidedConfigurationEditor.svelte';
+  import ManagedIntegrationStatus from './ManagedIntegrationStatus.svelte';
+  import ConfigurationSurfaceIssues from './ConfigurationSurfaceIssues.svelte';
+  import FinalConfigurationEditor from './FinalConfigurationEditor.svelte';
+  import ShareImportPreviewDialog from './ShareImportPreview.svelte';
   import EnvironmentEditor from './EnvironmentEditor.svelte';
   import ErrorNotice from './ErrorNotice.svelte';
   import HomeDashboard from './features/home/HomeDashboard.svelte';
@@ -24,9 +29,19 @@
     reconcileCatalog,
     saveCatalog,
   } from './catalog';
-  import { setLanguage, t, translate, uiLanguage } from './i18n';
+  import {
+    configurationDiagnosticMessage,
+    setLanguage,
+    t,
+    translate,
+    uiLanguage,
+  } from './i18n';
   import ProgramContextMenu from './ProgramContextMenu.svelte';
   import { managedWorkingDirectory } from './paths';
+  import {
+    semanticPathSegments,
+    type ConfigurationEditorMarker,
+  } from './editor/configurationMarkerModel';
   import MihomoDashboardEditor from './programs/mihomo/MihomoDashboardEditor.svelte';
   import SingBoxDashboardEditor from './programs/sing-box/SingBoxDashboardEditor.svelte';
   import XrayDashboardEditor from './programs/xray/XrayDashboardEditor.svelte';
@@ -47,6 +62,16 @@
   } from './programs/shared/configuration';
   import { isRuntimeActive } from './programState';
   import { api, errorInfoOf, type ErrorInfo } from './api';
+  import {
+    configurationErrorInfo,
+    configurationNoticeDuration,
+    configurationChoiceWasRejected,
+    intentErrorNeedsFinalEditor,
+    coreAdmissionMessage,
+    coreAssessmentMessage,
+    sourceIssueMessage,
+    type ConfigurationErrorContext,
+  } from './errors';
   import {
     applyAppearancePreferences,
     loadAppearancePreferences,
@@ -86,9 +111,16 @@
     AppSettings,
     AutomaticConfigUpdateEvent,
     ConfigDocument,
+    ConfigurationStateView,
+    ConfigurationWorkspaceSnapshot,
+    FinalConflictResolution,
+    FinalConflictProjection,
+    FinalChangeProjection,
+    AdoptUpstreamChangeRequest,
+    ResolveConfigurationConflictRequest,
     ConfigurationSchemaDocument,
     ConfigSource,
-    ConfigUpdateResult,
+    CoreTargetIdentity,
     CreateTeamInvitation,
     TeamInvitation,
     TeamProfile,
@@ -117,20 +149,22 @@
     PrivilegeAssessment,
     PrivilegePolicy,
     RegisteredLicenseDevice,
+    ShareImportPreview,
+    FinalEditorSession,
     TransferWorkspaceOwnership,
-    ValidationResult,
     XrayBalancerInfo,
     XrayDashboard,
     XrayDashboardSnapshot,
   } from './types';
 
-  type Tab = 'overview' | 'configuration' | 'logs' | 'dashboard';
+  type Tab = 'overview' | 'intent' | 'sources' | 'compatibility' | 'configuration' | 'logs' | 'dashboard';
   type LogView = 'both' | 'stdout' | 'stderr';
   type LogPaneKind = 'stdout' | 'stderr';
   type LogPaneScrollState = { followLatest: boolean; scrollTop: number };
   type XrayTrafficSort = 'scope' | 'tag' | 'uplink' | 'downlink';
   type ProgramFilter = 'all' | 'running' | 'inactive' | 'issues' | ProgramKind;
   type ConfigUpdateStatus = { message: string; sourceCount?: number };
+  type ConfigurationWorkspaceScope = 'details' | 'intent' | 'sources' | 'compatibility' | 'configuration';
   type ConfirmationRequest = {
     title: string;
     message: string;
@@ -152,9 +186,9 @@
   type SettingsDialogComponent = typeof import('./SettingsDialog.svelte').default;
   type AboutDialogComponent = typeof import('./AboutDialog.svelte').default;
   const initialAppearance = loadAppearancePreferences();
-  const xrayDashboardLayoutKey = 'camellia-nexus.xray-dashboard.layout.v1';
-  const programDetailLayoutKey = 'camellia-nexus.program-detail.layout.v1';
-  const sidebarPreferenceKey = 'camellia-nexus.sidebar.v2';
+  const xrayDashboardLayoutKey = 'camellia-nexus.xray-dashboard.layout';
+  const programDetailLayoutKey = 'camellia-nexus.program-detail.layout';
+  const sidebarPreferenceKey = 'camellia-nexus.sidebar';
   const licenseAuthorizationTimeoutMs = 3 * 60_000;
   const licenseNotificationTimeoutMs = 7_000;
   const globalNotificationTimeoutMs = 12_000;
@@ -261,8 +295,11 @@
   let notificationTimer: number | undefined;
   let licensePrompt: LicensePrompt | null = null;
   let licensePromptTimer: number | undefined;
-  let panelError: ErrorInfo | null = null;
   let configError: ErrorInfo | null = null;
+  let workspaceErrors: Partial<Record<ConfigurationWorkspaceScope, ErrorInfo>> = {};
+  let workspaceNoticeDurations: Partial<Record<ConfigurationWorkspaceScope, number>> = {};
+  let workspaceErrorActions: Partial<Record<ConfigurationWorkspaceScope, () => Promise<void>>> = {};
+  let workspaceErrorBusyScope: ConfigurationWorkspaceScope | '' = '';
   let appSettingsError: ErrorInfo | null = null;
   let licenseError: ErrorInfo | null = null;
   let aboutError: ErrorInfo | null = null;
@@ -341,19 +378,352 @@
   let uiScale: UiScale = initialAppearance.scale;
 
   let configDocument: ConfigDocument | null = null;
+  let configurationState: ConfigurationStateView | null = null;
+  let intentObjectEditing = false;
+  let configurationStateLoadingId = '';
+  let configurationIdentityCheckingId = '';
+  let configurationStateLoadError = false;
+  let configurationPreviewRequestProgramId = '';
+  let configurationPreviewRequest: Promise<ConfigurationWorkspaceSnapshot> | null = null;
+  let configurationWorkspaceRequestProgramId = '';
+  let configurationWorkspaceRequest: Promise<ConfigurationWorkspaceSnapshot> | null = null;
   let configurationSchemaDocument: ConfigurationSchemaDocument | null = null;
   let configurationSchemaLoading = false;
   let configurationSchemaError = false;
   let configurationSchemaGeneration = 0;
   let configurationSchemaScope = '';
+  let shareImportPreview: ShareImportPreview | null = null;
+  let finalEditorSession: FinalEditorSession | null = null;
+  let finalEditorAutosaveTimer: number | undefined;
+  let finalEditorAutosavePaused = false;
+  let finalEditorAutosaveContent = '';
+  const finalEditorSavePromises = new Map<string, Promise<FinalEditorSession>>();
+  let finalEditorAutosaveError: ErrorInfo | null = null;
+  let finalEditorRedundantDraftDiscarding = false;
   let configContent = '';
-  let configDirty = false;
+  let configSyntaxStatus: { content: string; language: string; invalid: boolean } | null = null;
+  let configDiagnosticStatus: { content: string; language: string; errorCount: number } | null = null;
+  let finalEditorInputBaseContent: string | null = null;
+  let focusSemanticPath = '';
+  let selectedEditorPath = '';
+  let selectedEditorConflictId = '';
+  let conflictActionError: { conflictId: string; message: string } | null = null;
+  let pendingConflictRequest: ResolveConfigurationConflictRequest | null = null;
+  const conflictErrorsByProgram = new Map<string, { conflictId: string; message: string }>();
+  const pendingConflictsByProgram = new Map<string, ResolveConfigurationConflictRequest>();
+  const conflictHistoryRecords = new Map<string, FinalConflictProjection>();
+  $: pendingConflictProjection = pendingConflictRequest
+    ? conflictHistoryRecords.get(pendingConflictRequest.action.kind === 'resolve'
+      ? pendingConflictRequest.operationId : pendingConflictRequest.action.resolutionOperationId) ?? null
+    : null;
+  let conflictStateProgramId = '';
+  $: if (selectedId !== conflictStateProgramId) {
+    conflictStateProgramId = selectedId;
+    conflictActionError = conflictErrorsByProgram.get(selectedId) ?? null;
+    pendingConflictRequest = pendingConflictsByProgram.get(selectedId) ?? null;
+    selectedEditorConflictId = '';
+  }
+  let recentConflictChoice: { programId: string; operationId: string; undone: boolean } | null = null;
+  let pathFocusMessage = '';
+  let configEditorDirty = false;
   let configSaveRequiresRestart = false;
-  let configResult: ValidationResult | null = null;
-  let configOutput = '';
   let configOutputMessage = '';
-  let configOutputTruncated = false;
+  let configOutputTimer: number | undefined;
   let actions: ActionDescriptor[] = [];
+
+  $: configurationEditorMarkers = buildConfigurationEditorMarkers(
+    configurationState,
+    finalEditorSession,
+    $uiLanguage,
+    conflictActionError,
+    pendingConflictRequest,
+    pendingConflictProjection,
+  );
+  $: managedIntegrationById = new Map(
+    (configurationState?.managedIntegrations ?? []).map((projection) => [projection.integrationId, projection]),
+  );
+  $: finalEditorDraftConflicts = unresolvedDraftConflicts(finalEditorSession);
+  $: if (selectedEditorPath && configurationState && ![
+    ...configurationState.workspace.editor.changes,
+    ...configurationState.workspace.editor.conflicts,
+  ].some((path) => path.semanticPath === selectedEditorPath)
+    && !finalEditorDraftConflicts.some((conflict) => (
+      conflict.semanticPath === selectedEditorPath
+    ))) {
+    selectedEditorPath = '';
+  }
+  $: activeFinalMarkerId = pendingConflictProjection && conflictActionError
+    ? pendingConflictProjection.conflictId
+    : selectedEditorConflictId && configurationState?.workspace.editor.conflicts.some((conflict) => conflict.conflictId === selectedEditorConflictId)
+    ? selectedEditorConflictId
+    : selectedEditorPath
+    ? configurationState?.workspace.editor.conflicts.find(
+        (conflict) => conflict.semanticPath === selectedEditorPath,
+      )?.conflictId
+      ?? configurationState?.workspace.editor.changes.find(
+        (change) => change.semanticPath === selectedEditorPath,
+      )?.editId
+      ?? ''
+    : configurationState?.workspace.editor.conflicts[0]?.conflictId
+      ?? '';
+
+  $: finalEditorTextChanged = !!finalEditorSession && configContent !== finalEditorSession.workingContent;
+  $: if (!finalEditorAutosavePaused && !pendingConflictRequest && busy !== 'save-candidate' && busy !== 'apply'
+    && busy !== 'resolve-configuration-conflict' && !busy.startsWith('history-configuration-conflict') && finalEditorSession && selectedId
+    && (configEditorDirty || (finalEditorSession.conflicts.length > 0 && finalEditorTextChanged))
+    && finalEditorAutosaveContent !== configContent) {
+    finalEditorAutosaveContent = configContent;
+    if (finalEditorAutosaveTimer !== undefined) window.clearTimeout(finalEditorAutosaveTimer);
+    const draftId = selectedId;
+    const draft = structuredClone(finalEditorSession);
+    draft.baseContent = finalEditorInputBaseContent ?? draft.baseContent;
+    draft.workingContent = configContent;
+    finalEditorAutosaveTimer = window.setTimeout(() => {
+      finalEditorAutosaveTimer = undefined;
+      void persistFinalEditorDraft(draftId, draft).catch((error) => {
+        if (selectedId !== draftId || finalEditorSession?.sessionId !== draft.sessionId
+          || configContent !== draft.workingContent) return;
+        reportConfigError(error, 'final-editor-draft', async () => { await retryFinalEditorAutosave(draftId); });
+        finalEditorAutosaveError = configError;
+      });
+    }, 750);
+  }
+
+  $: if (
+    !configEditorDirty
+    && !finalEditorSession?.conflicts.length
+    && finalEditorAutosaveTimer !== undefined
+    && configDocument
+    && editorMatchesCandidate(configContent, configDocument)
+  ) {
+    window.clearTimeout(finalEditorAutosaveTimer);
+    finalEditorAutosaveTimer = undefined;
+    finalEditorAutosaveContent = configContent;
+  }
+
+  $: if (
+    !busy
+    && !finalEditorAutosavePaused
+    && !finalEditorRedundantDraftDiscarding
+    && !configEditorDirty
+    && finalEditorSession?.draftRevision
+    && finalEditorSession.conflicts.length === 0
+    && !finalEditorSession.rebaseRequired
+    && finalEditorSession.unresolvedConflictIds.length === 0
+    && configDocument
+    && editorMatchesCandidate(configContent, configDocument)
+    && selectedId
+  ) {
+    void discardRedundantFinalEditorDraft(selectedId, finalEditorSession.draftRevision);
+  }
+
+  async function discardRedundantFinalEditorDraft(
+    id: string,
+    expectedRevision: number,
+  ): Promise<void> {
+    if (finalEditorRedundantDraftDiscarding) return;
+    finalEditorRedundantDraftDiscarding = true;
+    try {
+      if (finalEditorAutosaveTimer !== undefined) {
+        window.clearTimeout(finalEditorAutosaveTimer);
+        finalEditorAutosaveTimer = undefined;
+      }
+      await finalEditorSavePromises.get(id);
+      const snapshot = await api.discardConfigurationDraft(id, expectedRevision);
+      if (
+        selectedId !== id
+        || configEditorDirty
+        || !configDocument || !editorMatchesCandidate(configContent, configDocument)
+        || finalEditorSession?.draftRevision !== expectedRevision
+      ) return;
+      await adoptConfigurationWorkspace(id, snapshot);
+    } catch (error) {
+      if (isRetryableConfigurationConflict(error)) {
+        const snapshot = await api.getConfigurationWorkspace(id);
+        if (selectedId === id) {
+          await adoptConfigurationWorkspace(
+            id,
+            snapshot,
+            configEditorDirty ? 'preserveTyping' : 'authoritative',
+          );
+        }
+        return;
+      }
+      reportConfigError(
+        error,
+        'final-editor-draft',
+        async () => { await discardRedundantFinalEditorDraft(id, expectedRevision); },
+      );
+    } finally {
+      finalEditorRedundantDraftDiscarding = false;
+    }
+  }
+
+  async function persistFinalEditorDraft(id: string, draft: FinalEditorSession): Promise<FinalEditorSession> {
+    const previous = finalEditorSavePromises.get(id);
+    const request = (async () => {
+      if (previous) {
+        const saved = await previous;
+        // Advance the CAS token without changing the baseline of the caller's text.
+        draft = { ...draft, sessionId: saved.sessionId, draftRevision: saved.draftRevision };
+      }
+      const snapshot = await api.saveConfigurationDraft(id, draft, draft.draftRevision);
+      const saved = snapshot.editorSession;
+      if (!saved) throw new Error('Configuration editor snapshot is unavailable.');
+      await adoptConfigurationWorkspace(id, snapshot,
+        selectedId === id && configContent !== draft.workingContent ? 'preserveTyping' : 'authoritative');
+      if (selectedId === id && configContent === saved.workingContent
+        && finalEditorAutosaveTimer !== undefined) {
+        window.clearTimeout(finalEditorAutosaveTimer);
+        finalEditorAutosaveTimer = undefined;
+      }
+      if (selectedId === id && configError && configError === finalEditorAutosaveError) {
+        clearConfigurationError();
+      }
+      return saved;
+    })();
+    finalEditorSavePromises.set(id, request);
+    try {
+      return await request;
+    } finally {
+      if (finalEditorSavePromises.get(id) === request) finalEditorSavePromises.delete(id);
+    }
+  }
+
+  async function retryFinalEditorAutosave(id: string) {
+    if (selectedId !== id) return;
+    await mutateConfiguration(id, 'save-draft', async () => {
+      clearConfigurationError();
+      await flushFinalEditorDraftBeforeUpstreamMutation(id);
+    }, async (error) => {
+      if (selectedId !== id) return;
+      if (isRetryableConfigurationConflict(error)) {
+        try {
+          await adoptConfigurationWorkspace(id, await api.getConfigurationWorkspace(id), 'preserveTyping');
+        } catch {
+          // Retain the original text and baseline when the workspace cannot be read.
+        }
+      }
+      reportConfigError(error, 'final-editor-draft', async () => { await retryFinalEditorAutosave(id); });
+      finalEditorAutosaveError = configError;
+    });
+  }
+
+  async function flushFinalEditorDraftBeforeUpstreamMutation(
+    id: string,
+  ): Promise<FinalEditorSession | null> {
+    const wasPaused = finalEditorAutosavePaused;
+    finalEditorAutosavePaused = true;
+    try {
+      if (finalEditorAutosaveTimer !== undefined) {
+        window.clearTimeout(finalEditorAutosaveTimer);
+        finalEditorAutosaveTimer = undefined;
+      }
+      await finalEditorSavePromises.get(id);
+      if (selectedId !== id) return null;
+      let session = finalEditorSession;
+      if (!session) {
+        const snapshot = await api.getConfigurationWorkspace(id);
+        if (selectedId !== id) return null;
+        await adoptConfigurationWorkspace(id, snapshot, 'preserveTyping');
+        session = snapshot.editorSession ?? null;
+        if (!session) throw new Error('Configuration editor snapshot is unavailable.');
+      }
+      const recoveryIsParked = session.rebaseRequired
+        && configContent === configurationState?.workspace.editor.document.content;
+      if (recoveryIsParked || configContent === session.workingContent) return session;
+      const next = structuredClone(session);
+      next.baseContent = finalEditorInputBaseContent ?? next.baseContent;
+      next.workingContent = configContent;
+      const saved = await persistFinalEditorDraft(id, next);
+      if (selectedId === id) {
+        finalEditorSession = saved;
+        finalEditorAutosaveContent = saved.workingContent;
+      }
+      return saved;
+    } finally {
+      finalEditorAutosavePaused = wasPaused;
+    }
+  }
+
+  async function synchronizeFinalEditorBeforeUpstreamMutation(
+    id: string,
+  ): Promise<ConfigurationStateView> {
+    await flushFinalEditorDraftBeforeUpstreamMutation(id);
+    if (selectedId !== id) throw new Error('The selected program changed.');
+    if (configurationState) return configurationState;
+    const snapshot = await requestConfigurationWorkspace(id);
+    await adoptConfigurationWorkspace(id, snapshot);
+    return snapshot.state;
+  }
+
+  function resumeFinalEditorDraft() {
+    if (!finalEditorSession?.rebaseRequired) return;
+    configContent = finalEditorSession.workingContent;
+    finalEditorAutosaveContent = finalEditorSession.workingContent;
+  }
+
+  function buildConfigurationEditorMarkers(
+    state: ConfigurationStateView | null,
+    _draft: FinalEditorSession | null,
+    _language: string,
+    actionError: { conflictId: string; message: string } | null,
+    pendingRequest: ResolveConfigurationConflictRequest | null,
+    pendingProjection: FinalConflictProjection | null,
+  ): ConfigurationEditorMarker[] {
+    const editorMarkers: ConfigurationEditorMarker[] = [];
+    const conflicts = [...(state?.workspace.editor.conflicts ?? [])];
+    if (pendingProjection && !conflicts.some((item) => item.conflictId === pendingProjection.conflictId)) conflicts.push(pendingProjection);
+    for (const conflict of conflicts) {
+      editorMarkers.push({
+        id: conflict.conflictId,
+        kind: 'conflict',
+        severity: 'warning',
+        messageKey: 'FINAL_EDIT_CONFLICT',
+        message: translate('The upstream configuration and your edit changed the same path.'),
+        semanticPath: conflict.semanticPath || '/',
+        segments: conflict.segments,
+        resolvable: true,
+        canCombine: conflict.canMerge,
+        conflict,
+        actionError: actionError?.conflictId === conflict.conflictId ? translate(actionError.message) : undefined,
+        retryable: !!pendingRequest && pendingProjection?.conflictId === conflict.conflictId,
+        pending: !!pendingRequest,
+      });
+    }
+    for (const change of (state?.workspace.editor.changes ?? [])) {
+      editorMarkers.push({
+        id: change.editId,
+        kind: change.issues.some((issue) => issue.blocking) ? 'validation' : 'source',
+        severity: change.issues.some((issue) => issue.blocking) ? 'error' : 'info',
+        message: translate('This path differs from the current upstream configuration.'),
+        semanticPath: change.semanticPath || '/',
+        segments: change.segments,
+        changeKind: change.kind,
+        issueIds: change.issues.map((issue) => issue.id),
+      });
+    }
+    for (const [index, diagnostic] of (state?.workspace.editor.diagnostics ?? []).entries()) {
+      if (!diagnostic.location || diagnostic.scope?.surface !== 'configuration') continue;
+      editorMarkers.push({
+        id: `desired-diagnostic:${index}:${diagnostic.code}`,
+        kind: state?.workspace.editor.candidateStatus === 'invalid' ? 'validation' : 'warning',
+        severity: state?.workspace.editor.candidateStatus === 'invalid' ? 'error' : 'warning',
+        message: translate(configurationDiagnosticMessage(diagnostic.messageKey ?? diagnostic.code)),
+        messageKey: diagnostic.messageKey ?? diagnostic.code,
+        semanticPath: diagnostic.location.semanticPath,
+        segments: [],
+        documentPath: diagnostic.location.documentPath,
+      });
+    }
+    return editorMarkers;
+  }
+
+  function unresolvedDraftConflicts(draft: FinalEditorSession | null) {
+    if (!draft) return [];
+    const unresolved = new Set(draft.unresolvedConflictIds);
+    return draft.conflicts.filter((conflict) => unresolved.has(conflict.conflictId));
+  }
 
   let logView: LogView = 'both';
   let logFilter = '';
@@ -388,6 +758,8 @@
   let stderrLogElement: HTMLPreElement | null = null;
   let replacementPackageSource = '';
   let configUpdateStatus: ConfigUpdateStatus | null = null;
+  let sourceSaveStatus = '';
+  let sourceFeedbackTimer: number | undefined;
   let runtimeArgumentLine = '';
   let environmentEntries: EnvironmentEntry[] = [];
   let createDraft: CreateDraft = defaultDraft('generic');
@@ -421,6 +793,7 @@
   let privilegeAssessment: PrivilegeAssessment | null = null;
   let privilegeAssessmentLoadingId = '';
   let savedManagedConfigFingerprint = '';
+  let savedRuntimeIntegrationFingerprint = '';
   let createDashboardOptionsValue: SingBoxDashboardOptions = {};
   let detailDashboardOptionsValue: SingBoxDashboardOptions = {};
   let savedDashboardOptionsValue: SingBoxDashboardOptions = {};
@@ -475,7 +848,7 @@
     runtimeArgumentParse,
     detail?.spec.type.kind ?? 'generic',
     !!detail?.spec.managedConfig,
-    detail?.spec.type.kind !== 'generic' && !!detail?.spec.type.mainConfig,
+    detail?.spec.type.kind !== 'generic',
   );
   $: createArgumentView = enrichArgumentResult(
     createArgumentParse,
@@ -496,8 +869,99 @@
     settingsFingerprint(detail.spec, runtimeArgumentParse.args, environmentEntries) !==
       savedSettingsFingerprint;
   $: managedConfigChanged =
-    !!detail && managedConfigFingerprint(detail.spec) !== savedManagedConfigFingerprint;
-  $: configDirty = configDocument !== null && configContent !== configDocument.content;
+    !!detail && managedSourcesFingerprint(detail.spec) !== savedManagedConfigFingerprint;
+  $: runtimeIntegrationChanged =
+    !!detail && runtimeIntegrationFingerprint(detail.spec) !== savedRuntimeIntegrationFingerprint;
+  $: detailsChanged = settingsChanged || runtimeIntegrationChanged;
+  function editorMatchesCandidate(content: string, candidate: ConfigDocument): boolean {
+    return content === candidate.content
+      || (candidate.language === 'jsonc' && content.trimEnd() === candidate.content.trimEnd());
+  }
+
+  $: configEditorDirty = configDocument !== null && !editorMatchesCandidate(configContent, configDocument);
+  $: coreAdmissionRejected = !!configurationState
+    && configurationState.coreAdmission?.status !== 'admitted';
+  $: compatibilityPrimaryLabel = configurationIdentityCheckingId === selectedId && configurationState
+    ? 'Open Final configuration'
+    : configurationStateLoadError || !configurationState
+    ? 'Retry detection'
+    : coreAdmissionRejected
+      ? 'Replace program'
+      : !configEditorDirty && !finalEditorSession?.draftRevision
+        && configurationState.workspace.editor.candidateStatus === 'applied'
+        ? 'Review Final configuration' : 'Open Final configuration';
+  $: compatibilityConclusion = configurationIdentityCheckingId === selectedId && configurationState
+    ? 'Checking this program. You can review the configuration now.'
+    : configurationStateLoadError || !configurationState
+    ? workspaceErrors.compatibility?.message ?? 'Program detection needs attention.'
+    : coreAdmissionRejected
+      ? coreAdmissionMessage(configurationState.coreAdmission?.messageKey) ?? 'Program detection needs attention.'
+      : configEditorDirty || finalEditorSession?.draftRevision
+        ? 'Your changes are not applied yet.'
+        : configurationState.workspace.editor.editStatus === 'conflict'
+          || configurationState.workspace.editor.candidateStatus === 'invalid'
+          ? 'Fix the highlighted setting in Final configuration.'
+          : configurationState.workspace.editor.candidateStatus === 'applied'
+            ? 'Configuration is up to date.'
+            : 'Check your changes in Final configuration.';
+  $: compatibilityPrimaryDisabled = !!busy || configurationStateLoadingId === selectedId;
+  $: configurationNeedsActivation = !!configurationState && (
+    configEditorDirty
+    || !!finalEditorSession?.draftRevision
+    || configurationState.workspace.editor.candidateStatus !== 'applied'
+  );
+  $: configurationHasMergeBlocker = !!finalEditorSession?.rebaseRequired
+    || finalEditorDraftConflicts.length > 0
+    || !!configurationState?.workspace.editor.conflicts.length
+    || !!configurationState?.workspace.editor.blockers.some((blocker) => blocker.blocks.includes('save')
+      && !(configEditorDirty && blocker.recoveryAction === 'reviewCandidate'));
+  $: configurationSyntaxInvalid = configSyntaxStatus?.content === configContent
+    && configSyntaxStatus?.language === configDocument?.language && configSyntaxStatus.invalid;
+  $: configurationEditorHasErrors = configDiagnosticStatus?.content === configContent
+    && configDiagnosticStatus?.language === configDocument?.language
+    && configDiagnosticStatus.errorCount > 0;
+  $: configurationCapabilityBlocked = !configEditorDirty
+    && !!configurationState?.workspace.editor.blockers.some((blocker) => [
+      'CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_SETTING_REQUIRED',
+      'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED',
+    ].includes(blocker.code));
+  $: configurationActivationBlocked = !!busy
+    || !!pendingConflictRequest
+    || !canEditConfigurationByLicense
+    || !canRunDiagnosticsByLicense
+    || !configurationState
+    || (!configDocument && activeTab !== 'intent')
+    || !configurationNeedsActivation
+    || coreAdmissionRejected
+    || configurationStateLoadError
+    || configurationIdentityCheckingId === selectedId
+    || configurationHasMergeBlocker
+    || configurationCapabilityBlocked
+    || configurationSyntaxInvalid;
+  $: configurationActivationReason = !canEditConfigurationByLicense || !canRunDiagnosticsByLicense
+    ? licenseActionHint
+    : pendingConflictRequest
+      ? 'Retry the pending choice before continuing.'
+    : busy
+      ? 'Another configuration operation is running.'
+      : configurationIdentityCheckingId === selectedId
+        ? 'Checking the current program before applying.'
+      : coreAdmissionRejected || configurationStateLoadError
+        ? 'Review program detection in Compatibility.'
+      : configurationSyntaxInvalid
+        ? 'Fix the highlighted configuration syntax.'
+      : configurationCapabilityBlocked
+        ? coreAssessmentMessage(configurationState?.workspace.editor.blockers.find((blocker) => [
+          'CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_SETTING_REQUIRED',
+          'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED',
+        ].includes(blocker.code))?.messageKey) ?? 'Fix the highlighted issue, then try again.'
+      : configurationHasMergeBlocker
+        ? 'Resolve conflicts before continuing.'
+        : !configurationNeedsActivation
+          ? 'Configuration is up to date.'
+          : configSaveRequiresRestart
+            ? 'Apply and restart'
+            : 'Apply changes';
   $: configSaveRequiresRestart = !!detail && isRuntimeActive(detail.state);
   $: createDashboardOptionsValue = dashboardOptionsFromDraft(createDraft);
   $: detailDashboardOptionsValue = dashboardOptionsFromManagedConfig(
@@ -535,9 +999,7 @@
   $: xrayDashboardCanRefresh = xrayDashboardEnabled && dashboardIsRunning && canUseRemoteDashboardCapability && !busy && !xrayRoutingBusyTag;
   $: saveRequiresStop =
     runtimeSettingsChanged && !!detail && isRuntimeActive(detail.state);
-  $: saveRequiresRestart =
-    saveRequiresStop ||
-    (managedConfigChanged && !!detail && isRuntimeActive(detail.state));
+  $: saveRequiresRestart = saveRequiresStop;
   $: filteredStdout = filterLog(logContents.stdout, logFilter);
   $: filteredStderr = filterLog(logContents.stderr, logFilter);
   $: if ($uiLanguage && notificationLicenseNotice) {
@@ -712,7 +1174,7 @@
     colorScheme.addEventListener('change', colorSchemeChanged);
     mobileLayout.addEventListener('change', mobileLayoutChanged);
     const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (configDirty || settingsChanged) {
+      if (configEditorDirty || detailsChanged || managedConfigChanged) {
         event.preventDefault();
         event.returnValue = '';
       }
@@ -876,6 +1338,8 @@
       if (xrayLayoutSaveTimer !== undefined) window.clearTimeout(xrayLayoutSaveTimer);
       if (programDetailLayoutSaveTimer !== undefined) window.clearTimeout(programDetailLayoutSaveTimer);
       if (notificationTimer !== undefined) window.clearTimeout(notificationTimer);
+      clearConfigOutput();
+      clearSourceFeedback();
       if (licensePromptTimer !== undefined) window.clearTimeout(licensePromptTimer);
       window.clearInterval(licenseAuxiliaryRefreshTimer);
       colorScheme.removeEventListener('change', colorSchemeChanged);
@@ -1018,14 +1482,25 @@
     actions = nextActions;
     if (hasEditableConfig(nextDetail.spec)) void ensureCodeEditor();
     activeTab = 'overview';
-    panelError = null;
-    configError = null;
+    workspaceErrors = {};
+    workspaceErrorActions = {};
+    workspaceErrorBusyScope = '';
+    clearConfigurationError();
     configDocument = null;
+    configurationState = null;
+    configurationStateLoadingId = '';
+    configurationIdentityCheckingId = '';
+    configurationStateLoadError = false;
+    finalEditorSession = null;
+    configDiagnosticStatus = null;
+    selectedEditorPath = '';
+    focusSemanticPath = '';
+    pathFocusMessage = '';
     resetConfigurationSchemaState();
     configContent = '';
-    configResult = null;
     clearConfigOutput();
     configUpdateStatus = null;
+    sourceSaveStatus = '';
     xrayDashboardSnapshot = null;
     xrayDashboardError = null;
     xrayDashboardRefreshing = false;
@@ -1053,12 +1528,129 @@
       programArgs(detail.spec),
       environmentEntries,
     );
-    savedManagedConfigFingerprint = managedConfigFingerprint(detail.spec);
+    savedManagedConfigFingerprint = managedSourcesFingerprint(detail.spec);
+    savedRuntimeIntegrationFingerprint = runtimeIntegrationFingerprint(detail.spec);
     savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(detail.spec.managedConfig);
     savedXrayDashboardValue = detail.spec.managedConfig?.xrayDashboard;
     savedMihomoDashboardValue = detail.spec.managedConfig?.mihomoDashboard;
     loadingProgramId = '';
     void loadSelectedPrivilegeAssessment(id);
+    if (nextDetail.spec.type.kind !== 'generic') void loadConfigurationStateSummary(id);
+  }
+
+  function requestConfigurationPreview(programId: string): Promise<ConfigurationWorkspaceSnapshot> {
+    if (configurationPreviewRequest && configurationPreviewRequestProgramId === programId) {
+      return configurationPreviewRequest;
+    }
+    const request = api.getConfigurationWorkspacePreview(programId);
+    configurationPreviewRequestProgramId = programId;
+    configurationPreviewRequest = request;
+    void request.finally(() => {
+      if (configurationPreviewRequest === request) {
+        configurationPreviewRequest = null;
+        configurationPreviewRequestProgramId = '';
+      }
+    }).catch(() => undefined);
+    return request;
+  }
+
+  function requestConfigurationWorkspace(programId: string): Promise<ConfigurationWorkspaceSnapshot> {
+    if (
+      configurationWorkspaceRequest
+      && configurationWorkspaceRequestProgramId === programId
+    ) {
+      return configurationWorkspaceRequest;
+    }
+    const request = api.getConfigurationWorkspace(programId);
+    configurationWorkspaceRequestProgramId = programId;
+    configurationWorkspaceRequest = request;
+    void request.finally(() => {
+      if (configurationWorkspaceRequest === request) {
+        configurationWorkspaceRequest = null;
+        configurationWorkspaceRequestProgramId = '';
+      }
+    }).catch(() => undefined);
+    return request;
+  }
+
+  async function requestConfigurationState(programId: string): Promise<ConfigurationStateView> {
+    return (await requestConfigurationWorkspace(programId)).state;
+  }
+
+  type WorkspaceAdoption = 'authoritative' | 'preserveTyping';
+
+  /** Apply a complete state and editor-session snapshot without rebuilding it in the UI. */
+  async function adoptConfigurationWorkspace(
+    programId: string,
+    snapshot: ConfigurationWorkspaceSnapshot,
+    adoption: WorkspaceAdoption = 'authoritative',
+  ): Promise<void> {
+    if (selectedId !== programId) return;
+    if (
+      configurationState
+      && snapshot.state.stateRevision < configurationState.stateRevision
+    ) return;
+    if (snapshot.editorSession && finalEditorSession
+      && snapshot.editorSession.sessionId === finalEditorSession.sessionId
+      && snapshot.editorSession.draftRevision < finalEditorSession.draftRevision) return;
+    const localEditorDraft = adoption === 'preserveTyping' && (configEditorDirty || finalEditorTextChanged)
+      ? configContent
+      : null;
+    const state = snapshot.state;
+    const draft = snapshot.editorSession ?? null;
+    configurationState = state;
+    configurationStateLoadError = false;
+    finalEditorSession = draft;
+    const draftContent = draft
+      && draft.draftRevision > 0
+      && !draft.rebaseRequired
+      && draft.basedOnCandidateGeneration === state.generation
+      ? draft.workingContent
+      : state.workspace.editor.document.content;
+    if (localEditorDraft !== null) {
+      configContent = localEditorDraft;
+      finalEditorAutosaveContent = draft?.workingContent ?? state.workspace.editor.document.content;
+    } else {
+      configContent = draftContent;
+      finalEditorAutosaveContent = draftContent;
+      finalEditorInputBaseContent = draft?.baseContent ?? state.workspace.editor.document.content;
+    }
+    if (configDocument) {
+      configDocument = {
+        ...configDocument,
+        content: state.workspace.editor.document.content,
+        baseHash: state.desired.revision.contentHash,
+        language: state.format,
+      };
+    }
+    // Authoritative editor blockers own validation feedback; action notices are transient.
+    clearConfigOutput();
+  }
+
+
+  async function loadConfigurationStateSummary(programId: string): Promise<void> {
+    if (selectedId !== programId || detail?.spec.type.kind === 'generic') return;
+    clearWorkspaceError('compatibility');
+    configurationStateLoadingId = programId;
+    configurationIdentityCheckingId = programId;
+    configurationStateLoadError = false;
+    try {
+      const preview = await requestConfigurationPreview(programId);
+      if (selectedId !== programId || detail?.spec.id !== programId) return;
+      await adoptConfigurationWorkspace(programId, preview, 'preserveTyping');
+      if (configurationStateLoadingId === programId) configurationStateLoadingId = '';
+      const snapshot = await requestConfigurationWorkspace(programId);
+      if (selectedId !== programId || detail?.spec.id !== programId) return;
+      await adoptConfigurationWorkspace(programId, snapshot, 'preserveTyping');
+    } catch (error) {
+      if (selectedId === programId && detail?.spec.id === programId) {
+        configurationStateLoadError = true;
+        reportWorkspaceError('compatibility', error, 'configuration-load', async () => { await loadConfigurationStateSummary(programId); });
+      }
+    } finally {
+      if (configurationStateLoadingId === programId) configurationStateLoadingId = '';
+      if (configurationIdentityCheckingId === programId) configurationIdentityCheckingId = '';
+    }
   }
 
   async function loadSelectedPrivilegeAssessment(id: string) {
@@ -1099,18 +1691,30 @@
     privilegeAssessmentLoadingId = '';
     resetLogScrollState('');
     activeTab = 'overview';
-    panelError = null;
-    configError = null;
+    workspaceErrors = {};
+    workspaceErrorActions = {};
+    workspaceErrorBusyScope = '';
+    clearConfigurationError();
     configDocument = null;
+    configurationState = null;
+    configurationStateLoadingId = '';
+    configurationIdentityCheckingId = '';
+    configurationStateLoadError = false;
+    finalEditorSession = null;
+    configDiagnosticStatus = null;
+    selectedEditorPath = '';
+    focusSemanticPath = '';
+    pathFocusMessage = '';
     resetConfigurationSchemaState();
     configContent = '';
-    configResult = null;
     clearConfigOutput();
+    sourceSaveStatus = '';
     closeProgramMenu(false);
     closeSidebarDrawer();
     savedRuntimeFingerprint = '';
     savedSettingsFingerprint = '';
     savedManagedConfigFingerprint = '';
+    savedRuntimeIntegrationFingerprint = '';
     savedDashboardOptionsValue = {};
     savedXrayDashboardValue = undefined;
     savedMihomoDashboardValue = undefined;
@@ -1124,10 +1728,10 @@
   }
 
   async function confirmDetailDiscard() {
-    if (!configDirty && !settingsChanged) return true;
+    if (!configEditorDirty && !detailsChanged && !managedConfigChanged) return true;
     const parts = [
-      settingsChanged ? translate('program settings') : '',
-      configDirty ? translate('configuration') : '',
+      detailsChanged || managedConfigChanged ? translate('program settings') : '',
+      configEditorDirty ? translate('configuration') : '',
     ].filter(Boolean);
     return askConfirmation(
       translate('Discard unsaved changes?'),
@@ -1159,6 +1763,8 @@
     void restoreFocusAfterModal(returnFocus);
   }
 
+  const configurationMutationQueues = new Map<string, Promise<void>>();
+
   async function mutate(
     label: string,
     operation: () => Promise<unknown>,
@@ -1174,6 +1780,27 @@
       return false;
     } finally {
       if (busy === label) busy = '';
+    }
+  }
+
+  /** Serialize configuration writes per program while preserving the
+   * operation's existing idempotent error/retry handling. */
+  async function mutateConfiguration(
+    programId: string,
+    label: string,
+    operation: () => Promise<unknown>,
+    onError: (value: unknown) => unknown | Promise<unknown> = reportGlobalError,
+  ): Promise<boolean> {
+    const previous = configurationMutationQueues.get(programId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(() => mutate(label, operation, onError));
+    const settled = run.then(() => undefined, () => undefined);
+    configurationMutationQueues.set(programId, settled);
+    try {
+      return await run;
+    } finally {
+      if (configurationMutationQueues.get(programId) === settled) {
+        configurationMutationQueues.delete(programId);
+      }
     }
   }
 
@@ -1547,11 +2174,83 @@
   }
 
   function reportPanelError(value: unknown) {
-    panelError = errorInfoOf(value);
+    reportWorkspaceError('details', value, 'details-save');
   }
 
-  function reportConfigError(value: unknown) {
-    configError = errorInfoOf(value);
+  function clearWorkspaceError(scope: ConfigurationWorkspaceScope) {
+    const nextErrors = { ...workspaceErrors };
+    delete nextErrors[scope];
+    workspaceErrors = nextErrors;
+    const nextActions = { ...workspaceErrorActions };
+    delete nextActions[scope];
+    workspaceErrorActions = nextActions;
+  }
+
+  function reportWorkspaceError(
+    scope: ConfigurationWorkspaceScope,
+    value: unknown,
+    context: ConfigurationErrorContext,
+    retry?: () => Promise<void>,
+  ) {
+    workspaceErrors = {
+      ...workspaceErrors,
+      [scope]: configurationErrorInfo(value, context),
+    };
+    workspaceNoticeDurations = {
+      ...workspaceNoticeDurations,
+      [scope]: configurationNoticeDuration(workspaceErrors[scope]!, context, !!configurationState),
+    };
+    workspaceErrorActions = {
+      ...workspaceErrorActions,
+      [scope]: retry,
+    };
+  }
+
+  async function retryWorkspaceError(scope: ConfigurationWorkspaceScope) {
+    const retry = workspaceErrorActions[scope];
+    if (!retry || workspaceErrorBusyScope) return;
+    workspaceErrorBusyScope = scope;
+    clearWorkspaceError(scope);
+    try {
+      await retry();
+    } finally {
+      if (workspaceErrorBusyScope === scope) workspaceErrorBusyScope = '';
+    }
+  }
+
+  function clearConfigurationError() {
+    configError = null;
+    finalEditorAutosaveError = null;
+    clearWorkspaceError('configuration');
+  }
+
+  function clearIntentError() {
+    clearWorkspaceError('intent');
+  }
+
+  function reportIntentError(
+    value: unknown,
+    retry?: () => Promise<void>,
+    context: ConfigurationErrorContext = 'guided-change',
+  ) {
+    reportWorkspaceError('intent', value, context, retry);
+  }
+
+  function reportConfigError(
+    value: unknown,
+    context: ConfigurationErrorContext = 'configuration-apply',
+    retry?: () => Promise<void>,
+  ) {
+    const info = configurationErrorInfo(value, context);
+    configError = info;
+    reportWorkspaceError('configuration', value, context, retry);
+  }
+
+  function isRetryableConfigurationConflict(value: unknown): boolean {
+    const info = errorInfoOf(value);
+    return info.code === 'CONFIG_CONFLICT'
+      && ['CONFIGURATION_STATE_STALE', 'CONFIGURATION_GENERATION_STALE', 'CONFIGURATION_DRAFT_STALE']
+        .includes(info.messageKey ?? '');
   }
 
   function normalizeAppSettings(settings: AppSettings): AppSettings {
@@ -1561,25 +2260,30 @@
     };
   }
 
-  function setConfigOutput(...parts: string[]) {
-    const output = parts.filter(Boolean).join('\n');
-    const limit = 256 * 1024;
-    configOutput = output.length > limit ? output.slice(0, limit) : output;
-    configOutputMessage = '';
-    configOutputTruncated = output.length > limit;
-    return configOutput.length > 0;
-  }
-
   function setConfigOutputMessage(message: string) {
-    configOutput = '';
+    clearConfigOutput();
     configOutputMessage = message;
-    configOutputTruncated = false;
+    configOutputTimer = window.setTimeout(clearConfigOutput, 6_000);
   }
 
   function clearConfigOutput() {
-    configOutput = '';
+    if (configOutputTimer !== undefined) window.clearTimeout(configOutputTimer);
+    configOutputTimer = undefined;
     configOutputMessage = '';
-    configOutputTruncated = false;
+  }
+
+  function clearSourceFeedback() {
+    if (sourceFeedbackTimer !== undefined) window.clearTimeout(sourceFeedbackTimer);
+    sourceFeedbackTimer = undefined;
+    sourceSaveStatus = '';
+    configUpdateStatus = null;
+  }
+
+  function showSourceFeedback(status: ConfigUpdateStatus | string) {
+    clearSourceFeedback();
+    if (typeof status === 'string') sourceSaveStatus = status;
+    else configUpdateStatus = status;
+    sourceFeedbackTimer = window.setTimeout(clearSourceFeedback, 6_000);
   }
 
   function isRunning(state: ProgramState | undefined) {
@@ -1613,7 +2317,10 @@
     environment: EnvironmentEntry[],
   ) {
     return JSON.stringify({
-      executable: { mode: spec.executable.mode, path: spec.executable.path },
+      executable: {
+        mode: spec.executable.mode,
+        path: spec.executable.path,
+      },
       args,
       environment: environment.filter((entry) => entry.key || entry.value),
       privilegePolicy: spec.privilegePolicy,
@@ -1630,13 +2337,58 @@
       autoStart: spec.autoStart,
       restartPolicy: spec.restartPolicy,
       privilegePolicy: spec.privilegePolicy,
-      managedConfig: spec.managedConfig ?? null,
-      runtime: JSON.parse(runtimeFingerprint(spec, args, environment)),
+      runtime: {
+        args,
+        environment: environment.filter((entry) => entry.key || entry.value),
+      },
     });
   }
 
-  function managedConfigFingerprint(spec: ProgramSpec) {
-    return JSON.stringify(spec.managedConfig ?? null);
+  function managedSourcesFingerprint(spec: ProgramSpec) {
+    return JSON.stringify(spec.managedConfig
+      ? { sources: spec.managedConfig.sources, remoteUpdate: spec.managedConfig.remoteUpdate }
+      : null);
+  }
+
+  function mergeManagedConfigDraft(
+    persisted: ProgramSpec['managedConfig'],
+    draft: ProgramSpec['managedConfig'],
+    preserveSources: boolean,
+    preserveIntegrations: boolean,
+  ): ProgramSpec['managedConfig'] {
+    if (!persisted && !draft) return undefined;
+    const base = structuredClone(persisted ?? draft) as NonNullable<ProgramSpec['managedConfig']>;
+    if (!preserveSources && !preserveIntegrations) return base;
+    if (preserveSources) {
+      base.sources = structuredClone(draft?.sources ?? base.sources);
+      base.remoteUpdate = structuredClone(draft?.remoteUpdate);
+    }
+    if (preserveIntegrations) {
+      base.singBoxDashboard = structuredClone(draft?.singBoxDashboard);
+      base.singBoxClashDashboard = structuredClone(draft?.singBoxClashDashboard);
+      base.xrayDashboard = structuredClone(draft?.xrayDashboard);
+      base.mihomoDashboard = structuredClone(draft?.mihomoDashboard);
+    }
+    return base;
+  }
+
+  function runtimeIntegrationFingerprint(spec: ProgramSpec) {
+    const integrations = spec.managedConfig
+      ? {
+          singBoxDashboard: spec.managedConfig.singBoxDashboard,
+          singBoxClashDashboard: spec.managedConfig.singBoxClashDashboard,
+          xrayDashboard: spec.managedConfig.xrayDashboard,
+          mihomoDashboard: spec.managedConfig.mihomoDashboard,
+        }
+      : null;
+    // Creating the managed source shell is not a runtime integration change.
+    // Keep the fingerprint stable until a dashboard integration actually has
+    // a value, so a Sources-only save does not leave a false Details draft.
+    return JSON.stringify(
+      integrations && Object.values(integrations).some((value) => value !== undefined)
+        ? integrations
+        : null,
+    );
   }
 
   function validHttpsUrl(value: string) {
@@ -1663,6 +2415,8 @@
       passwordValid
     );
   }
+
+  const DASHBOARD_DURATION_RE = /^\d+(?:ns|us|µs|μs|ms|s|m|h|d)(?:\d+(?:ns|us|µs|μs|ms|s|m|h|d))*$/;
 
   function validateManagedConfigSettings(spec: ProgramSpec) {
     const managed = spec.managedConfig;
@@ -1709,7 +2463,7 @@
       if (!Number.isInteger(dashboard.listenPort) || dashboard.listenPort < 1024 || dashboard.listenPort > 65535) {
         throw new Error('Enter a Dashboard port between 1024 and 65535.');
       }
-      if (!/^\d+[smhd](?:\d+[smhd])*$/.test(dashboard.updateInterval)) {
+      if (!DASHBOARD_DURATION_RE.test(dashboard.updateInterval)) {
         throw new Error('Use a duration such as 12h or 1d.');
       }
     }
@@ -1773,6 +2527,13 @@
       default:
         return localize(state.status[0].toUpperCase() + state.status.slice(1));
     }
+  }
+
+  function coreTargetLabel(identity?: CoreTargetIdentity) {
+    if (!identity) return null;
+    if (identity.reportedVersion) return identity.reportedVersion;
+    if (identity.coordinate.kind === 'release') return identity.coordinate.tag;
+    return 'Not detected';
   }
 
   function stateNameKey(state: ProgramState) {
@@ -1873,11 +2634,11 @@
   ) {
     if (
       action === 'stop' || selectedId !== id ||
-      (!settingsChanged && !configDirty)
+      (!settingsChanged && !configEditorDirty)
     ) return true;
     const pending = [
       settingsChanged ? translate('program settings') : '',
-      configDirty ? translate('configuration') : '',
+      configEditorDirty ? translate('configuration') : '',
     ].filter(Boolean).join(` ${translate('and')} `);
     return askConfirmation(
       translate('Changes are not active yet'),
@@ -2096,19 +2857,57 @@
     persistCatalog(moveCatalogItemBy(catalog, id, offset));
   }
 
-  async function saveSettings(confirmRestart = true, applyManagedConfiguration = true) {
+  async function saveSettings(
+    confirmRestart = true,
+    applyManagedConfiguration = true,
+    scope: 'all' | 'details' | 'sources' = 'all',
+  ) {
     if (!detail) return false;
-    panelError = null;
+    const workspaceScope: ConfigurationWorkspaceScope = scope === 'sources'
+        ? 'sources'
+        : 'details';
+    const workspaceContext: ConfigurationErrorContext = scope === 'sources'
+        ? 'sources-save'
+        : 'details-save';
+    clearWorkspaceError(workspaceScope);
+    if (workspaceScope === 'sources') sourceSaveStatus = '';
     const id = detail.spec.id;
+    const draftBeforeSave = structuredClone(detail.spec) as ProgramSpec;
+    const preserveDetailsDraft = scope !== 'all' && detailsChanged;
+    const preserveSourcesDraft = scope !== 'all' && scope !== 'sources' && managedConfigChanged;
+    const preserveIntegrationsDraft = scope !== 'all' && scope !== 'details' && runtimeIntegrationChanged;
     const spec = structuredClone(detail.spec) as ProgramSpec;
-    try {
-      if (runtimeArgumentView.error) throw new Error(runtimeArgumentView.error);
-      if (spec.type.kind === 'generic') {
-        spec.type = { ...spec.type, args: [...runtimeArgumentParse.args] };
-      } else {
-        spec.type = { ...spec.type, extraArgs: [...runtimeArgumentParse.args] };
+    let persistedSpecForScope: ProgramSpec | null = null;
+    if (scope !== 'all') {
+      const persisted = await api.getProgram(id);
+      persistedSpecForScope = persisted.spec;
+      if (scope === 'details') {
+        spec.managedConfig = mergeManagedConfigDraft(
+          persisted.spec.managedConfig,
+          spec.managedConfig,
+          false,
+          true,
+        );
+      } else if (scope === 'sources') {
+        Object.assign(spec, structuredClone(persisted.spec));
+        spec.managedConfig = mergeManagedConfigDraft(
+          persisted.spec.managedConfig,
+          detail.spec.managedConfig,
+          true,
+          false,
+        );
       }
-      spec.environment = environmentToRecord(environmentEntries);
+    }
+    try {
+      if (scope === 'all' || scope === 'details') {
+        if (runtimeArgumentView.error) throw new Error(runtimeArgumentView.error);
+        if (spec.type.kind === 'generic') {
+          spec.type = { ...spec.type, args: [...runtimeArgumentParse.args] };
+        } else {
+          spec.type = { ...spec.type, extraArgs: [...runtimeArgumentParse.args] };
+        }
+        spec.environment = environmentToRecord(environmentEntries);
+      }
       if (spec.managedConfig) {
         spec.managedConfig.sources = spec.managedConfig.sources.map(normalizeConfigSource);
         if (spec.managedConfig.singBoxDashboard) {
@@ -2133,15 +2932,39 @@
         spec.workingDirectory = parentHostPath(spec.executable.path);
       }
     } catch (value) {
-      reportPanelError(value);
+      reportWorkspaceError(
+        workspaceScope,
+        value,
+        workspaceContext,
+        async () => { await saveSettings(confirmRestart, applyManagedConfiguration, scope); },
+      );
       return false;
     }
-    const restartAfterSave = saveRequiresStop;
+    const comparisonSpec = persistedSpecForScope ?? detail.spec;
+    const managedConfigChangedForCommit =
+      (scope === 'all' || scope === 'sources') &&
+      managedSourcesFingerprint(spec) !== managedSourcesFingerprint(comparisonSpec);
+    const runtimeSettingsChangedForCommit = scope === 'all' || scope === 'details'
+      ? runtimeSettingsChanged
+      : false;
+    const restartAfterSave = runtimeSettingsChangedForCommit && !!detail && isRuntimeActive(detail.state);
     const updateManagedConfiguration =
-      applyManagedConfiguration && managedConfigChanged && !!spec.managedConfig;
-    const stopBeforeManagedUpdate =
-      updateManagedConfiguration && !!detail &&
-      isRuntimeActive(detail.state) && detail.state.status !== 'running';
+      applyManagedConfiguration && managedConfigChangedForCommit && !!spec.managedConfig;
+    let expectedConfigurationGeneration = configurationState?.generation;
+    if (spec.type.kind !== 'generic') {
+      try {
+        const state = await synchronizeFinalEditorBeforeUpstreamMutation(id);
+        expectedConfigurationGeneration = state.generation;
+      } catch (value) {
+        reportWorkspaceError(
+          workspaceScope,
+          value,
+          workspaceContext,
+          async () => { await saveSettings(confirmRestart, applyManagedConfiguration, scope); },
+        );
+        return false;
+      }
+    }
     if (
       saveRequiresRestart && confirmRestart &&
       !(await askConfirmation(
@@ -2150,24 +2973,70 @@
         translate('Save and restart'),
       ))
     ) return false;
-    return mutate(
+    const saved = await mutateConfiguration(
+      id,
       'save',
       async () => {
         if (restartAfterSave && !updateManagedConfiguration) {
-          await api.updateProgramAndRestart(spec);
+          const snapshot = await api.updateProgramAndRestart(spec, expectedConfigurationGeneration);
+          if (snapshot) await adoptConfigurationWorkspace(id, snapshot);
         } else {
           let stoppedForSave = false;
           try {
-            if (restartAfterSave || stopBeforeManagedUpdate) {
+            if (restartAfterSave) {
               await api.stopProgram(id);
               stoppedForSave = true;
             }
             if (updateManagedConfiguration) {
-              const result = await api.updateProgramAndRefreshConfig(spec);
-              configDocument = result.document;
-              configContent = result.document.content;
+              const requestedSources = spec.managedConfig?.sources ?? [];
+              const requestedRemoteUpdate = spec.managedConfig?.remoteUpdate;
+              const nonSourceSpec = structuredClone(spec) as ProgramSpec;
+              if (nonSourceSpec.managedConfig) {
+                nonSourceSpec.managedConfig.sources = structuredClone(
+                  persistedSpecForScope?.managedConfig?.sources
+                    ?? (scope === 'sources' && !persistedSpecForScope?.managedConfig ? [] : detail?.spec.managedConfig?.sources ?? []),
+                );
+                nonSourceSpec.managedConfig.remoteUpdate = structuredClone(
+                  persistedSpecForScope?.managedConfig?.remoteUpdate
+                    ?? (scope === 'sources' && !persistedSpecForScope?.managedConfig ? undefined : detail?.spec.managedConfig?.remoteUpdate),
+                );
+              }
+              // A Sources-only save is committed by the dedicated Rust
+              // source transaction below.  Sending the full ProgramSpec
+              // first duplicates that write and can race the controller's
+              // mutation lease, surfacing a misleading PROGRAM_BUSY even
+              // though the program is stopped.  The one exception is the
+              // first Sources save: persist the empty managed-config shell
+              // before the source transaction so the backend has an enabled
+              // source domain to update.  Details/all saves still persist
+              // their non-source fields first, then the source transaction
+              // rebases the candidate against that authoritative generation.
+              const enablingManagedSources = scope === 'sources'
+                && !persistedSpecForScope?.managedConfig
+                && !!nonSourceSpec.managedConfig;
+              let preliminarySnapshot: ConfigurationWorkspaceSnapshot | null = null;
+              if (scope !== 'sources' || enablingManagedSources) {
+                preliminarySnapshot = await api.updateProgram(
+                  nonSourceSpec,
+                  expectedConfigurationGeneration,
+                );
+              }
+              const currentGeneration = preliminarySnapshot?.state.generation
+                ?? expectedConfigurationGeneration;
+              if (currentGeneration === undefined) {
+                throw new Error('Configuration state is unavailable.');
+              }
+              const snapshot = await api.updateConfigurationSources(
+                id,
+                requestedSources,
+                requestedRemoteUpdate,
+                currentGeneration,
+              );
+              await adoptConfigurationWorkspace(id, snapshot);
+              if (selectedId === id) showSourceFeedback('Sources saved.');
             } else {
-              await api.updateProgram(spec);
+              const snapshot = await api.updateProgram(spec, expectedConfigurationGeneration);
+              if (snapshot) await adoptConfigurationWorkspace(id, snapshot);
             }
             if (stoppedForSave) {
               stoppedForSave = false;
@@ -2179,8 +3048,28 @@
           }
         }
         if (selectedId !== id) return;
-        detail = await api.getProgram(id);
+        const persistedDetail = await api.getProgram(id);
         if (selectedId !== id) return;
+        const mergedSpec = structuredClone(persistedDetail.spec) as ProgramSpec;
+        if (preserveDetailsDraft) {
+          mergedSpec.name = draftBeforeSave.name;
+          mergedSpec.autoStart = draftBeforeSave.autoStart;
+          mergedSpec.restartPolicy = draftBeforeSave.restartPolicy;
+          mergedSpec.privilegePolicy = draftBeforeSave.privilegePolicy;
+          mergedSpec.type = structuredClone(draftBeforeSave.type);
+          mergedSpec.environment = structuredClone(draftBeforeSave.environment);
+          mergedSpec.workingDirectory = draftBeforeSave.workingDirectory;
+          mergedSpec.executable = structuredClone(draftBeforeSave.executable);
+        }
+        if (preserveSourcesDraft || preserveIntegrationsDraft) {
+          mergedSpec.managedConfig = mergeManagedConfigDraft(
+            mergedSpec.managedConfig,
+            draftBeforeSave.managedConfig,
+            preserveSourcesDraft,
+            preserveIntegrationsDraft,
+          );
+        }
+        detail = { ...persistedDetail, spec: mergedSpec };
         if (configDocument) {
           void refreshConfigurationSchemaCapability(id);
         }
@@ -2189,59 +3078,100 @@
           key,
           value,
         }));
-        savedRuntimeFingerprint = runtimeFingerprint(
-          detail.spec,
-          programArgs(detail.spec),
-          environmentEntries,
-        );
-        savedSettingsFingerprint = settingsFingerprint(
-          detail.spec,
-          programArgs(detail.spec),
-          environmentEntries,
-        );
-        savedManagedConfigFingerprint = managedConfigFingerprint(detail.spec);
-        savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(detail.spec.managedConfig);
-        savedXrayDashboardValue = detail.spec.managedConfig?.xrayDashboard;
-        savedMihomoDashboardValue = detail.spec.managedConfig?.mihomoDashboard;
+        if (scope === 'all' || scope === 'details') {
+          savedRuntimeFingerprint = runtimeFingerprint(detail.spec, programArgs(detail.spec), environmentEntries);
+          savedSettingsFingerprint = settingsFingerprint(detail.spec, programArgs(detail.spec), environmentEntries);
+          savedRuntimeIntegrationFingerprint = runtimeIntegrationFingerprint(detail.spec);
+          savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(detail.spec.managedConfig);
+          savedXrayDashboardValue = detail.spec.managedConfig?.xrayDashboard;
+          savedMihomoDashboardValue = detail.spec.managedConfig?.mihomoDashboard;
+        }
+        if (scope === 'all' || scope === 'sources') {
+          savedManagedConfigFingerprint = managedSourcesFingerprint(persistedDetail.spec);
+        }
         await refreshPrograms();
       },
-      reportPanelError,
+      async (value) => {
+        reportWorkspaceError(
+          workspaceScope,
+          value,
+          workspaceContext,
+          async () => { await saveSettings(confirmRestart, applyManagedConfiguration, scope); },
+        );
+      },
     );
+    return saved;
   }
 
-  async function revertSettings() {
+  async function revertSettings(
+    scope: 'all' | 'details' | 'sources' = 'all',
+  ) {
     if (!selectedId) return;
-    panelError = null;
+    const workspaceScope: ConfigurationWorkspaceScope = scope === 'sources'
+        ? 'sources'
+        : 'details';
+    clearWorkspaceError(workspaceScope);
     const id = selectedId;
     await mutate(
       'revert-settings',
       async () => {
         const nextDetail = await api.getProgram(id);
         if (selectedId !== id) return;
-        detail = nextDetail;
-        runtimeArgumentLine = formatArgumentLine(programArgs(nextDetail.spec));
-        environmentEntries = Object.entries(nextDetail.spec.environment).map(([key, value]) => ({
+        const currentSpec = structuredClone(detail?.spec) as ProgramSpec | undefined;
+        const nextSpec = structuredClone(nextDetail.spec) as ProgramSpec;
+        if (currentSpec && scope !== 'all') {
+          if (scope !== 'details') {
+            nextSpec.name = currentSpec.name;
+            nextSpec.autoStart = currentSpec.autoStart;
+            nextSpec.restartPolicy = currentSpec.restartPolicy;
+            nextSpec.privilegePolicy = currentSpec.privilegePolicy;
+            nextSpec.type = structuredClone(currentSpec.type);
+            nextSpec.environment = structuredClone(currentSpec.environment);
+            nextSpec.workingDirectory = currentSpec.workingDirectory;
+            nextSpec.executable = structuredClone(currentSpec.executable);
+          }
+          if (scope === 'details') {
+            nextSpec.managedConfig = mergeManagedConfigDraft(
+              nextDetail.spec.managedConfig,
+              currentSpec.managedConfig,
+              true,
+              false,
+            );
+          } else if (scope === 'sources') {
+            nextSpec.managedConfig = mergeManagedConfigDraft(
+              nextDetail.spec.managedConfig,
+              currentSpec.managedConfig,
+              false,
+              true,
+            );
+          }
+        }
+        detail = { ...nextDetail, spec: nextSpec };
+        runtimeArgumentLine = formatArgumentLine(programArgs(nextSpec));
+        environmentEntries = Object.entries(nextSpec.environment).map(([key, value]) => ({
           key,
           value,
         }));
-        savedRuntimeFingerprint = runtimeFingerprint(
-          nextDetail.spec,
-          programArgs(nextDetail.spec),
-          environmentEntries,
-        );
-        savedSettingsFingerprint = settingsFingerprint(
-          nextDetail.spec,
-          programArgs(nextDetail.spec),
-          environmentEntries,
-        );
-        savedManagedConfigFingerprint = managedConfigFingerprint(nextDetail.spec);
-        savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(
-          nextDetail.spec.managedConfig,
-        );
-        savedXrayDashboardValue = nextDetail.spec.managedConfig?.xrayDashboard;
-        savedMihomoDashboardValue = nextDetail.spec.managedConfig?.mihomoDashboard;
+        if (scope === 'all' || scope === 'details') {
+          savedRuntimeFingerprint = runtimeFingerprint(nextDetail.spec, programArgs(nextDetail.spec), environmentEntries);
+          savedSettingsFingerprint = settingsFingerprint(nextDetail.spec, programArgs(nextDetail.spec), environmentEntries);
+          savedRuntimeIntegrationFingerprint = runtimeIntegrationFingerprint(nextDetail.spec);
+          savedDashboardOptionsValue = dashboardOptionsFromManagedConfig(nextDetail.spec.managedConfig);
+          savedXrayDashboardValue = nextDetail.spec.managedConfig?.xrayDashboard;
+          savedMihomoDashboardValue = nextDetail.spec.managedConfig?.mihomoDashboard;
+        }
+        if (scope === 'all' || scope === 'sources') {
+          savedManagedConfigFingerprint = managedSourcesFingerprint(nextDetail.spec);
+        }
       },
-      reportPanelError,
+      async (value) => {
+        reportWorkspaceError(
+          workspaceScope,
+          value,
+          workspaceScope === 'sources' ? 'sources-save' : 'details-save',
+          async () => { await revertSettings(scope); },
+        );
+      },
     );
   }
 
@@ -2284,7 +3214,7 @@
   }
 
   function hasEditableConfig(spec: ProgramSpec) {
-    return spec.type.kind !== 'generic' && !!spec.type.mainConfig;
+    return spec.type.kind !== 'generic';
   }
 
   function privilegePolicyValue(policy: PrivilegePolicy) {
@@ -2322,7 +3252,7 @@
   }
 
   function enableManagedConfiguration() {
-    if (!detail || detail.spec.type.kind === 'generic' || !detail.spec.type.mainConfig) return;
+    if (!detail || detail.spec.type.kind === 'generic') return;
     detail.spec.managedConfig ??= { sources: [] };
     detail = { ...detail, spec: { ...detail.spec } };
   }
@@ -2351,6 +3281,19 @@
       ...detail,
       spec: { ...detail.spec, managedConfig },
     };
+  }
+
+  async function useSavedManagedSetting(settingId: string) {
+    if (!selectedId || detailsChanged || busy) return;
+    const programId = selectedId;
+    await mutateConfiguration(programId, 'save', async () => {
+      const state = await synchronizeFinalEditorBeforeUpstreamMutation(programId);
+      const persisted = await api.getProgram(programId);
+      const snapshot = await api.updateProgram(persisted.spec, state.generation, [settingId]);
+      if (snapshot) await adoptConfigurationWorkspace(programId, snapshot);
+    }, async (error) => {
+      reportWorkspaceError('details', error, 'details-save', async () => { await useSavedManagedSetting(settingId); });
+    });
   }
 
   function updateDetailXrayDashboard(value: XrayDashboard | undefined) {
@@ -2418,58 +3361,347 @@
 
   async function refreshManagedConfiguration() {
     if (!detail || !selectedId || !detail.spec.managedConfig) return;
-    panelError = null;
+    clearWorkspaceError('sources');
     configUpdateStatus = null;
     const id = selectedId;
-    if (settingsChanged && !(await saveSettings(true, false))) return;
-    const stopBeforeUpdate =
-      !!detail && isRuntimeActive(detail.state) && detail.state.status !== 'running';
-    await mutate(
+    if (settingsChanged && !(await saveSettings(true, false, 'details'))) return;
+    await mutateConfiguration(
+      id,
       'refresh-config-sources',
       async () => {
-        let stoppedForUpdate = false;
-        let result: ConfigUpdateResult;
-        try {
-          if (stopBeforeUpdate) {
-            await api.stopProgram(id);
-            stoppedForUpdate = true;
-          }
-          result = await api.refreshConfigSources(id);
-          if (stoppedForUpdate) {
-            stoppedForUpdate = false;
-            await api.startProgram(id);
-          }
-        } catch (value) {
-          if (stoppedForUpdate) await api.startProgram(id).catch(() => undefined);
-          throw value;
-        }
+        await synchronizeFinalEditorBeforeUpstreamMutation(id);
+        const snapshot = await api.refreshConfigurationSources(id);
         if (selectedId !== id) return;
-        configDocument = result.document;
-        configContent = result.document.content;
-        configResult = { valid: true, stdout: '', stderr: '' };
+        await adoptConfigurationWorkspace(id, snapshot);
         clearConfigOutput();
-        configUpdateStatus = result.sourceCount
-          ? { message: 'sources updated', sourceCount: result.sourceCount }
-          : { message: 'Managed configuration applied' };
+        const sourceCount = snapshot.state.sourceStatuses.filter((source) => source.freshness === 'fresh').length;
+        showSourceFeedback(sourceCount
+          ? { message: 'sources updated', sourceCount }
+          : { message: 'sources updated' });
         const nextDetail = await api.getProgram(id);
         if (selectedId === id) detail = nextDetail;
         await refreshPrograms();
       },
-      reportPanelError,
+      async (value) => {
+        reportWorkspaceError(
+          'sources',
+          value,
+          'sources-refresh',
+          async () => { await refreshManagedConfiguration(); },
+        );
+      },
+    );
+  }
+
+  async function previewShareImport(content: string) {
+    if (!selectedId || !content.trim()) return;
+    busy = 'preview-share-import';
+    clearConfigurationError();
+    try {
+      shareImportPreview = await api.previewConfigurationImport(selectedId, content);
+    } catch (error) {
+      reportConfigError(error, 'sources-refresh');
+    } finally {
+      busy = '';
+    }
+  }
+
+  async function rebaseFinalEditorDraft() {
+    if (!selectedId) return;
+    const id = selectedId;
+    clearConfigurationError();
+    await mutateConfiguration(
+      id,
+      'rebase-final-editor-draft',
+      async () => {
+        await finalEditorSavePromises.get(id);
+        const snapshot = await api.rebaseConfigurationDraft(id, finalEditorSession?.draftRevision ?? 0);
+        await adoptConfigurationWorkspace(id, snapshot);
+      },
+      async (error) => {
+        reportConfigError(error, 'configuration-rebase', async () => { await rebaseFinalEditorDraft(); });
+      },
+    );
+  }
+
+  const resolvingConflictIds = new Set<string>();
+  const pendingAdoptionsByProgram = new Map<string, AdoptUpstreamChangeRequest>();
+
+  async function adoptUpstreamChange(event: CustomEvent<FinalChangeProjection>) {
+    if (!selectedId || !configurationState || configEditorDirty) return;
+    const id = selectedId;
+    const change = event.detail;
+    await mutateConfiguration(id, 'adopt-upstream-change', async () => {
+      await finalEditorSavePromises.get(id);
+      if (selectedId !== id || !configurationState) return;
+      const pending = pendingAdoptionsByProgram.get(id);
+      if (pending && (pending.editId !== change.editId || JSON.stringify(pending.path) !== JSON.stringify(change.segments))) {
+        throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_PENDING' };
+      }
+      let request: AdoptUpstreamChangeRequest = pending ?? {
+        operationId: crypto.randomUUID(),
+        expectedStateRevision: configurationState.stateRevision,
+        ...(finalEditorSession && finalEditorSession.draftRevision > 0 ? {
+          editorSessionId: finalEditorSession.sessionId,
+          expectedDraftRevision: finalEditorSession.draftRevision,
+        } : {}),
+        editId: change.editId,
+        path: change.segments,
+      };
+      pendingAdoptionsByProgram.set(id, request);
+      const submittedContent = configContent;
+      let snapshot: ConfigurationWorkspaceSnapshot;
+      try {
+        snapshot = await api.adoptUpstreamChange(id, request);
+      } catch (error) {
+        if (!['CONFIGURATION_STATE_STALE', 'CONFIGURATION_DRAFT_STALE'].includes(errorInfoOf(error).messageKey ?? '')) throw error;
+        pendingAdoptionsByProgram.delete(id);
+        const latest = await api.getConfigurationWorkspace(id);
+        if (selectedId !== id) return;
+        await adoptConfigurationWorkspace(id, latest, 'preserveTyping');
+        if (latest.state.stateRevision - request.expectedStateRevision > 64
+          || !latest.state.workspace.editor.changes.some((entry) => entry.editId === change.editId && entry.semanticPath === change.semanticPath)) throw error;
+        request = {
+          ...request,
+          operationId: crypto.randomUUID(),
+          expectedStateRevision: latest.state.stateRevision,
+          editorSessionId: latest.editorSession?.draftRevision ? latest.editorSession.sessionId : undefined,
+          expectedDraftRevision: latest.editorSession?.draftRevision || undefined,
+        };
+        pendingAdoptionsByProgram.set(id, request);
+        snapshot = await api.adoptUpstreamChange(id, request);
+      }
+      pendingAdoptionsByProgram.delete(id);
+      if (selectedId !== id) return;
+      clearConfigurationError();
+      await adoptConfigurationWorkspace(id, snapshot, configContent === submittedContent ? 'authoritative' : 'preserveTyping');
+      selectedEditorPath = '';
+    }, async (error) => {
+      if (selectedId !== id) return;
+      reportConfigError(error, 'configuration-adopt-upstream', async () => { await adoptUpstreamChange(event); });
+    });
+  }
+
+  async function resolveConfigurationConflict(
+    event: CustomEvent<{ conflictId: string; resolution: FinalConflictResolution }>,
+  ) {
+    if (!selectedId || !configurationState || resolvingConflictIds.has(event.detail.conflictId)) return;
+    const id = selectedId;
+    const conflictId = event.detail.conflictId;
+    const observed = configurationState.workspace.editor.conflicts.find((item) => item.conflictId === conflictId)?.reference
+      ?? (pendingConflictProjection?.conflictId === conflictId ? pendingConflictProjection.reference : undefined);
+    resolvingConflictIds.add(conflictId);
+    try {
+      await mutateConfiguration(id, 'resolve-configuration-conflict', async () => {
+        const pending = pendingConflictsByProgram.get(id);
+        if (pending && (pending.action.kind !== 'resolve'
+          || pending.action.reference.conflictId !== observed?.conflictId
+          || pending.action.reference.origin !== observed?.origin
+          || JSON.stringify(pending.action.resolution) !== JSON.stringify(event.detail.resolution)
+        )) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_PENDING' };
+        if (!pending) await flushFinalEditorDraftBeforeUpstreamMutation(id);
+        if (selectedId !== id) return;
+        const conflict = configurationState?.workspace.editor.conflicts.find((item) => item.conflictId === conflictId);
+        if (!pending && (!conflict || !configurationState || conflict.reference.fingerprint !== observed?.fingerprint)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+        }
+        const request: ResolveConfigurationConflictRequest = pending ?? {
+              operationId: crypto.randomUUID(),
+              expectedStateRevision: configurationState!.stateRevision,
+              ...(finalEditorSession && finalEditorSession.draftRevision > 0 ? {
+                editorSessionId: finalEditorSession.sessionId,
+                expectedDraftRevision: finalEditorSession.draftRevision,
+              } : {}),
+              action: { kind: 'resolve', reference: conflict!.reference, resolution: event.detail.resolution },
+            };
+        pendingConflictRequest = request;
+        if (conflict) conflictHistoryRecords.set(request.operationId, conflict);
+        pendingConflictsByProgram.set(id, request);
+        const submittedContent = configContent;
+        const snapshot = await api.resolveConfigurationConflict(id, request);
+        pendingConflictsByProgram.delete(id);
+        conflictErrorsByProgram.delete(id);
+        if (selectedId !== id) return;
+        pendingConflictRequest = null;
+        conflictActionError = null;
+        await adoptConfigurationWorkspace(id, snapshot, configContent === submittedContent ? 'authoritative' : 'preserveTyping');
+        if (selectedId === id) {
+          recentConflictChoice = { programId: id, operationId: request.operationId, undone: false };
+          selectedEditorConflictId = snapshot.state.workspace.editor.conflicts[0]?.conflictId ?? '';
+          selectedEditorPath = snapshot.state.workspace.editor.conflicts[0]?.semanticPath ?? '';
+        }
+      }, async (error) => {
+        if (selectedId !== id) return;
+        const pending = pendingConflictsByProgram.get(id);
+        if (pending?.action.kind === 'resolve'
+          && ['CONFIGURATION_STATE_STALE', 'CONFIGURATION_DRAFT_STALE'].includes(errorInfoOf(error).messageKey ?? '')) {
+          try {
+            const reference = pending.action.reference;
+            const latest = await api.getConfigurationWorkspace(id);
+            const same = latest.state.workspace.editor.conflicts.find((item) =>
+              item.reference.origin === reference.origin
+              && item.reference.conflictId === reference.conflictId
+              && item.reference.fingerprint === reference.fingerprint);
+            await adoptConfigurationWorkspace(id, latest, 'preserveTyping');
+            if (same) {
+              const retry: ResolveConfigurationConflictRequest = {
+                ...pending,
+                operationId: crypto.randomUUID(),
+                expectedStateRevision: latest.state.stateRevision,
+                ...(latest.editorSession && latest.editorSession.draftRevision > 0 ? {
+                  editorSessionId: latest.editorSession.sessionId,
+                  expectedDraftRevision: latest.editorSession.draftRevision,
+                } : { editorSessionId: undefined, expectedDraftRevision: undefined }),
+              };
+              pendingConflictRequest = retry;
+              conflictHistoryRecords.set(retry.operationId, same);
+              pendingConflictsByProgram.set(id, retry);
+              const submittedContent = configContent;
+              const resolved = await api.resolveConfigurationConflict(id, retry);
+              pendingConflictsByProgram.delete(id);
+              conflictErrorsByProgram.delete(id);
+              if (selectedId !== id) return;
+              pendingConflictRequest = null;
+              conflictActionError = null;
+              await adoptConfigurationWorkspace(id, resolved, configContent === submittedContent ? 'authoritative' : 'preserveTyping');
+              recentConflictChoice = { programId: id, operationId: retry.operationId, undone: false };
+              selectedEditorConflictId = resolved.state.workspace.editor.conflicts[0]?.conflictId ?? '';
+              selectedEditorPath = resolved.state.workspace.editor.conflicts[0]?.semanticPath ?? '';
+              return;
+            }
+            pendingConflictRequest = null;
+            pendingConflictsByProgram.delete(id);
+          } catch (retryError) {
+            error = retryError;
+          }
+        }
+        if (errorInfoOf(error).messageKey === 'CONFIGURATION_CONFLICT_STALE') {
+          pendingConflictsByProgram.delete(id);
+          pendingConflictRequest = null;
+          const latest = await api.getConfigurationWorkspace(id);
+          await adoptConfigurationWorkspace(id, latest, 'preserveTyping');
+        }
+        await recordConfigurationConflictFailure(id, conflictId, error);
+      });
+    } finally {
+      resolvingConflictIds.delete(conflictId);
+    }
+  }
+
+  async function recordConfigurationConflictFailure(id: string, conflictId: string, error: unknown) {
+    if (configurationChoiceWasRejected(errorInfoOf(error))) {
+      pendingConflictsByProgram.delete(id);
+      if (selectedId === id) pendingConflictRequest = null;
+      try {
+        await adoptConfigurationWorkspace(id, await api.getConfigurationWorkspace(id), 'preserveTyping');
+      } catch {
+        // The rejected write changed nothing; retain the visible choices until the next read succeeds.
+      }
+    }
+    if (selectedId !== id) return;
+    if (!pendingConflictsByProgram.has(id)
+      && !configurationState?.workspace.editor.conflicts.some((item) => item.conflictId === conflictId)) {
+      conflictErrorsByProgram.delete(id);
+      conflictActionError = null;
+      selectedEditorConflictId = configurationState?.workspace.editor.conflicts[0]?.conflictId ?? '';
+      selectedEditorPath = configurationState?.workspace.editor.conflicts[0]?.semanticPath ?? '';
+      return;
+    }
+    conflictActionError = { conflictId, message: configurationErrorInfo(error, 'configuration-rebase').message };
+    conflictErrorsByProgram.set(id, conflictActionError);
+  }
+
+  async function retryConfigurationConflict(conflictId: string) {
+    const request = pendingConflictRequest;
+    if (request && request.action.kind !== 'resolve') {
+      await historyConfigurationConflict(request.action.kind, request.action.resolutionOperationId);
+      return;
+    }
+    if (!request || request.action.kind !== 'resolve'
+      || `${request.action.reference.origin}:${request.action.reference.conflictId}` !== conflictId) return;
+    await resolveConfigurationConflict(new CustomEvent('resolve', {
+      detail: { conflictId, resolution: request.action.resolution },
+    }));
+  }
+
+  async function historyConfigurationConflict(kind: 'undo' | 'redo', operationId: string) {
+    if (!selectedId || !configurationState) return;
+    const id = selectedId;
+    await mutateConfiguration(id, `history-configuration-conflict-${kind}`, async () => {
+      if (!pendingConflictsByProgram.has(id)) await flushFinalEditorDraftBeforeUpstreamMutation(id);
+      if (selectedId !== id || !configurationState) return;
+      const pending = pendingConflictsByProgram.get(id);
+      if (pending && (pending.action.kind !== kind || !('resolutionOperationId' in pending.action)
+        || pending.action.resolutionOperationId !== operationId)) {
+        throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_PENDING' };
+      }
+      const request: ResolveConfigurationConflictRequest = pending ?? {
+      operationId: crypto.randomUUID(),
+      expectedStateRevision: configurationState.stateRevision,
+      ...(finalEditorSession && finalEditorSession.draftRevision > 0 ? {
+        editorSessionId: finalEditorSession.sessionId,
+        expectedDraftRevision: finalEditorSession.draftRevision,
+      } : {}),
+      action: { kind, resolutionOperationId: operationId },
+      };
+      pendingConflictsByProgram.set(id, request);
+      pendingConflictRequest = request;
+      const submittedContent = configContent;
+      const snapshot = await api.resolveConfigurationConflict(id, request);
+      pendingConflictsByProgram.delete(id);
+      conflictErrorsByProgram.delete(id);
+      if (selectedId !== id) return;
+      pendingConflictRequest = null;
+      conflictActionError = null;
+      await adoptConfigurationWorkspace(id, snapshot, configContent === submittedContent ? 'authoritative' : 'preserveTyping');
+      if (selectedId === id) {
+        selectedEditorConflictId = snapshot.state.workspace.editor.conflicts[0]?.conflictId ?? '';
+        selectedEditorPath = snapshot.state.workspace.editor.conflicts[0]?.semanticPath ?? '';
+      }
+    }, async (error) => {
+      const conflict = conflictHistoryRecords.get(operationId);
+      if (!conflict) return;
+      await recordConfigurationConflictFailure(id, conflict.conflictId, error);
+    });
+  }
+
+  async function discardFinalEditorDraft() {
+    if (!selectedId) return;
+    const id = selectedId;
+    clearConfigurationError();
+    await mutate(
+      'discard-draft',
+      async () => {
+        if (finalEditorAutosaveTimer !== undefined) {
+          window.clearTimeout(finalEditorAutosaveTimer);
+          finalEditorAutosaveTimer = undefined;
+        }
+        await finalEditorSavePromises.get(id);
+        const snapshot = await api.discardConfigurationDraft(
+          id,
+          finalEditorSession?.draftRevision ?? 0,
+        );
+        await adoptConfigurationWorkspace(id, snapshot);
+        clearConfigOutput();
+      },
+      async (error) => {
+        reportConfigError(error, 'final-editor-draft', async () => { await discardFinalEditorDraft(); });
+      },
     );
   }
 
   async function handleAutomaticConfigUpdate(event: AutomaticConfigUpdateEvent) {
     if (selectedId !== event.programId) return;
-    configUpdateStatus = {
+    showSourceFeedback({
       message: event.succeeded ? 'Automatically updated' : 'Automatic update failed',
-    };
-    if (!event.succeeded || !configDocument || configDirty) return;
+    });
     try {
-      const document = await api.loadConfig(event.programId);
-      if (selectedId !== event.programId || configDirty) return;
-      configDocument = document;
-      configContent = document.content;
+      if (configDocument) {
+        await flushFinalEditorDraftBeforeUpstreamMutation(event.programId);
+      }
+      const snapshot = await api.getConfigurationWorkspace(event.programId);
+      if (selectedId !== event.programId) return;
+      await adoptConfigurationWorkspace(event.programId, snapshot);
     } catch {
       // The next automatic or manual refresh can update the editor.
     }
@@ -2494,14 +3726,6 @@
   }
 
   function configModeKey(spec: ProgramSpec, args = programArgs(spec)) {
-    if (
-      hasExplicitConfig(spec.type.kind, args) &&
-      spec.type.kind !== 'generic' &&
-      spec.type.mainConfig &&
-      !spec.managedConfig
-    ) {
-      return 'Arguments with manual override';
-    }
     if (hasExplicitConfig(spec.type.kind, args)) return 'Explicit argument';
     if (spec.managedConfig) return 'Managed configuration';
     return 'Manual configuration';
@@ -2512,6 +3736,9 @@
   }
 
   function normalizeConfigSource(source: ConfigSource): ConfigSource {
+    if (source.mode === 'inline') {
+      return { ...source, name: source.name.trim() };
+    }
     return source.mode === 'local'
       ? { ...source, name: source.name.trim(), path: normalizeHostPath(source.path.trim()) }
       : {
@@ -2533,6 +3760,39 @@
         managedConfig: { ...detail.spec.managedConfig, remoteUpdate },
       },
     };
+  }
+
+  /**
+   * ConfigSourceEditor owns its local editing array and emits a semantic
+   * `change` event for every edit.  A Svelte `bind:sources` binding listens
+   * for a `sources` event, not this domain event, so relying on the binding
+   * leaves the textarea visually changed while the ProgramSpec (and the Save
+   * button fingerprint) still contains the old source.  Treat the event as
+   * the authoritative source draft and replace the immutable detail object
+   * immediately; this keeps Sources, status fingerprints and every sibling
+   * workspace projection in sync before a save is attempted.
+   */
+  function updateDetailSources(sources: ConfigSource[]) {
+    if (!detail?.spec.managedConfig) return;
+    detail = {
+      ...detail,
+      spec: {
+        ...detail.spec,
+        managedConfig: {
+          ...detail.spec.managedConfig,
+          sources: structuredClone(sources),
+        },
+      },
+    };
+  }
+
+  async function focusConfigurationSource(sourceId: string) {
+    await tick();
+    const row = [...document.querySelectorAll<HTMLElement>('#program-panel-sources .config-source-row')]
+      .find((element) => element.dataset.sourceId === sourceId);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    row.querySelector<HTMLInputElement>('.source-enabled input')?.focus({ preventScroll: true });
   }
 
   function updateCreateRemoteUpdate(remoteUpdate: ManagedConfig['remoteUpdate']) {
@@ -2629,17 +3889,22 @@
           errors.configSources = 'Configuration source identifiers must be unique.';
           break;
         }
-        sourceIds.add(source.id);
-        if (!source.enabled) continue;
-        if (
-          source.mode === 'local' &&
+      sourceIds.add(source.id);
+      if (!source.enabled) continue;
+      if (source.mode === 'inline') {
+        const byteLength = new TextEncoder().encode(source.content).length;
+        if (!source.content.trim() || byteLength > 4 * 1024 * 1024) {
+          throw new Error('Inline configuration content must be non-empty and no larger than 4 MiB.');
+        }
+      } else if (
+        source.mode === 'local' &&
           !isAbsoluteHostPath(source.path.trim()) &&
           !safeRelativePath(source.path, false)
         ) {
           errors.configSources = 'Use an absolute path or a path relative to the working folder.';
           break;
         }
-        if (source.mode === 'remote' && !validHttpsUrl(source.url.trim())) {
+      if (source.mode === 'remote' && !validHttpsUrl(source.url.trim())) {
           errors.configSources = 'Remote configuration sources must use HTTPS without embedded credentials';
           break;
         }
@@ -2653,7 +3918,7 @@
       if (draft.kind === 'singBox' && draft.dashboardEnabled) {
         if (!Number.isInteger(draft.dashboardPort) || draft.dashboardPort < 1024 || draft.dashboardPort > 65535) {
           errors.dashboard = 'Enter a Dashboard port between 1024 and 65535.';
-        } else if (!/^\d+[smhd](?:\d+[smhd])*$/.test(draft.dashboardUpdateInterval)) {
+        } else if (!DASHBOARD_DURATION_RE.test(draft.dashboardUpdateInterval)) {
           errors.dashboard = 'Use a duration such as 12h or 1d.';
         }
       }
@@ -2718,7 +3983,6 @@
       const draft = structuredClone(createDraft) as CreateDraft;
       if (createArgumentView.error) throw new Error(createArgumentView.error);
       const args = [...createArgumentParse.args];
-      const definition = programDefinition(draft.kind);
       const initialConfig = createHasStoredConfig
         ? draft.managedConfiguration
           ? undefined
@@ -2729,11 +3993,6 @@
           ? { kind: 'generic' as const, args }
           : {
               kind: draft.kind,
-              mainConfig: createHasStoredConfig
-                ? draft.managedConfiguration
-                  ? definition.configuration?.managedConfigPath
-                  : definition.configuration?.manualConfigPath
-                : undefined,
               extraArgs: args,
             };
       const executablePath =
@@ -2741,8 +4000,6 @@
           ? `bin/${normalizeRelativePath(draft.executable.trim())}`
           : normalizeHostPath(draft.executable.trim());
       const spec: ProgramSpec = {
-        // ProgramSpec has its own storage schema; this is unrelated to entitlement schema v3.
-        schemaVersion: 3,
         id: draft.id,
         name: draft.name.trim(),
         executable: {
@@ -2849,29 +4106,42 @@
   }
 
   async function replacePackage() {
-    if (!detail || detail.spec.executable.mode !== 'managed') return;
-    panelError = null;
+    if (busy || !detail || detail.spec.executable.mode !== 'managed') return;
     if (!isAbsoluteHostPath(replacementPackageSource.trim())) {
       reportPanelError(new Error(translate('Enter an absolute directory path for this operating system.')));
       return;
     }
     const id = detail.spec.id;
+    const source = replacementPackageSource.trim();
+    const hasWorkspace = detail.spec.type.kind !== 'generic';
     const confirmed = await askConfirmation(
       translate('Replace the program folder?'),
       translate('The current managed files will be replaced.'),
       translate('Replace folder'),
     );
-    if (!confirmed) return;
-    await mutate(
+    if (!confirmed || selectedId !== id) return;
+    await mutateConfiguration(
+      id,
       'replace-package',
       async () => {
-        await api.replacePackage(id, replacementPackageSource.trim());
+        const state = hasWorkspace
+          ? await synchronizeFinalEditorBeforeUpstreamMutation(id)
+          : null;
+        const snapshot = await api.replacePackage(id, source, state?.stateRevision);
+        if (snapshot) await adoptConfigurationWorkspace(id, snapshot);
         if (selectedId !== id) return;
-        detail = await api.getProgram(id);
+        const updated = await api.getProgram(id);
+        if (selectedId !== id) return;
+        // Replacing files changes executable identity, not unsaved settings in other fields.
+        detail = {
+          ...updated,
+          spec: { ...detail!.spec, executable: updated.spec.executable },
+        };
         if (configDocument) {
           void refreshConfigurationSchemaCapability(id);
         }
         replacementPackageSource = '';
+        await refreshPrograms();
       },
       reportPanelError,
     );
@@ -2884,35 +4154,52 @@
     stopLogPolling();
     stopXrayDashboardPolling();
     activeTab = 'configuration';
-    configError = null;
+    clearConfigurationError();
     try {
       const editor = ensureCodeEditor();
       if (!selectedId || configDocument) {
-        if (selectedId && configDocument) {
-          void loadConfigurationSchemaForEditor(
-            selectedId,
-            configDocument.configurationSchema,
-          );
-        }
         await editor;
         return;
       }
       const id = selectedId;
-      await mutate(
-        'load-config',
-        async () => {
-          const [document] = await Promise.all([api.loadConfig(id), editor]);
-          if (selectedId !== id || activeTab !== 'configuration') return;
-          configDocument = document;
-          configContent = document.content;
-          void loadConfigurationSchemaForEditor(id, document.configurationSchema);
-        },
-        reportConfigError,
-      );
+      if (!configurationState) {
+        const snapshot = await requestConfigurationPreview(id);
+        if (selectedId !== id || activeTab !== 'configuration') return;
+        await adoptConfigurationWorkspace(id, snapshot, 'preserveTyping');
+      }
+      if (selectedId !== id || activeTab !== 'configuration') return;
+      const state = configurationState;
+      if (!state) return;
+      configDocument = {
+        content: state.workspace.editor.document.content,
+        baseHash: state.desired.revision.contentHash,
+        language: state.format,
+        documentationUrl: '',
+      };
+      void loadConfigurationEditorMetadata(id, selectionGeneration);
+      await editor;
     } catch (value) {
-      reportConfigError(value);
+      reportConfigError(value, 'configuration-load', async () => { await showConfiguration(); });
     } finally {
       await restoreMainScrollAfterTabRender(previousMainScrollTop, 'configuration', programId);
+    }
+  }
+
+  async function loadConfigurationEditorMetadata(programId: string, selection: number) {
+    try {
+      const document = await api.loadConfig(programId);
+      if (selectedId !== programId || selectionGeneration !== selection || !configDocument) return;
+      configDocument = {
+        ...configDocument,
+        documentationUrl: document.documentationUrl,
+        configurationSchema: document.configurationSchema,
+      };
+      void loadConfigurationSchemaForEditor(programId, document.configurationSchema);
+    } catch {
+      if (selectedId === programId && selectionGeneration === selection
+        && detail?.spec.type.kind === 'singBox') {
+        configurationSchemaError = true;
+      }
     }
   }
 
@@ -3010,7 +4297,11 @@
   }
 
   function retryConfigurationSchema() {
-    if (!selectedId || !configDocument?.configurationSchema) return;
+    if (!selectedId || !configDocument) return;
+    if (!configDocument.configurationSchema) {
+      void loadConfigurationEditorMetadata(selectedId, selectionGeneration);
+      return;
+    }
     void loadConfigurationSchemaForEditor(
       selectedId,
       configDocument.configurationSchema,
@@ -3032,71 +4323,205 @@
     mainElement.scrollTop = Math.min(scrollTop, maxScrollTop);
   }
 
-  async function validateConfiguration() {
-    if (!configDocument || !selectedId) return;
-    configError = null;
+  async function changeGuidedSetting(
+    change: import('./types').ConfigurationIntentAction,
+    retryRequest?: import('./types').ConfigurationIntentRequest,
+  ): Promise<boolean> {
+    if (!selectedId || !canEditConfigurationByLicense) return false;
     const id = selectedId;
-    const content = configContent;
-    const baseHash = configDocument.baseHash;
-    await mutate(
-      'validate',
+    let request = retryRequest;
+    clearIntentError();
+    return mutateConfiguration(
+      id, 'guided-setting',
       async () => {
-        const result = await api.validateConfig(id, content, baseHash);
-        if (selectedId !== id || activeTab !== 'configuration') return;
-        configResult = result;
-        setConfigOutput(result.stdout, result.stderr);
+        const current = await synchronizeFinalEditorBeforeUpstreamMutation(id);
+        request ??= {
+          operationId: crypto.randomUUID(), expectedStateRevision: current.stateRevision,
+          editorSessionId: finalEditorSession?.sessionId,
+          expectedDraftRevision: finalEditorSession?.draftRevision, change,
+        };
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const snapshot = await api.updateConfigurationIntent(id, request);
+            await adoptConfigurationWorkspace(id, snapshot);
+            return;
+          } catch (error) {
+            if (attempt !== 0 || !isRetryableConfigurationConflict(error)) throw error;
+            const refreshed = await api.getConfigurationWorkspace(id);
+            if (selectedId !== id) throw error;
+            await adoptConfigurationWorkspace(id, refreshed);
+            request = { ...request, expectedStateRevision: refreshed.state.stateRevision,
+              editorSessionId: refreshed.editorSession?.sessionId,
+              expectedDraftRevision: refreshed.editorSession?.draftRevision };
+          }
+        }
       },
-      reportConfigError,
+      async (value) => {
+        reportIntentError(value, async () => { await changeGuidedSetting(change, request); });
+      },
     );
   }
 
-  function validateConfigurationFromEditor() {
-    if (busy || !canRunDiagnosticsByLicense) return;
-    void validateConfiguration();
+  function runCompatibilityPrimaryAction() {
+    if (configurationStateLoadError || !configurationState) void loadConfigurationStateSummary(selectedId);
+    else if (coreAdmissionRejected) activateTab('overview');
+    else openFinalConfiguration();
+  }
+
+  function openFinalConfiguration() {
+    if (selectedId) void showConfiguration();
+  }
+
+  async function reviewFinalChangesFromSources() {
+    const programId = selectedId;
+    if (!programId) return;
+    await showConfiguration();
+    if (selectedId !== programId || activeTab !== 'configuration') return;
+    const path = configurationState?.workspace.editor.conflicts[0]?.semanticPath
+      ?? configurationState?.workspace.editor.changes[0]?.semanticPath;
+    if (path) await focusFinalConfigurationPath(path);
+  }
+
+  async function focusFinalConfigurationPath(path: string) {
+    pathFocusMessage = '';
+    selectedEditorPath = path;
+    focusSemanticPath = '';
+    await tick();
+    focusSemanticPath = path;
   }
 
   function saveConfigurationFromEditor() {
-    if (busy || !configDirty || !canEditConfigurationByLicense) return;
-    void applyConfiguration();
+    const candidateNeedsSave = configurationState?.workspace.editor.candidateStatus === 'unsaved';
+    if (busy || (!configEditorDirty && !candidateNeedsSave) || !configurationState?.workspace.editor.canSave || !canEditConfigurationByLicense) return;
+    void saveConfigurationCandidate();
   }
 
-  async function applyConfiguration() {
-    if (!configDocument || !selectedId) return false;
-    configError = null;
+  async function adoptConfigurationSubmission(
+    id: string,
+    snapshot: ConfigurationWorkspaceSnapshot,
+    submittedContent: string | undefined,
+  ) {
+    if (selectedId !== id) return;
+    const continuedTyping = submittedContent !== undefined && configContent !== submittedContent;
+    const basisGeneration = finalEditorSession?.basedOnCandidateGeneration ?? configurationState?.generation;
+    const saved = snapshot.operationResult?.savedCandidate;
+    await adoptConfigurationWorkspace(id, snapshot,
+      continuedTyping || submittedContent === undefined || !saved ? 'preserveTyping' : 'authoritative');
+    if (configurationState === snapshot.state && saved && submittedContent !== undefined
+      && basisGeneration !== undefined && basisGeneration <= saved.generation) {
+      // Only this request's durable save can advance the basis of continued typing.
+      finalEditorInputBaseContent = saved.contentHash === snapshot.state.desired.revision.contentHash
+        ? snapshot.state.desired.content : submittedContent;
+    }
+  }
+
+  async function saveConfigurationCandidate(retryRequest?: import('./types').ConfigurationMutationContext, submittedContent?: string) {
+    if (!configDocument || !selectedId || !configurationState
+      || (!retryRequest && !configurationState.workspace.editor.canSave)) return false;
+    const candidateNeedsSave = configurationState.workspace.editor.candidateStatus === 'unsaved';
+    if (!retryRequest && !configEditorDirty && !candidateNeedsSave) return false;
+    clearConfigurationError();
     const id = selectedId;
-    const content = configContent;
-    const baseHash = configDocument.baseHash;
+    let request = retryRequest;
+    return mutateConfiguration(
+      id,
+      'save-candidate',
+      async () => {
+        let snapshot: ConfigurationWorkspaceSnapshot;
+        if (request) {
+          snapshot = await api.getConfigurationOperation(id, request);
+          if (!snapshot.operationResult) snapshot = await api.commitConfigurationDraft(id, request);
+        } else {
+          await flushFinalEditorDraftBeforeUpstreamMutation(id);
+          if (selectedId !== id || !configurationState) return;
+          request = {
+            operationId: crypto.randomUUID(),
+            kind: 'save',
+            expectedStateRevision: configurationState.stateRevision,
+            editorSessionId: finalEditorSession?.sessionId,
+            expectedDraftRevision: finalEditorSession?.draftRevision,
+          };
+          submittedContent = finalEditorSession?.workingContent ?? configurationState.workspace.editor.document.content;
+          snapshot = await api.commitConfigurationDraft(id, request);
+        }
+        const continuedTyping = configContent !== submittedContent;
+        await adoptConfigurationSubmission(id, snapshot, submittedContent);
+        if (selectedId === id && snapshot.state.desired.validation !== 'invalid') {
+          setConfigOutputMessage(continuedTyping ? 'Submitted changes saved.' : 'Changes saved.');
+        }
+      },
+      async (value) => {
+        if (selectedId !== id) return;
+        if (isRetryableConfigurationConflict(value)) {
+          request = undefined;
+          submittedContent = undefined;
+          try {
+            await adoptConfigurationWorkspace(id, await api.getConfigurationWorkspace(id), 'preserveTyping');
+          } catch {
+            // Keep the text available when refreshing the workspace fails.
+          }
+        } else if (request) {
+          try {
+            await adoptConfigurationSubmission(id, await api.getConfigurationOperation(id, request), submittedContent);
+          } catch {
+            // Keep the original request available when its result cannot be read.
+          }
+        }
+        if (selectedId !== id) return;
+        reportConfigError(value, 'configuration-save', async () => {
+          if (selectedId === id) await saveConfigurationCandidate(request, submittedContent);
+        });
+      },
+    );
+  }
+
+  async function applyConfiguration(retryRequest?: import('./types').ConfigurationMutationContext, submittedContent?: string) {
+    if (!selectedId || !configurationState || (!retryRequest && configurationActivationBlocked)) return false;
+    clearConfigurationError();
+    clearConfigOutput();
+    const id = selectedId;
     const restartsProgram = !!detail && isRuntimeActive(detail.state);
-    const stopBeforeApply = restartsProgram && detail?.state.status !== 'running';
-    return mutate(
+    if (
+      !retryRequest && restartsProgram
+      && !(await askConfirmation(
+        translate('Apply changes and restart?'),
+        translate('The program will restart once with the updated configuration.'),
+        translate('Apply and restart'),
+      ))
+    ) return false;
+    let request = retryRequest;
+    return mutateConfiguration(
+      id,
       'apply',
       async () => {
-        let stoppedForApply = false;
-        try {
-          if (stopBeforeApply) {
-            await api.stopProgram(id);
-            stoppedForApply = true;
-          }
-          await api.applyConfig(id, content, baseHash);
-          if (stoppedForApply) {
-            stoppedForApply = false;
-            await api.startProgram(id);
-          }
-        } catch (value) {
-          if (stoppedForApply) await api.startProgram(id).catch(() => undefined);
-          throw value;
+        let snapshot: import('./types').ConfigurationWorkspaceSnapshot;
+        if (request) {
+          snapshot = await api.getConfigurationOperation(id, request);
+          if (!snapshot.operationResult) snapshot = await api.activateConfigurationCandidate(id, request);
+        } else {
+          await flushFinalEditorDraftBeforeUpstreamMutation(id);
+          if (selectedId !== id || !configurationState) return;
+          request = {
+            operationId: crypto.randomUUID(),
+            kind: 'apply',
+            expectedStateRevision: configurationState.stateRevision,
+            editorSessionId: finalEditorSession?.sessionId,
+            expectedDraftRevision: finalEditorSession?.draftRevision,
+          };
+          submittedContent = finalEditorSession?.workingContent ?? configurationState.workspace.editor.document.content;
+          snapshot = await api.activateConfigurationCandidate(id, request);
+        }
+        await adoptConfigurationSubmission(id, snapshot, submittedContent);
+        if (selectedId !== id) return;
+        if (snapshot.operationResult?.status === 'interrupted'
+          || (snapshot.operationResult?.status === 'rejected' && snapshot.state.desired.validation !== 'invalid')) {
+          reportConfigError({
+            code: 'CONFIG_CONFLICT',
+            messageKey: snapshot.operationResult.messageKey ?? 'CONFIGURATION_OPERATION_REJECTED',
+            message: 'Review the current configuration before applying again.',
+          });
         }
         if (selectedId !== id || activeTab !== 'configuration' || !configDocument) return;
-        const savedDocument = await api.loadConfig(id);
-        if (selectedId !== id || activeTab !== 'configuration') return;
-        configDocument = savedDocument;
-        configContent = savedDocument.content;
-        configResult = { valid: true, stdout: '', stderr: '' };
-        setConfigOutputMessage(
-          restartsProgram
-            ? 'Configuration saved and program restarted.'
-            : 'Configuration saved.',
-        );
         const [nextDetail, nextActions] = await Promise.all([
           api.getProgram(id),
           api.listActions(id),
@@ -3107,16 +4532,41 @@
         }
         await refreshPrograms();
       },
-      reportConfigError,
+      async (value) => {
+        if (selectedId !== id) return;
+        if (isRetryableConfigurationConflict(value)) {
+          request = undefined;
+          submittedContent = undefined;
+          try {
+            const snapshot = await api.getConfigurationWorkspace(id);
+            await adoptConfigurationWorkspace(id, snapshot, 'preserveTyping');
+          } catch {
+            // The retry action reloads the workspace again.
+          }
+        } else if (request) {
+          try {
+            await adoptConfigurationSubmission(id, await api.getConfigurationOperation(id, request), submittedContent);
+          } catch {
+            // Keep the original request available when its result cannot be read.
+          }
+        }
+        if (selectedId !== id) return;
+        reportConfigError(value, 'configuration-apply', async () => {
+          if (selectedId === id) await applyConfiguration(request, submittedContent);
+        });
+      },
     );
   }
 
   function revertConfiguration() {
     if (!configDocument) return;
+    if (finalEditorSession?.draftRevision) {
+      void discardFinalEditorDraft();
+      return;
+    }
     configContent = configDocument.content;
-    configResult = null;
     clearConfigOutput();
-    configError = null;
+    clearConfigurationError();
   }
 
   async function runProgramAction(action: ActionDescriptor) {
@@ -3125,7 +4575,7 @@
       action.confirmation &&
       !(await askConfirmation(translate('Run this action?'), translate(action.label), translate('Run action')))
     ) return;
-    configError = null;
+    clearConfigurationError();
     const id = selectedId;
     await mutate(
       action.id,
@@ -3140,14 +4590,11 @@
         if (result.previewContent !== undefined) {
           const changed = result.previewContent !== configContent;
           configContent = result.previewContent;
-          configResult = { valid: true, stdout: '', stderr: '' };
-          if (!setConfigOutput(result.stdout, result.stderr)) {
-            setConfigOutputMessage(changed
-              ? 'Formatting complete. Save to keep these changes.'
-              : 'Configuration is already formatted.');
-          }
+          setConfigOutputMessage(changed
+            ? 'Formatting complete. Save to keep these changes.'
+            : 'Configuration is already formatted.');
         } else {
-          setConfigOutput(result.stdout, result.stderr);
+          setConfigOutputMessage(configurationDiagnosticMessage(result.report.messageKey));
         }
       },
       reportConfigError,
@@ -3455,7 +4902,28 @@
     if (tab === 'overview') void showOverview();
     else if (tab === 'dashboard') void showXrayDashboard();
     else if (tab === 'configuration') void showConfiguration();
+    else if (tab === 'intent' || tab === 'sources' || tab === 'compatibility') void showConfigurationWorkspace(tab);
     else void showLogs();
+  }
+
+  async function showConfigurationWorkspace(tab: Extract<Tab, 'intent' | 'sources' | 'compatibility'>) {
+    captureVisibleLogScrollState();
+    stopLogPolling();
+    stopXrayDashboardPolling();
+    const changedTab = activeTab !== tab;
+    activeTab = tab;
+    if (tab === 'intent' && changedTab) {
+      await tick();
+      const panel = document.getElementById('program-panel-intent');
+      if (panel && mainElement && activeTab === tab) {
+        const tabsHeight = mainElement.querySelector('.program-tabs')?.getBoundingClientRect().height ?? 0;
+        mainElement.scrollTop += panel.getBoundingClientRect().top - mainElement.getBoundingClientRect().top - tabsHeight - 20;
+      }
+    }
+    if (!selectedId || detail?.spec.type.kind === 'generic') return;
+    if (configurationState && !configurationStateLoadError) return;
+    const id = selectedId;
+    await loadConfigurationStateSummary(id);
   }
 
   function filterLog(content: string, query: string) {
@@ -4602,7 +6070,9 @@
     aria-hidden={sidebarDrawerOpen ? 'true' : undefined}
     aria-busy={!!loadingProgramId}
   >
-    <button bind:this={mobileNavToggleElement} class="mobile-nav-toggle" type="button" aria-label={$t('Open navigation')} aria-controls="primary-sidebar" aria-expanded={sidebarDrawerOpen} on:click={() => void openSidebarDrawer()}><Icon name="menu" /></button>
+    <div class="mobile-nav-bar">
+      <button bind:this={mobileNavToggleElement} class="mobile-nav-toggle" type="button" aria-label={$t('Open navigation')} aria-controls="primary-sidebar" aria-expanded={sidebarDrawerOpen} on:click={() => void openSidebarDrawer()}><Icon name="menu" /></button>
+    </div>
     {#if notification || licensePrompt}
       <div class="notification-stack" aria-label={$t('Notifications')}>
         {#if notification}
@@ -4664,13 +6134,15 @@
         dashboardDisabled={!dashboardCanOpen}
         dashboardTitle={$t(dashboardCanOpen ? 'Open Xray Dashboard' : 'Start the program to refresh live metrics')}
         configurationVisible={hasEditableConfig(detail.spec)}
+        settingsVisible={hasEditableConfig(detail.spec)}
         onSelect={activateTab}
       />
 
       {#if activeTab === 'overview'}
         <div id="program-panel-overview" role="tabpanel" tabindex="0" aria-labelledby="program-tab-overview" class="panel settings-panel">
-          {#if panelError}<ErrorNotice error={panelError} />{/if}
-          {#if settingsChanged}<div class="change-notice"><span><i></i><span><strong>{$t('Unsaved program changes')}</strong></span></span><div><button type="button" on:click={() => void revertSettings()} disabled={!!busy}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings()} disabled={!!busy}>{busy === 'save' ? `${$t('Saving')}…` : $t(saveRequiresRestart ? 'Save and restart' : 'Save')}</button></div></div>{/if}
+          {#if workspaceErrors.details}<ErrorNotice error={workspaceErrors.details} dismissible autoDismissMs={workspaceNoticeDurations.details ?? 0} onDismiss={() => clearWorkspaceError('details')} actionLabel="Retry" onAction={() => retryWorkspaceError('details')} actionBusy={workspaceErrorBusyScope === 'details'} />{/if}
+          <ConfigurationSurfaceIssues state={configurationState} surface="details" />
+          {#if detailsChanged}<div class="change-notice"><span><i></i><span><strong>{$t('Unsaved program changes')}</strong></span></span><div><button type="button" on:click={() => void revertSettings('details')} disabled={!!busy}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(true, true, 'details')} disabled={!!busy}>{busy === 'save' ? `${$t('Saving')}…` : $t(saveRequiresRestart ? 'Save and restart' : 'Save')}</button></div></div>{/if}
           <section class="detail-section general-detail-section">
             <div class="section-heading"><div><h2>{$t('General')}</h2></div></div>
             <div class="form-grid">
@@ -4681,42 +6153,6 @@
               {#if detail.spec.executable.mode === 'external'}<label class="wide">{$t('Executable')}<input bind:value={detail.spec.executable.path} /></label>{/if}
             </div>
           </section>
-
-          {#if detail.spec.type.kind !== 'generic' && detail.spec.type.mainConfig}
-            <section class="detail-section managed-detail-section">
-              <div class="section-heading managed-heading"><div><h2>{$t('Managed configuration')}</h2><p>{$t(programDefinition(detail.spec.type.kind).configuration?.language === 'yaml' ? 'Combine ordered native YAML sources into the active configuration' : 'Combine ordered native JSON sources into the active configuration')}</p></div>{#if !detail.spec.managedConfig}<button type="button" on:click={enableManagedConfiguration}>{$t('Enable')}</button>{/if}</div>
-              {#if detail.spec.managedConfig}
-                <ConfigSourceEditor
-                  bind:sources={detail.spec.managedConfig.sources}
-                  {platform}
-                  disabled={!!busy}
-                  maxSources={maxConfigSourcesLimit}
-                  remoteUpdate={detail.spec.managedConfig.remoteUpdate}
-                  on:remoteUpdate={(event) => updateDetailRemoteUpdate(event.detail)}
-                />
-                {#if detail.spec.type.kind === 'singBox'}
-                  <SingBoxDashboardEditor
-                    value={detailDashboardOptionsValue}
-                    disabled={!!busy}
-                    on:change={(event) => updateDetailDashboard(event.detail)}
-                  />
-                {:else if detail.spec.type.kind === 'xray'}
-                  <XrayDashboardEditor
-                    value={detailXrayDashboardValue}
-                    disabled={!!busy}
-                    on:change={(event) => updateDetailXrayDashboard(event.detail)}
-                  />
-                {:else if detail.spec.type.kind === 'mihomo'}
-                  <MihomoDashboardEditor
-                    value={detailMihomoDashboardValue}
-                    disabled={!!busy}
-                    on:change={(event) => updateDetailMihomoDashboard(event.detail)}
-                  />
-                {/if}
-                <div class="managed-config-actions"><span role="status" aria-live="polite">{#if configUpdateStatus}{#if configUpdateStatus.sourceCount !== undefined}{configUpdateStatus.sourceCount} {/if}{$t(configUpdateStatus.message)}{/if}</span><button type="button" on:click={() => void refreshManagedConfiguration()} disabled={!!busy}>{$t('Update configuration')}</button></div>
-              {/if}
-            </section>
-          {/if}
 
           <section class="detail-section runtime-detail-section">
             <div class="section-heading"><div><h2>{$t('Runtime')}</h2></div></div>
@@ -4734,10 +6170,33 @@
               <EnvironmentEditor bind:entries={environmentEntries} />
             </details>
 
+            {#if detail.spec.type.kind === 'singBox'}
+              <section class="detail-section runtime-integration-section">
+                <div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div>
+                <SingBoxDashboardEditor value={detailDashboardOptionsValue} disabled={!!busy} on:change={(event) => updateDetailDashboard(event.detail)} />
+                <div class="managed-integration-projections">
+                  <ManagedIntegrationStatus label="sing-box API" projection={managedIntegrationById.get('dashboard.singBoxApi')} disabled={!!busy || detailsChanged} on:useValue={(event) => void useSavedManagedSetting(event.detail)} />
+                  <ManagedIntegrationStatus label="Clash API" projection={managedIntegrationById.get('dashboard.singBoxClash')} disabled={!!busy || detailsChanged} on:useValue={(event) => void useSavedManagedSetting(event.detail)} />
+                </div>
+              </section>
+            {:else if detail.spec.type.kind === 'xray'}
+              <section class="detail-section runtime-integration-section">
+                <div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div>
+                <XrayDashboardEditor value={detailXrayDashboardValue} disabled={!!busy} on:change={(event) => updateDetailXrayDashboard(event.detail)} />
+                <ManagedIntegrationStatus label="Xray Dashboard" projection={managedIntegrationById.get('dashboard.xray')} disabled={!!busy || detailsChanged} on:useValue={(event) => void useSavedManagedSetting(event.detail)} />
+              </section>
+            {:else if detail.spec.type.kind === 'mihomo'}
+              <section class="detail-section runtime-integration-section">
+                <div class="section-heading"><div><h2>{$t('Runtime integrations')}</h2></div></div>
+                <MihomoDashboardEditor value={detailMihomoDashboardValue} disabled={!!busy} on:change={(event) => updateDetailMihomoDashboard(event.detail)} />
+                <ManagedIntegrationStatus label="Mihomo Dashboard" projection={managedIntegrationById.get('dashboard.mihomo')} disabled={!!busy || detailsChanged} on:useValue={(event) => void useSavedManagedSetting(event.detail)} />
+              </section>
+            {/if}
+
             <div class="metadata">
               <span>{$t('Executable')}</span><code>{detail.spec.executable.mode === 'managed' ? detail.spec.executable.path.replace(/^bin[\\/]/, '') : detail.spec.executable.path}</code>
               <span>{$t('Working folder')}</span><code>{detail.workingDirectory}</code>
-              <span>{$t('Version')}</span><code>{detail.spec.executable.metadata?.detectedVersion ?? $t('Not reported')}</code>
+              <span>{$t('Version')}</span><code>{coreTargetLabel(detail.spec.executable.metadata?.coreTarget) ?? $t('Not reported')}</code>
             </div>
 
             {#if detail.spec.executable.mode === 'managed'}
@@ -4745,6 +6204,106 @@
             {/if}
           </section>
           <div class="panel-actions"><button class="danger" on:click={() => void removeSelected()} disabled={!!busy}>{$t('Delete program')}</button></div>
+        </div>
+      {:else if activeTab === 'intent'}
+        <div id="program-panel-intent" role="tabpanel" tabindex="0" aria-labelledby="program-tab-intent" class="panel configuration-workspace">
+          {#if workspaceErrors.intent}<ErrorNotice error={workspaceErrors.intent} dismissible autoDismissMs={workspaceNoticeDurations.intent ?? 0} onDismiss={() => clearWorkspaceError('intent')} actionLabel={intentErrorNeedsFinalEditor(workspaceErrors.intent) ? 'Open Final configuration' : 'Retry'} onAction={() => intentErrorNeedsFinalEditor(workspaceErrors.intent) ? openFinalConfiguration() : retryWorkspaceError('intent')} actionBusy={workspaceErrorBusyScope === 'intent'} />{/if}
+          <header class="workspace-header">
+            <div><h2>{$t('Intent')}</h2><p>{$t(intentObjectEditing ? 'Finish or cancel the open entry before applying.' : 'Change settings for this program; apply them when you are ready.')}</p></div>
+            {#if configurationState}<div class="workspace-actions intent-workspace-actions">
+              <button class="primary" type="button" disabled={intentObjectEditing || configurationActivationBlocked || !configurationNeedsActivation} on:click={() => void applyConfiguration()}>{$t(configSaveRequiresRestart ? 'Apply and restart' : 'Apply changes')}</button>
+            </div>{/if}
+          </header>
+          {#if configurationState && (configurationState.guidedDescriptors.length > 0 || configurationState.intentObjectDescriptors?.some((item) => item.canCreate) || configurationState.intentObjects?.length)}
+            <GuidedConfigurationEditor
+              state={configurationState}
+              disabled={!!busy || !canEditConfigurationByLicense}
+              onChange={changeGuidedSetting}
+              onOpenFinal={openFinalConfiguration}
+              onEditingChange={(editing) => intentObjectEditing = editing}
+            />
+            {#if !intentObjectEditing && configurationActivationBlocked && configurationActivationReason}<p class="intent-apply-reason">{$t(configurationActivationReason)}</p>{/if}
+          {:else if configurationStateLoadingId === detail.spec.id}
+            <div class="loading configuration-loading">{$t('Loading compatibility profile')}…</div>
+          {:else if configurationStateLoadError}
+            <div class="workspace-error" role="alert"><span>{$t('Compatibility state could not be loaded.')}</span><button type="button" on:click={() => void loadConfigurationStateSummary(selectedId)}>{$t('Retry')}</button></div>
+          {:else}
+            <div class="workspace-empty"><strong>{$t('No Guided settings available')}</strong><span>{$t('Use Configuration for the full native editor.')}</span></div>
+          {/if}
+        </div>
+      {:else if activeTab === 'sources'}
+        <div id="program-panel-sources" role="tabpanel" tabindex="0" aria-labelledby="program-tab-sources" class="panel configuration-workspace">
+          <header class="workspace-header">
+            <div><p class="eyebrow">{$t('Sources')}</p><h2>{$t('Managed configuration')}</h2><p>{$t(programDefinition(detail.spec.type.kind).configuration?.language === 'yaml' ? 'Combine ordered native YAML sources into the active configuration' : 'Combine ordered native JSON sources into the active configuration')}</p></div>
+            <div class="workspace-actions"><button type="button" on:click={() => void revertSettings('sources')} disabled={!!busy || !managedConfigChanged}>{$t('Revert')}</button><button class="primary" type="button" on:click={() => void saveSettings(false, true, 'sources')} disabled={!!busy || !managedConfigChanged}>{busy === 'save' ? `${$t('Saving')}…` : $t('Save sources')}</button></div>
+          </header>
+          {#if sourceSaveStatus}<p class="workspace-success" role="status" aria-live="polite">{$t(sourceSaveStatus)}</p>{/if}
+          {#if detail.spec.managedConfig && !managedConfigChanged && configurationState?.workspace.editor.changes.length}
+            <p class="source-final-note">{$t('Sources are saved. Final configuration has manual changes.')}
+              <button type="button" on:click={() => void reviewFinalChangesFromSources()}>{$t('Review final changes')}</button>
+            </p>
+          {/if}
+          {#if workspaceErrors.sources}<ErrorNotice error={workspaceErrors.sources} dismissible autoDismissMs={workspaceNoticeDurations.sources ?? 0} onDismiss={() => clearWorkspaceError('sources')} actionLabel="Retry" onAction={() => retryWorkspaceError('sources')} actionBusy={workspaceErrorBusyScope === 'sources'} />{/if}
+          <ConfigurationSurfaceIssues state={configurationState} surface="sources" on:reviewSource={(event) => void focusConfigurationSource(event.detail.sourceId)} />
+          {#if !detail.spec.managedConfig}
+            <section class="workspace-empty"><strong>{$t('Managed configuration is disabled')}</strong><span>{$t('Enable it to combine ordered local, inline or HTTPS sources.')}</span><button type="button" on:click={enableManagedConfiguration} disabled={!!busy}>{$t('Enable')}</button></section>
+          {:else}
+            <ConfigSourceEditor
+              sources={detail.spec.managedConfig.sources}
+              {platform}
+              disabled={!!busy}
+              maxSources={maxConfigSourcesLimit}
+              remoteUpdate={detail.spec.managedConfig.remoteUpdate}
+              on:change={(event) => updateDetailSources(event.detail)}
+              on:remoteUpdate={(event) => updateDetailRemoteUpdate(event.detail)}
+              on:preview={(event) => void previewShareImport(event.detail)}
+            />
+            <div class="source-status-summary" aria-live="polite">
+              {#if configurationState}
+                {#each configurationState.sourceStatuses as source (source.sourceId)}
+                  <div class="source-status-item" class:warning={source.freshness === 'stale'} class:problem={source.freshness === 'invalid' || source.freshness === 'unavailable'}>
+                    <span>{source.sourceName}: {$t(source.freshness)}</span>
+                    {#if source.messageKey}<small class="source-status-reason">{$t(sourceIssueMessage(source.messageKey))}</small>{/if}
+                    {#if source.freshness === 'stale' || source.freshness === 'invalid' || source.freshness === 'unavailable'}
+                      <div class="source-status-actions">
+                        {#if source.freshness === 'invalid' || source.freshness === 'unavailable'}<button type="button" on:click={() => void focusConfigurationSource(source.sourceId)}>{$t('Review source')}</button>{/if}
+                        <button type="button" class="source-status-retry" on:click={() => void refreshManagedConfiguration()} disabled={!!busy || managedConfigChanged}>{$t('Retry source update')}</button>
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+              {:else if configurationStateLoadingId === detail.spec.id}{$t('Loading')}…{:else}{$t('Unavailable')}{/if}
+            </div>
+            <div class="managed-config-actions"><span role="status" aria-live="polite">{#if configUpdateStatus}{#if configUpdateStatus.sourceCount !== undefined}{configUpdateStatus.sourceCount} {/if}{$t(configUpdateStatus.message)}{/if}</span><button type="button" on:click={() => void refreshManagedConfiguration()} disabled={!!busy || managedConfigChanged}>{$t('Update configuration')}</button></div>
+          {/if}
+        </div>
+      {:else if activeTab === 'compatibility'}
+        <div id="program-panel-compatibility" role="tabpanel" tabindex="0" aria-labelledby="program-tab-compatibility" class="panel configuration-workspace">
+          <header class="workspace-header">
+            <div><h2 id="core-compatibility-heading">{$t('Program compatibility')}</h2><p>{$t('Checks whether this program can use your configuration.')}</p></div>
+          </header>
+          <div class="compatibility-overview">
+            <section class="compatibility-card" aria-label={$t('Detected program')}>
+              <span>{$t('Detected program')}</span>
+              <div><strong>{programDefinition(detail.spec.type.kind).displayName}</strong><strong>{!configurationStateLoadError && configurationState?.coreAdmission?.baseline?.version || $t('Not detected')}</strong></div>
+            </section>
+            <section class:warning={configurationStateLoadError || coreAdmissionRejected || configurationState?.workspace.editor.editStatus === 'conflict' || configurationState?.workspace.editor.candidateStatus === 'invalid'} class="compatibility-status-card" aria-live="polite">
+              <strong>{$t(compatibilityConclusion)}</strong>
+              <button class="primary" type="button" on:click={runCompatibilityPrimaryAction} disabled={compatibilityPrimaryDisabled} title={$t(compatibilityPrimaryLabel)}>{$t(compatibilityPrimaryLabel)}</button>
+            </section>
+          </div>
+          <details class="compatibility-advanced">
+            <summary>{$t('About compatibility')}</summary>
+            <ConfigurationSurfaceIssues state={configurationState} surface="compatibility" />
+            <div class="compatibility-facts">
+              {#if configurationState?.coreAdmission}
+                <div><strong>{$t('Supported versions')}</strong><span>{configurationState.coreAdmission.maintainedFamilies.join(' · ')}</span></div>
+              {/if}
+              {#if configurationState && !coreAdmissionRejected && !configurationStateLoadError}
+                <div><strong>{$t('Configuration check')}</strong><span>{$t(configurationState.desired.validationEvidence?.nativeAccepted ? 'This program accepted the saved configuration.' : 'Changes are checked with this program when you apply them.')}</span></div>
+              {/if}
+            </div>
+          </details>
         </div>
       {:else if activeTab === 'dashboard'}
         <XrayDashboardView
@@ -4776,52 +6335,78 @@
         />
       {:else if activeTab === 'configuration'}
         <div id="program-panel-configuration" role="tabpanel" tabindex="0" aria-labelledby="program-tab-configuration" class="panel configuration">
-          {#if configError}<ErrorNotice error={configError} />{/if}
+          {#if configError}<ErrorNotice error={configError} dismissible autoDismissMs={workspaceNoticeDurations.configuration ?? 0} onDismiss={() => { configError = null; clearWorkspaceError('configuration'); }} actionLabel="Retry" onAction={() => retryWorkspaceError('configuration')} actionBusy={workspaceErrorBusyScope === 'configuration'} />{/if}
           {#if configDocument}
-            {#if detail.spec.managedConfig}<div class="generated-config-note"><strong>{$t('Managed configuration')}</strong><span>{$t(detail.spec.managedConfig.sources.some((source) => source.enabled) ? 'Updating sources replaces manual edits' : 'Managed services are applied when saving')}</span></div>{/if}
-            <div class="config-toolbar">
-              <div class="config-toolbar-tools">
-                <button class="link-button documentation-link" type="button" on:click={() => void openDocumentation()}><span>{$t('Documentation')}</span><Icon name="external" size={16} /></button>
-                <button type="button" on:click={() => void validateConfiguration()} disabled={!!busy || !canRunDiagnosticsByLicense} title={$t(canRunDiagnosticsByLicense ? 'Validate' : licenseActionHint)}>{$t('Validate')}</button>
-                {#each actions as action (action.id)}
-                  <button type="button" on:click={() => void runProgramAction(action)} disabled={!!busy || !actionAllowed(action)} title={$t(canRunDiagnosticsByLicense ? action.label : licenseActionHint)}>{$t(action.label)}</button>
-                {/each}
-              </div>
-              <div class="config-toolbar-commit">
-                <button type="button" on:click={revertConfiguration} disabled={!!busy || !configDirty}>{$t('Revert')}</button>
-                <button class="primary config-save" type="button" on:click={() => void applyConfiguration()} disabled={!!busy || !configDirty || !canEditConfigurationByLicense} title={$t(canEditConfigurationByLicense ? (configSaveRequiresRestart ? 'Save and restart' : 'Save configuration') : licenseActionHint)}>{busy === 'apply' ? `${$t('Saving')}…` : $t(configSaveRequiresRestart ? 'Save and restart' : 'Save configuration')}</button>
-              </div>
-            </div>
-            <div class:visible={configDirty} class="config-unsaved" aria-hidden={!configDirty}><i></i><span>{$t('Unsaved configuration')}</span></div>
-            <div
-              style={resizeStyle(detailConfigHeight)}
-              class="config-editor-resize"
-            >
-              {#if CodeEditorView}
-                <CodeEditorView
-                  bind:value={configContent}
-                  {theme}
-                  language={configDocument.language}
-                  revision={configDocument.baseHash}
-                  configurationSchema={configurationSchemaDocument}
-                  configurationSchemaLoading={configurationSchemaLoading}
-                  configurationSchemaError={configurationSchemaError}
-                  jsonSchemaSemantics={programDefinition(detail.spec.type.kind).configuration?.jsonSchemaSemantics}
-                  on:retrySchema={retryConfigurationSchema}
-                  on:save={saveConfigurationFromEditor}
-                  on:validate={validateConfigurationFromEditor}
-                />
-              {/if}
-              <ResizeSeparator
-                label={$t('Resize panel')}
-                value={detailConfigHeight ?? 720}
-                min={detailPaneResizeMinHeight}
-                max={detailPaneResizeMaxHeight}
-                onPointerDown={(event) => beginResizeFromHandle(event, 'detail:config')}
-                onKeyDown={(event) => handleResizeKeydown(event, 'detail:config')}
-              />
-            </div>
-            {#if configResult || configOutput || configOutputMessage}<div class:valid={configResult?.valid} class:invalid={configResult && !configResult.valid} class="result"><strong>{$t(configResult ? (configResult.valid ? 'Valid configuration' : 'Validation failed') : 'Action output')}</strong>{#if configOutput || configOutputMessage}<pre>{configOutput || $t(configOutputMessage)}{#if configOutputTruncated}{'\n'}… {$t('Output truncated')}{/if}</pre>{/if}</div>{/if}
+            {#if configurationState?.workspace}
+              <FinalConfigurationEditor
+                workspace={configurationState.workspace}
+                draft={finalEditorSession}
+                selectedPath={selectedEditorPath}
+                selectedConflictId={activeFinalMarkerId}
+                disabled={!!busy || !canEditConfigurationByLicense}
+                draftDirty={configEditorDirty}
+                syntaxInvalid={configurationSyntaxInvalid}
+                editorHasErrors={configurationEditorHasErrors}
+                identityChecking={configurationIdentityCheckingId === selectedId}
+                identityCheckFailed={configurationStateLoadError}
+                on:focusPath={(event) => { void focusFinalConfigurationPath(event.detail.path); }}
+                on:selectConflict={(event) => { selectedEditorConflictId = event.detail.conflictId; void focusFinalConfigurationPath(event.detail.path); }}
+                on:adoptUpstream={(event) => void adoptUpstreamChange(event)}
+                on:rebaseDraft={() => void rebaseFinalEditorDraft()}
+                on:resumeDraft={resumeFinalEditorDraft}
+                on:discardDraft={() => void discardFinalEditorDraft()}
+                on:navigateSurface={(event) => { activateTab(event.detail.surface === 'details' ? 'overview' : event.detail.surface); if (event.detail.sourceId) void focusConfigurationSource(event.detail.sourceId); }}
+              >
+                <svelte:fragment slot="actions">
+                <div class="config-toolbar">
+                  <details class="config-more-actions">
+                    <summary>{$t('More')}</summary>
+                    <div>
+                      <button class="link-button documentation-link" type="button" on:click={() => void openDocumentation()}><span>{$t('Documentation')}</span><Icon name="external" size={16} /></button>
+                      {#each actions as action (action.id)}<button type="button" on:click={() => void runProgramAction(action)} disabled={!!busy || !actionAllowed(action)} title={$t(canRunDiagnosticsByLicense ? action.label : licenseActionHint)}>{$t(action.label)}</button>{/each}
+                    </div>
+                  </details>
+                  <div class="config-toolbar-commit">
+                    <button type="button" on:click={revertConfiguration} disabled={!!busy || (!configEditorDirty && !finalEditorSession?.draftRevision)} title={$t(busy ? 'Another configuration operation is running.' : configEditorDirty || finalEditorSession?.draftRevision ? 'Revert' : 'There are no unsaved editor changes to revert.')}>{$t('Revert')}</button>
+                    <button class="primary config-save" type="button" on:click={() => void applyConfiguration()} disabled={configurationActivationBlocked} title={$t(configurationActivationReason)}>{busy === 'apply' ? `${$t('Applying')}…` : $t(configSaveRequiresRestart ? 'Apply and restart' : 'Apply changes')}</button>
+                  </div>
+                </div>
+                </svelte:fragment>
+                <svelte:fragment slot="editor">
+                <div style={resizeStyle(detailConfigHeight)} class="config-editor-resize">
+                  {#if CodeEditorView}
+                    <CodeEditorView
+                      bind:value={configContent}
+                      {theme}
+                      language={configDocument.language}
+                      revision={configDocument.baseHash}
+                      configurationSchema={configurationSchemaDocument}
+                      configurationSchemaLoading={configurationSchemaLoading}
+                      configurationSchemaError={configurationSchemaError}
+                      jsonSchemaSemantics={programDefinition(detail.spec.type.kind).configuration?.jsonSchemaSemantics}
+                      markers={configurationEditorMarkers}
+                      activeMarkerId={activeFinalMarkerId}
+                      focusSemanticPath={focusSemanticPath}
+                      markerActionsDisabled={!!busy || !canEditConfigurationByLicense}
+                      conflictResolutionId={recentConflictChoice?.programId === selectedId ? recentConflictChoice.operationId : ''}
+                      on:retrySchema={retryConfigurationSchema}
+                      on:save={saveConfigurationFromEditor}
+                      on:syntaxStatus={(event) => { configSyntaxStatus = event.detail; }}
+                      on:diagnosticStatus={(event) => { configDiagnosticStatus = event.detail; }}
+                      on:resolveMarker={resolveConfigurationConflict}
+                      on:retryMarker={(event) => void retryConfigurationConflict(event.detail.conflictId)}
+                      on:historyConflict={(event) => void historyConfigurationConflict(event.detail.kind, event.detail.operationId)}
+                      on:pathFocus={(event) => { pathFocusMessage = event.detail.found ? '' : 'Fix the document format to locate this setting.'; }}
+                      on:markerPathSelected={(event) => { selectedEditorConflictId = event.detail.conflictId; selectedEditorPath = event.detail.path; void focusFinalConfigurationPath(event.detail.path); }}
+                    />
+                  {/if}
+                  <ResizeSeparator label={$t('Resize panel')} value={detailConfigHeight ?? 720} min={detailPaneResizeMinHeight} max={detailPaneResizeMaxHeight} onPointerDown={(event) => beginResizeFromHandle(event, 'detail:config')} onKeyDown={(event) => handleResizeKeydown(event, 'detail:config')} />
+                </div>
+                  {#if pathFocusMessage}<p class="config-path-focus-notice" role="status">{$t(pathFocusMessage)}</p>{/if}
+                  {#if configOutputMessage}<p class="result" role="status">{$t(configOutputMessage)}</p>{/if}
+                </svelte:fragment>
+              </FinalConfigurationEditor>
+            {/if}
           {:else if !configError}<div style={resizeStyle(detailConfigHeight)} class="loading configuration-loading">{$t('Loading configuration')}…</div>{/if}
         </div>
       {:else}
@@ -4987,5 +6572,14 @@
     confirmLabel={confirmation.confirmLabel}
     danger={confirmation.danger}
     onResolve={resolveConfirmation}
+  />
+{/if}
+
+{#if shareImportPreview}
+  <ShareImportPreviewDialog
+    preview={shareImportPreview}
+    busy={busy === 'preview-share-import'}
+    on:close={() => { shareImportPreview = null; }}
+    on:confirm={() => { shareImportPreview = null; }}
   />
 {/if}

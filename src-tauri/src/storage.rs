@@ -9,24 +9,33 @@ use std::{
 
 use async_trait::async_trait;
 use camellia_nexus_core::{
-    CamelliaNexusError, ConfigStore, CreateAssets, ErrorCode, ExecutableMetadata, InvalidProgram,
-    LoadReport, LogChunk, LogStream, MAX_CONFIG_BYTES, ProgramConfigTransaction, ProgramId,
-    ProgramSpec, ProgramStore, RawConfig, Result, StagedConfig, StagedPackage, StoredProgram,
+    CamelliaNexusError, ConfigStore, ConfigurationFormat, ConfigurationState,
+    CoreBinaryFingerprint, CreateAssets, ErrorCode, ExecutableMetadata, FinalEditorSession,
+    InvalidProgram, LoadReport, LogChunk, LogStream, MAX_CONFIG_BYTES, ProgramId, ProgramSpec,
+    ProgramStore, RawConfig, Result, StagedConfig, StagedPackage, StoredProgram,
     config_service::hash_bytes,
 };
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const PACKAGE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const PACKAGE_MAX_ENTRIES: usize = 4096;
 const PROGRAM_SPEC_MAX_BYTES: u64 = 1024 * 1024;
-const PROGRAM_CONFIG_TRANSACTION_VERSION: u32 = 1;
-const PROGRAM_CONFIG_TRANSACTION_MARKER: &str = ".program-config-transaction.json";
-const PROGRAM_CONFIG_SPEC_BACKUP: &str = ".program-config-program.json.bak";
-const PROGRAM_CONFIG_NEXT_SPEC: &str = ".program-config-program.json.next";
-const PROGRAM_PACKAGE_TRANSACTION_VERSION: u32 = 1;
+const CONFIGURATION_STATE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const CONFIGURATION_STATE_DIRECTORY: &str = "configuration";
+const CONFIGURATION_STATE_FILE: &str = "state.json";
+const CONFIGURATION_SIDECAR_DIRECTORY: &str = "sidecars";
+const CONFIGURATION_LKG_JSON: &str = "last-known-good.json";
+const CONFIGURATION_LKG_YAML: &str = "last-known-good.yaml";
+const CONFIGURATION_APPLY_MARKER: &str = ".configuration-apply.json";
+const CONFIGURATION_WORKSPACE_TRANSACTION_MARKER: &str =
+    ".configuration-workspace-transaction.json";
+const CONFIGURATION_WORKSPACE_STATE_BACKUP: &str = ".configuration-workspace-state.json.bak";
 const PROGRAM_PACKAGE_TRANSACTION_MARKER: &str = ".program-package-transaction.json";
 const PROGRAM_PACKAGE_SPEC_BACKUP: &str = ".program-package-program.json.bak";
 const PROGRAM_PACKAGE_NEXT_SPEC: &str = ".program-package-program.json.next";
+const PROGRAM_PACKAGE_STATE_BACKUP: &str = ".program-package-state.json.bak";
+const PROGRAM_PACKAGE_NEXT_STATE: &str = ".program-package-state.json.next";
 const CREATE_PENDING_MARKER: &[u8] = b"pending\n";
 const CREATE_COMMITTED_MARKER: &[u8] = b"committed\n";
 const DISCARDED_PACKAGE_PREFIX: &str = ".camellia-nexus-package-discard-";
@@ -86,29 +95,72 @@ fn remove_directory_bounded(path: PathBuf) {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProgramConfigTransactionMarker {
-    version: u32,
-    config_relative_path: PathBuf,
-    staged_config_file_name: String,
-    committed: bool,
+struct ProgramPackageTransactionMarker {
+    phase: ProgramPackageTransactionPhase,
+    workspace: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ProgramPackageTransactionPhase {
+    Prepared,
+    Committed,
+    Restored,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProgramPackageTransactionMarker {
-    version: u32,
-    committed: bool,
+struct ConfigurationApplyMarker {
+    state: ConfigurationState,
+    phase: ConfigurationApplyPhase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ConfigurationApplyPhase {
+    Prepared,
+    Committed,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfigurationWorkspaceTransactionMarker {
+    previous_spec: ProgramSpec,
+    next_spec: ProgramSpec,
+    expected_state_revision: u64,
+    previous_state_present: bool,
+    state_committed: bool,
 }
 
 #[derive(Clone)]
+enum EditorCommit {
+    Rebase,
+    Consume(u64),
+    Replace(Option<u64>),
+}
+
 pub struct FileStore {
     root: Arc<PathBuf>,
+    configuration_writes: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(test)]
+    fail_configuration_write: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    fail_apply_commit: Arc<std::sync::atomic::AtomicU8>,
+    #[cfg(test)]
+    fail_package_commit: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl FileStore {
     pub fn new(root: PathBuf) -> Result<Self> {
         let store = Self {
             root: Arc::new(root),
+            configuration_writes: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            fail_configuration_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            fail_apply_commit: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            #[cfg(test)]
+            fail_package_commit: Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         fs::create_dir_all(store.programs_root().join(".trash"))?;
         #[cfg(unix)]
@@ -125,6 +177,26 @@ impl FileStore {
         self.root.join("programs")
     }
 
+    #[cfg(all(test, feature = "desktop", unix))]
+    pub(crate) fn fail_next_configuration_write(&self) {
+        self.fail_configuration_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(all(test, feature = "desktop", unix))]
+    pub(crate) fn fail_apply_commit(&self, committed: bool) {
+        self.fail_apply_commit.store(
+            if committed { 2 } else { 1 },
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_package_commit_at(&self, stage: u8) {
+        self.fail_package_commit
+            .store(stage, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn program_root(&self, id: &ProgramId) -> PathBuf {
         self.programs_root().join(id.as_str())
     }
@@ -132,6 +204,616 @@ impl FileStore {
     fn config_path(&self, spec: &ProgramSpec) -> Result<PathBuf> {
         let root = self.program_root(&spec.id);
         config_path_in_root(&root, spec)
+    }
+
+    fn configuration_state_path(&self, id: &ProgramId) -> PathBuf {
+        self.program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_STATE_FILE)
+    }
+
+    fn configuration_sidecar_path(&self, id: &ProgramId, hash: &str) -> PathBuf {
+        self.program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_SIDECAR_DIRECTORY)
+            .join(format!("{hash}.source"))
+    }
+
+    pub async fn load_configuration_state(
+        &self,
+        id: &ProgramId,
+    ) -> Result<Option<ConfigurationState>> {
+        let path = self.configuration_state_path(id);
+        blocking(move || {
+            if !path.exists() {
+                return Ok(None);
+            }
+            let bytes = read_with_overflow_byte(&path, CONFIGURATION_STATE_MAX_BYTES)?;
+            if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Configuration state exceeds the 32 MiB limit",
+                ));
+            }
+            let mut state = decode_configuration_state(&bytes)?;
+            for snapshot in state.source_snapshots.values_mut() {
+                if snapshot.content.is_empty() {
+                    if !valid_content_hash(&snapshot.content_hash) {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::ConfigInvalid,
+                            "Configuration source sidecar reference is invalid",
+                        ));
+                    }
+                    let sidecar = path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(CONFIGURATION_SIDECAR_DIRECTORY)
+                        .join(format!("{}.source", snapshot.content_hash));
+                    let content = fs::read(&sidecar).map_err(|error| {
+                        CamelliaNexusError::new(
+                            ErrorCode::Storage,
+                            "Configuration source sidecar is unavailable",
+                        )
+                        .with_details(error.to_string())
+                    })?;
+                    if content.len() > MAX_CONFIG_BYTES {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::Storage,
+                            "Configuration source sidecar exceeds the 4 MiB limit",
+                        ));
+                    }
+                    if hash_bytes(&content) != snapshot.content_hash {
+                        return Err(CamelliaNexusError::new(
+                            ErrorCode::Storage,
+                            "Configuration source sidecar hash does not match its snapshot",
+                        ));
+                    }
+                    snapshot.content = String::from_utf8(content).map_err(|_| {
+                        CamelliaNexusError::new(
+                            ErrorCode::ConfigInvalid,
+                            "Configuration source sidecar is not UTF-8",
+                        )
+                    })?;
+                }
+            }
+            Ok(Some(state))
+        })
+        .await
+    }
+
+    pub async fn save_configuration_state(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+        expected_state_revision: Option<u64>,
+    ) -> Result<()> {
+        self.save_configuration_workspace(id, state, expected_state_revision, EditorCommit::Rebase)
+            .await
+    }
+
+    /// Commit the candidate and consume exactly the draft that produced it.
+    pub async fn save_configuration_candidate_state(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+        expected_state_revision: u64,
+        expected_draft_revision: Option<u64>,
+    ) -> Result<()> {
+        self.save_configuration_workspace(
+            id,
+            state,
+            Some(expected_state_revision),
+            expected_draft_revision.map_or(EditorCommit::Rebase, EditorCommit::Consume),
+        )
+        .await
+    }
+
+    pub async fn save_configuration_conflict_state(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+        expected_state_revision: u64,
+        expected_draft_revision: Option<u64>,
+    ) -> Result<()> {
+        self.save_configuration_workspace(
+            id,
+            state,
+            Some(expected_state_revision),
+            EditorCommit::Replace(expected_draft_revision),
+        )
+        .await
+    }
+
+    async fn save_configuration_workspace(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+        expected_state_revision: Option<u64>,
+        editor_commit: EditorCommit,
+    ) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let path = self.configuration_state_path(id);
+        let mut state = state.clone();
+        #[cfg(test)]
+        let fail_write = self.fail_configuration_write.clone();
+        let sidecar_root = self
+            .program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_SIDECAR_DIRECTORY);
+        blocking(move || {
+            let current = read_configuration_state_file(&path)?;
+            if let Some(expected) = expected_state_revision
+                && current.as_ref().map(|state| state.state_revision) != Some(expected)
+            {
+                return Err(configuration_state_stale());
+            }
+            let current_draft = current
+                .as_ref()
+                .and_then(|state| state.editor_session.clone());
+            match editor_commit {
+                EditorCommit::Replace(expected) => {
+                    if current_draft.as_ref().map(|draft| draft.draft_revision) != expected {
+                        return Err(configuration_draft_stale());
+                    }
+                }
+                EditorCommit::Consume(expected) => {
+                    if current_draft.as_ref().map(|draft| draft.draft_revision) != Some(expected) {
+                        return Err(configuration_draft_stale());
+                    }
+                    state.editor_session = None;
+                }
+                EditorCommit::Rebase => {
+                    state.editor_session = current_draft;
+                    if let Some(draft) = state.editor_session.as_mut() {
+                        let before = draft.clone();
+                        camellia_nexus_core::rebase_final_editor_session(
+                            draft,
+                            state.format,
+                            &state.desired.content,
+                            state.state_revision,
+                            state.generation,
+                        )?;
+                        if *draft != before {
+                            draft.draft_revision = before.draft_revision.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            fs::create_dir_all(&sidecar_root)?;
+            compact_configuration_state(&sidecar_root, &mut state)?;
+            #[cfg(test)]
+            if fail_write.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Injected workspace commit failure",
+                ));
+            }
+            write_configuration_state_file(&path, &state)
+        })
+        .await
+    }
+
+    /// Stores an original observation or translated fragment by content hash.
+    /// The state file only keeps the reference, which prevents a collection of
+    /// 4 MiB sources from expanding the state beyond its durable limit.
+    pub async fn save_configuration_sidecar(
+        &self,
+        id: &ProgramId,
+        hash: &str,
+        content: &[u8],
+    ) -> Result<()> {
+        if content.len() > MAX_CONFIG_BYTES {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration sidecar exceeds the 4 MiB limit",
+            ));
+        }
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration sidecar reference is invalid",
+            ));
+        }
+        let path = self.configuration_sidecar_path(id, hash);
+        let bytes = content.to_vec();
+        blocking(move || write_bytes_atomic(&path, &bytes)).await
+    }
+
+    pub async fn load_configuration_sidecar(&self, id: &ProgramId, hash: &str) -> Result<Vec<u8>> {
+        if !valid_content_hash(hash) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration sidecar reference is invalid",
+            ));
+        }
+        let path = self.configuration_sidecar_path(id, hash);
+        let expected = hash.to_owned();
+        blocking(move || {
+            let bytes = read_with_overflow_byte(&path, MAX_CONFIG_BYTES as u64)?;
+            if bytes.len() > MAX_CONFIG_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Configuration sidecar exceeds the 4 MiB limit",
+                ));
+            }
+            if hash_bytes(&bytes) != expected {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Configuration sidecar hash does not match its reference",
+                ));
+            }
+            Ok(bytes)
+        })
+        .await
+    }
+
+    /// Starts a ProgramSpec/workspace transaction. The previous state is kept
+    /// as a bounded atomic backup until `finish_configuration_workspace_update`.
+    pub async fn begin_configuration_workspace_update(
+        &self,
+        id: &ProgramId,
+        previous_spec: &ProgramSpec,
+        next_spec: &ProgramSpec,
+        expected_state_revision: u64,
+    ) -> Result<()> {
+        previous_spec.validate()?;
+        next_spec.validate()?;
+        if previous_spec.id != *id || next_spec.id != *id {
+            return Err(CamelliaNexusError::invalid_spec(
+                "Configuration workspace program does not match",
+            ));
+        }
+        let _write = self.configuration_writes.lock().await;
+        let root = self.program_root(id);
+        let state_path = self.configuration_state_path(id);
+        let marker_path = root.join(CONFIGURATION_WORKSPACE_TRANSACTION_MARKER);
+        let backup_path = root.join(CONFIGURATION_WORKSPACE_STATE_BACKUP);
+        let previous_spec = previous_spec.clone();
+        let next_spec = next_spec.clone();
+        blocking(move || {
+            if marker_path.exists() || backup_path.exists() {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ProgramBusy,
+                    "A configuration workspace transaction requires recovery",
+                )
+                .with_message_key("CONFIGURATION_RECOVERY_REQUIRED"));
+            }
+            let spec_bytes =
+                read_with_overflow_byte(&root.join("program.json"), PROGRAM_SPEC_MAX_BYTES)?;
+            if spec_bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES {
+                return Err(configuration_recovery_required());
+            }
+            let persisted_spec: ProgramSpec = serde_json::from_slice(&spec_bytes)?;
+            if persisted_spec != previous_spec {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigConflict,
+                    "Program settings changed before the workspace transaction began",
+                )
+                .with_message_key("CONFIGURATION_STATE_STALE"));
+            }
+            let previous_state_present = state_path.exists();
+            if previous_state_present {
+                let bytes = read_with_overflow_byte(&state_path, CONFIGURATION_STATE_MAX_BYTES)?;
+                if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigInvalid,
+                        "Configuration state exceeds the 32 MiB limit",
+                    ));
+                }
+                let current = decode_configuration_state(&bytes)?;
+                if current.state_revision != expected_state_revision {
+                    return Err(CamelliaNexusError::new(
+                        ErrorCode::ConfigConflict,
+                        "Configuration state changed before the workspace transaction began",
+                    )
+                    .with_message_key("CONFIGURATION_STATE_STALE"));
+                }
+                write_bytes_atomic(&backup_path, &bytes)?;
+            } else if expected_state_revision != 0 {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigConflict,
+                    "Configuration state disappeared before the workspace transaction began",
+                )
+                .with_message_key("CONFIGURATION_STATE_STALE"));
+            }
+            let marker = ConfigurationWorkspaceTransactionMarker {
+                previous_spec,
+                next_spec,
+                expected_state_revision,
+                previous_state_present,
+                state_committed: false,
+            };
+            write_json_atomic(&marker_path, &marker)
+        })
+        .await
+    }
+
+    pub async fn mark_configuration_workspace_update_committed(
+        &self,
+        id: &ProgramId,
+        next_spec: &ProgramSpec,
+    ) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let root = self.program_root(id);
+        let marker_path = root.join(CONFIGURATION_WORKSPACE_TRANSACTION_MARKER);
+        let next_spec = next_spec.clone();
+        blocking(move || {
+            let mut marker =
+                load_configuration_workspace_transaction_marker(&root)?.ok_or_else(|| {
+                    CamelliaNexusError::new(
+                        ErrorCode::InvalidState,
+                        "Configuration workspace transaction marker is missing",
+                    )
+                })?;
+            let bytes =
+                read_with_overflow_byte(&root.join("program.json"), PROGRAM_SPEC_MAX_BYTES)?;
+            if bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES {
+                return Err(configuration_recovery_required());
+            }
+            let persisted_spec: ProgramSpec = serde_json::from_slice(&bytes)?;
+            if persisted_spec != next_spec || marker.next_spec.id != next_spec.id {
+                return Err(configuration_recovery_required());
+            }
+            marker.next_spec = next_spec;
+            marker.state_committed = true;
+            write_json_atomic(&marker_path, &marker).map_err(|error| {
+                if load_configuration_workspace_transaction_marker(&root)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|marker| marker.state_committed)
+                {
+                    workspace_commit_recovery(error)
+                } else {
+                    error
+                }
+            })
+        })
+        .await
+    }
+
+    pub async fn finish_configuration_workspace_update(&self, id: &ProgramId) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let root = self.program_root(id);
+        blocking(move || {
+            for path in [
+                root.join(CONFIGURATION_WORKSPACE_TRANSACTION_MARKER),
+                root.join(CONFIGURATION_WORKSPACE_STATE_BACKUP),
+            ] {
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                sync_directory(&root)?;
+            }
+            sync_directory(&root)
+        })
+        .await
+    }
+
+    pub async fn rollback_configuration_workspace_update(&self, id: &ProgramId) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let root = self.program_root(id);
+        blocking(move || recover_configuration_workspace_transaction(&root)).await
+    }
+
+    pub async fn reconcile_configuration_workspace(&self, spec: &ProgramSpec) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let root = self.program_root(&spec.id);
+        let spec = spec.clone();
+        blocking(
+            move || match load_configuration_workspace_transaction_marker(&root)? {
+                None => {
+                    let backup = root.join(CONFIGURATION_WORKSPACE_STATE_BACKUP);
+                    match fs::remove_file(backup) {
+                        Ok(()) => sync_directory(&root),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(error) => Err(error.into()),
+                    }
+                }
+                Some(marker) if marker.state_committed && marker.next_spec == spec => {
+                    recover_configuration_workspace_transaction(&root)
+                        .map_err(workspace_commit_recovery)
+                }
+                Some(_) => Err(configuration_recovery_required()),
+            },
+        )
+        .await
+    }
+
+    pub async fn load_final_editor_draft(
+        &self,
+        id: &ProgramId,
+    ) -> Result<Option<FinalEditorSession>> {
+        let path = self.configuration_state_path(id);
+        blocking(move || {
+            Ok(read_configuration_state_file(&path)?.and_then(|state| state.editor_session))
+        })
+        .await
+    }
+
+    pub async fn save_final_editor_draft(
+        &self,
+        id: &ProgramId,
+        draft: &FinalEditorSession,
+        expected_revision: Option<u64>,
+    ) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let path = self.configuration_state_path(id);
+        let mut draft = draft.clone();
+        blocking(move || {
+            validate_editor_session_size(&draft)?;
+            let mut state =
+                read_configuration_state_file(&path)?.ok_or_else(configuration_state_stale)?;
+            let current = state.editor_session.as_ref();
+            if let Some(expected) = expected_revision
+                && (current.map_or(0, |session| session.draft_revision) != expected
+                    || current.is_some_and(|session| session.session_id != draft.session_id))
+            {
+                return Err(configuration_draft_stale());
+            }
+            if current == Some(&draft) {
+                return Ok(());
+            }
+            state.state_revision = state.state_revision.saturating_add(1);
+            camellia_nexus_core::rebase_final_editor_session(
+                &mut draft,
+                state.format,
+                &state.desired.content,
+                state.state_revision,
+                state.generation,
+            )?;
+            state.editor_session = Some(draft);
+            write_configuration_state_file(&path, &state)
+        })
+        .await
+    }
+
+    pub async fn discard_final_editor_draft(
+        &self,
+        id: &ProgramId,
+        expected_revision: u64,
+    ) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let path = self.configuration_state_path(id);
+        blocking(move || {
+            let mut state =
+                read_configuration_state_file(&path)?.ok_or_else(configuration_state_stale)?;
+            if state
+                .editor_session
+                .as_ref()
+                .map_or(0, |draft| draft.draft_revision)
+                != expected_revision
+            {
+                return Err(configuration_draft_stale());
+            }
+            if state.editor_session.take().is_none() {
+                return Ok(());
+            }
+            state.state_revision = state.state_revision.saturating_add(1);
+            write_configuration_state_file(&path, &state)
+        })
+        .await
+    }
+
+    pub async fn save_last_known_good(
+        &self,
+        id: &ProgramId,
+        format: ConfigurationFormat,
+        content: &str,
+    ) -> Result<()> {
+        if content.len() > MAX_CONFIG_BYTES {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Last known good configuration exceeds the 4 MiB limit",
+            ));
+        }
+        let file_name = match format {
+            ConfigurationFormat::Jsonc => CONFIGURATION_LKG_JSON,
+            ConfigurationFormat::Yaml => CONFIGURATION_LKG_YAML,
+        };
+        let path = self
+            .program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(file_name);
+        let bytes = content.as_bytes().to_vec();
+        blocking(move || write_bytes_atomic(&path, &bytes)).await
+    }
+
+    pub async fn load_last_known_good(
+        &self,
+        id: &ProgramId,
+        format: ConfigurationFormat,
+    ) -> Result<Option<String>> {
+        let file_name = match format {
+            ConfigurationFormat::Jsonc => CONFIGURATION_LKG_JSON,
+            ConfigurationFormat::Yaml => CONFIGURATION_LKG_YAML,
+        };
+        let path = self
+            .program_root(id)
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(file_name);
+        blocking(move || {
+            if !path.exists() {
+                return Ok(None);
+            }
+            let bytes = read_with_overflow_byte(&path, MAX_CONFIG_BYTES as u64)?;
+            if bytes.len() > MAX_CONFIG_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Last known good configuration exceeds the 4 MiB limit",
+                ));
+            }
+            String::from_utf8(bytes).map(Some).map_err(|error| {
+                CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Last known good configuration is not UTF-8",
+                )
+                .with_details(error.to_string())
+            })
+        })
+        .await
+    }
+
+    pub async fn begin_configuration_apply(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+    ) -> Result<()> {
+        let path = self.program_root(id).join(CONFIGURATION_APPLY_MARKER);
+        let root = self.program_root(id);
+        let sidecar_root = root
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_SIDECAR_DIRECTORY);
+        let marker = ConfigurationApplyMarker {
+            state: state.clone(),
+            phase: ConfigurationApplyPhase::Prepared,
+        };
+        blocking(move || {
+            if path.exists() {
+                return Err(configuration_recovery_required());
+            }
+            fs::create_dir_all(&sidecar_root)?;
+            let mut marker = marker;
+            compact_configuration_state(&sidecar_root, &mut marker.state)?;
+            let bytes = serde_json::to_vec(&marker)?;
+            if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::ConfigInvalid,
+                    "Configuration apply transaction exceeds the 32 MiB limit",
+                ));
+            }
+            write_bytes_atomic(&path, &bytes)
+        })
+        .await
+    }
+
+    pub async fn finish_configuration_apply(&self, id: &ProgramId) -> Result<()> {
+        let root = self.program_root(id);
+        let path = root.join(CONFIGURATION_APPLY_MARKER);
+        blocking(move || {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            sync_directory(&root)
+        })
+        .await
+    }
+
+    pub async fn reconcile_configuration_apply(&self, spec: &ProgramSpec) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
+        let root = self.program_root(&spec.id);
+        let spec = spec.clone();
+        blocking(move || match read_configuration_apply_marker(&root)? {
+            None => Ok(()),
+            Some(marker) if marker.phase == ConfigurationApplyPhase::Committed => {
+                recover_configuration_apply_transaction(&root, &spec)
+            }
+            Some(_) => Err(configuration_recovery_required()),
+        })
+        .await
     }
 
     fn clean_trash(&self) {
@@ -147,6 +829,7 @@ impl FileStore {
 #[async_trait]
 impl ProgramStore for FileStore {
     async fn load_all(&self) -> Result<LoadReport> {
+        let _write = self.configuration_writes.lock().await;
         let root = self.programs_root();
         blocking(move || {
             fs::create_dir_all(&root)?;
@@ -187,7 +870,7 @@ impl ProgramStore for FileStore {
                 }
                 let spec_path = path.join("program.json");
                 let loaded = (|| -> Result<ProgramSpec> {
-                    recover_program_config_transaction(&path)?;
+                    recover_configuration_workspace_transaction(&path)?;
                     recover_program_package_transaction(&path)?;
                     clean_atomic_temps(&path);
                     let content = read_with_overflow_byte(&spec_path, PROGRAM_SPEC_MAX_BYTES)?;
@@ -196,15 +879,12 @@ impl ProgramStore for FileStore {
                             "program.json exceeds the 1 MiB limit",
                         ));
                     }
-                    let (spec, migrated) = decode_program_spec(&content)?;
+                    let spec = decode_program_spec(&content)?;
                     spec.validate()?;
                     if spec.id != workspace_id {
                         return Err(CamelliaNexusError::invalid_spec(
                             "Workspace name does not match Program id",
                         ));
-                    }
-                    if migrated {
-                        write_json_atomic(&spec_path, &spec)?;
                     }
                     Ok(spec)
                 })();
@@ -349,8 +1029,39 @@ impl ProgramStore for FileStore {
     }
 
     async fn executable_metadata(&self, spec: &ProgramSpec) -> Result<ExecutableMetadata> {
-        let path = spec.executable_path(&self.program_root(&spec.id));
-        blocking(move || executable_metadata(&path)).await
+        let root = self.program_root(&spec.id);
+        let path = spec.executable_path(&root);
+        blocking(move || {
+            let marker = load_program_package_transaction_marker(&root)?;
+            if marker
+                .as_ref()
+                .is_some_and(|marker| marker.phase == ProgramPackageTransactionPhase::Prepared)
+                || (marker.is_none() && root.join("bin.old").exists())
+            {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Program replacement requires recovery",
+                )
+                .with_message_key("PROGRAM_PACKAGE_RECOVERY_REQUIRED"));
+            }
+            executable_metadata(&path)
+        })
+        .await
+    }
+
+    async fn configuration_validation_evidence(
+        &self,
+        spec: &ProgramSpec,
+    ) -> Result<Option<camellia_nexus_core::CoreValidationEvidence>> {
+        Ok(self
+            .load_configuration_state(&spec.id)
+            .await?
+            .and_then(|state| state.applied)
+            .and_then(|candidate| {
+                candidate.validation_evidence.filter(|evidence| {
+                    evidence.candidate_generation == candidate.revision.generation
+                })
+            }))
     }
 
     async fn stage_package(&self, spec: &ProgramSpec, source: &Path) -> Result<StagedPackage> {
@@ -409,122 +1120,119 @@ impl ProgramStore for FileStore {
         staged: StagedPackage,
         expected_spec: &ProgramSpec,
         next_spec: &ProgramSpec,
+        configuration: Option<camellia_nexus_core::PackageConfigurationUpdate>,
     ) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
         let root = self.program_root(&staged.program_id);
         let expected_spec = expected_spec.clone();
         let next_spec = next_spec.clone();
+        #[cfg(test)]
+        let fail_commit = self.fail_package_commit.clone();
         blocking(move || {
             let expected = root.join("bin.new");
-            if staged.staged_directory != expected
-                || staged.program_id != expected_spec.id
-                || staged.program_id != next_spec.id
-            {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::InvalidPath,
-                    "Invalid staged package path",
-                ));
+            if staged.staged_directory != expected || staged.program_id != expected_spec.id || staged.program_id != next_spec.id {
+                return Err(CamelliaNexusError::new(ErrorCode::InvalidPath, "Invalid staged package path"));
+            }
+            if next_spec.program_type.main_config().is_some() != configuration.is_some() {
+                return Err(CamelliaNexusError::new(ErrorCode::InvalidState, "Package replacement requires its configuration workspace"));
             }
             recover_program_package_transaction(&root)?;
             let marker_path = root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER);
             let spec_path = root.join("program.json");
             let spec_backup = root.join(PROGRAM_PACKAGE_SPEC_BACKUP);
             let next_spec_path = root.join(PROGRAM_PACKAGE_NEXT_SPEC);
+            let state_path = root.join(CONFIGURATION_STATE_DIRECTORY).join(CONFIGURATION_STATE_FILE);
+            let state_backup = root.join(PROGRAM_PACKAGE_STATE_BACKUP);
+            let next_state_path = root.join(PROGRAM_PACKAGE_NEXT_STATE);
             let active = root.join("bin");
             let backup = root.join("bin.old");
-            if marker_path.exists()
-                || spec_backup.exists()
-                || next_spec_path.exists()
-                || backup.exists()
-            {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::ProgramBusy,
-                    "A previous managed package transaction still requires recovery",
-                ));
+            if [ &marker_path, &spec_backup, &next_spec_path, &state_backup, &next_state_path, &backup ].iter().any(|path| path.exists()) {
+                return Err(CamelliaNexusError::new(ErrorCode::ProgramBusy, "Managed package recovery materials require attention"));
             }
             let stored_bytes = read_with_overflow_byte(&spec_path, PROGRAM_SPEC_MAX_BYTES)?;
-            if stored_bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES {
-                return Err(CamelliaNexusError::invalid_spec(
-                    "program.json exceeds the 1 MiB limit",
-                ));
+            if stored_bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES { return Err(configuration_recovery_required()); }
+            if decode_program_spec(&stored_bytes)? != expected_spec {
+                return Err(configuration_state_stale());
             }
-            let (stored_spec, _) = decode_program_spec(&stored_bytes)?;
-            if stored_spec != expected_spec {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::ConfigConflict,
-                    "Program settings changed while the package was being prepared",
-                ));
-            }
-            write_json_atomic(&next_spec_path, &next_spec)?;
-            let marker = ProgramPackageTransactionMarker {
-                version: PROGRAM_PACKAGE_TRANSACTION_VERSION,
-                committed: false,
+            // Recheck the exact staged file at the commit boundary, not only its metadata captured during copying.
+            let camellia_nexus_core::ExecutableSpec::Managed { path, .. } = &next_spec.executable else {
+                return Err(CamelliaNexusError::invalid_spec("Package replacement requires a managed executable"));
             };
-            if let Err(error) = write_json_atomic(&marker_path, &marker) {
+            let relative = path.strip_prefix("bin").map_err(|_| CamelliaNexusError::new(ErrorCode::InvalidPath, "Managed executable must be inside bin"))?;
+            if staged.executable != safe_path(&expected, relative)? {
+                return Err(CamelliaNexusError::new(ErrorCode::InvalidPath, "Invalid staged executable path"));
+            }
+            let actual = executable_metadata(&staged.executable)?;
+            if next_spec.executable.metadata().is_none_or(|metadata| metadata.fingerprint != actual.fingerprint) {
+                return Err(CamelliaNexusError::new(ErrorCode::ConfigConflict, "Prepared executable changed").with_message_key("CORE_BINARY_IDENTITY_MISMATCH"));
+            }
+            let has_workspace = configuration.is_some();
+            let prepare = (|| -> Result<()> {
+                write_bytes_atomic(&spec_backup, &stored_bytes)?;
+                write_json_atomic(&next_spec_path, &next_spec)?;
+                if let Some(update) = configuration {
+                    let current = read_configuration_state_file(&state_path)?.ok_or_else(configuration_state_stale)?;
+                    if current.state_revision != update.expected_state_revision { return Err(configuration_state_stale()); }
+                    let backup_bytes = read_with_overflow_byte(&state_path, CONFIGURATION_STATE_MAX_BYTES)?;
+                    if backup_bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES { return Err(configuration_recovery_required()); }
+                    let mut next = update.state;
+                    next.editor_session = current.editor_session.clone();
+                    if let Some(draft) = next.editor_session.as_mut() {
+                        let previous = draft.clone();
+                        camellia_nexus_core::rebase_final_editor_session(draft, next.format, &next.desired.content, next.state_revision, next.generation)?;
+                        if *draft != previous { draft.draft_revision = previous.draft_revision.saturating_add(1); }
+                    }
+                    let sidecars = root.join(CONFIGURATION_STATE_DIRECTORY).join(CONFIGURATION_SIDECAR_DIRECTORY);
+                    fs::create_dir_all(&sidecars)?;
+                    compact_configuration_state(&sidecars, &mut next)?;
+                    write_bytes_atomic(&state_backup, &backup_bytes)?;
+                    write_configuration_state_file(&next_state_path, &next)?;
+                }
+                write_json_atomic(&marker_path, &ProgramPackageTransactionMarker {
+                    phase: ProgramPackageTransactionPhase::Prepared, workspace: has_workspace,
+                })
+            })();
+            if let Err(error) = prepare {
                 let recovery = if marker_path.exists() {
                     recover_program_package_transaction(&root)
                 } else {
-                    if next_spec_path.exists() {
-                        let _ = fs::remove_file(&next_spec_path);
-                    }
-                    if expected.exists() {
-                        let _ = discard_directory_background(&expected);
+                    // No active file has changed before the prepared marker becomes durable.
+                    for path in [&spec_backup, &next_spec_path, &state_backup, &next_state_path] {
+                        if path.exists() { fs::remove_file(path)?; }
                     }
                     Ok(())
                 };
-                return match recovery {
-                    Ok(()) => Err(error),
-                    Err(recovery_error) => Err(CamelliaNexusError::new(
-                        ErrorCode::Storage,
-                        "The managed package transaction could not be prepared or recovered",
-                    )
-                    .with_details(format!("prepare: {error}; recovery: {recovery_error}"))),
-                };
+                return Err(match recovery { Ok(()) => error, Err(recovery) => package_recovery_required(&error, &recovery) });
             }
-
-            let result = (|| -> Result<()> {
-                replace_with_backup(&next_spec_path, &spec_path, &spec_backup)?;
+            let commit = (|| -> Result<()> {
+                replace_file(&next_spec_path, &spec_path)?;
+                if has_workspace { replace_file(&next_state_path, &state_path)?; }
+                #[cfg(test)]
+                if fail_commit.compare_exchange(1,0,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst).is_ok() {
+                    return Err(CamelliaNexusError::new(ErrorCode::Storage, "Injected package workspace write failure"));
+                }
                 fs::rename(&active, &backup)?;
-                if let Err(error) = fs::rename(&expected, &active) {
-                    let _ = fs::rename(&backup, &active);
-                    return Err(error.into());
+                fs::rename(&expected, &active)?;
+                sync_directory(&root)?;
+                #[cfg(test)]
+                if fail_commit.compare_exchange(2,0,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst).is_ok() {
+                    return Err(CamelliaNexusError::new(ErrorCode::Storage, "Injected package swap failure"));
                 }
-                sync_directory(&root)
+                write_json_atomic(&marker_path, &ProgramPackageTransactionMarker {
+                    phase: ProgramPackageTransactionPhase::Committed, workspace: has_workspace,
+                })?;
+                Ok(())
             })();
-            if let Err(error) = result {
-                let recovery = recover_program_package_transaction(&root);
-                return match recovery {
-                    Ok(()) => Err(error),
-                    Err(recovery_error) => Err(CamelliaNexusError::new(
-                        ErrorCode::Storage,
-                        "The managed package and metadata could not be committed or restored",
-                    )
-                    .with_details(format!("commit: {error}; recovery: {recovery_error}"))),
-                };
-            }
-
-            let committed = ProgramPackageTransactionMarker {
-                version: PROGRAM_PACKAGE_TRANSACTION_VERSION,
-                committed: true,
-            };
-            if let Err(error) = write_json_atomic(&marker_path, &committed) {
-                let persisted = load_program_package_transaction_marker(&root)?;
-                if persisted.is_none_or(|marker| !marker.committed) {
-                    let recovery = recover_program_package_transaction(&root);
-                    return match recovery {
-                        Ok(()) => Err(error),
-                        Err(recovery_error) => Err(CamelliaNexusError::new(
-                            ErrorCode::Storage,
-                            "The managed package commit point could not be persisted or recovered",
-                        )
-                        .with_details(format!("commit: {error}; recovery: {recovery_error}"))),
-                    };
+            if let Err(error) = commit {
+                if load_program_package_transaction_marker(&root)?.is_some_and(|marker| marker.phase == ProgramPackageTransactionPhase::Committed) {
+                    tracing::warn!(code = ?error.code, "managed package committed; cleanup requires recovery");
+                } else {
+                    return Err(match recover_program_package_transaction(&root) { Ok(()) => error, Err(recovery) => package_recovery_required(&error, &recovery) });
                 }
-                tracing::warn!(%error, "managed package commit marker was installed but its directory sync reported an error");
             }
-            cleanup_committed_program_package_transaction(&root);
+            cleanup_finished_program_package_transaction(&root);
             Ok(())
-        })
-        .await
+        }).await
     }
 
     async fn discard_package(&self, staged: StagedPackage) -> Result<()> {
@@ -540,189 +1248,6 @@ impl ProgramStore for FileStore {
                 discard_directory_background(&staged.staged_directory)?;
             }
             Ok(())
-        })
-        .await
-    }
-
-    async fn begin_program_config_update(
-        &self,
-        expected_spec: &ProgramSpec,
-        next_spec: &ProgramSpec,
-        staged_config: StagedConfig,
-        expected_config_hash: &str,
-    ) -> Result<ProgramConfigTransaction> {
-        if expected_spec.id != next_spec.id {
-            return Err(CamelliaNexusError::invalid_spec(
-                "A program/configuration transaction cannot change the Program id",
-            ));
-        }
-        let root = self.program_root(&expected_spec.id);
-        let expected_spec = expected_spec.clone();
-        let next_spec = next_spec.clone();
-        let expected_config_hash = expected_config_hash.to_owned();
-        blocking(move || {
-            let expected_target = config_path_in_root(&root, &next_spec)?;
-            validate_staged_config(&root, &expected_target, &staged_config)?;
-            recover_program_config_transaction(&root)?;
-
-            let marker_path = root.join(PROGRAM_CONFIG_TRANSACTION_MARKER);
-            let spec_path = root.join("program.json");
-            let spec_backup = root.join(PROGRAM_CONFIG_SPEC_BACKUP);
-            let next_spec_path = root.join(PROGRAM_CONFIG_NEXT_SPEC);
-            let config_backup = suffixed_path(&expected_target, ".bak");
-            let config_pending = suffixed_path(&expected_target, ".pending");
-            if marker_path.exists()
-                || spec_backup.exists()
-                || next_spec_path.exists()
-                || config_backup.exists()
-                || config_pending.exists()
-            {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::ProgramBusy,
-                    "A previous program/configuration transaction still requires recovery",
-                ));
-            }
-
-            let current_spec_bytes = read_with_overflow_byte(&spec_path, PROGRAM_SPEC_MAX_BYTES)?;
-            if current_spec_bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES {
-                return Err(CamelliaNexusError::invalid_spec(
-                    "program.json exceeds the 1 MiB limit",
-                ));
-            }
-            let (stored_spec, _) = decode_program_spec(&current_spec_bytes)?;
-            if stored_spec != expected_spec {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::ConfigConflict,
-                    "Program settings changed before the configuration transaction committed",
-                ));
-            }
-            let current_config =
-                read_with_overflow_byte(&expected_target, MAX_CONFIG_BYTES as u64)?;
-            if current_config.len() > MAX_CONFIG_BYTES
-                || hash_bytes(&current_config) != expected_config_hash
-            {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::ConfigConflict,
-                    "Configuration changed before the transaction committed",
-                ));
-            }
-
-            write_json_atomic(&next_spec_path, &next_spec)?;
-            let config_relative_path = expected_target
-                .strip_prefix(&root)
-                .map_err(|_| {
-                    CamelliaNexusError::new(
-                        ErrorCode::InvalidPath,
-                        "Configuration target escaped the Program workspace",
-                    )
-                })?
-                .to_path_buf();
-            let staged_config_file_name = staged_config
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| {
-                    CamelliaNexusError::new(
-                        ErrorCode::InvalidPath,
-                        "Staged configuration has no valid file name",
-                    )
-                })?
-                .to_owned();
-            write_json_atomic(
-                &marker_path,
-                &ProgramConfigTransactionMarker {
-                    version: PROGRAM_CONFIG_TRANSACTION_VERSION,
-                    config_relative_path,
-                    staged_config_file_name,
-                    committed: false,
-                },
-            )?;
-
-            let result = (|| -> Result<()> {
-                replace_with_backup(&next_spec_path, &spec_path, &spec_backup)?;
-                replace_with_backup(&staged_config.path, &expected_target, &staged_config.backup)?;
-                sync_directory(&root)?;
-                if let Some(parent) = expected_target.parent()
-                    && parent != root
-                {
-                    sync_directory(parent)?;
-                }
-                Ok(())
-            })();
-            if let Err(error) = result {
-                let recovery = recover_program_config_transaction(&root);
-                return match recovery {
-                    Ok(()) => Err(error),
-                    Err(recovery_error) => Err(CamelliaNexusError::new(
-                        ErrorCode::Storage,
-                        "Program settings and configuration could not be committed or restored",
-                    )
-                    .with_details(format!("commit: {error}; recovery: {recovery_error}"))),
-                };
-            }
-            Ok(ProgramConfigTransaction {
-                program_id: expected_spec.id,
-                config_target: expected_target,
-            })
-        })
-        .await
-    }
-
-    async fn finalize_program_config_update(
-        &self,
-        transaction: ProgramConfigTransaction,
-    ) -> Result<()> {
-        let root = self.program_root(&transaction.program_id);
-        blocking(move || {
-            let mut marker = load_program_config_transaction_marker(&root)?.ok_or_else(|| {
-                CamelliaNexusError::new(
-                    ErrorCode::InvalidState,
-                    "Program/configuration transaction marker is missing",
-                )
-            })?;
-            let config_target = transaction_config_target(&root, &marker)?;
-            if config_target != transaction.config_target || marker.committed {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::InvalidState,
-                    "Program/configuration transaction does not match the pending commit",
-                ));
-            }
-            marker.committed = true;
-            if let Err(error) =
-                write_json_atomic(&root.join(PROGRAM_CONFIG_TRANSACTION_MARKER), &marker)
-            {
-                let persisted = load_program_config_transaction_marker(&root)?;
-                if persisted.is_none_or(|persisted| !persisted.committed) {
-                    return Err(error);
-                }
-                tracing::warn!(%error, "program/configuration commit marker was installed but its directory sync reported an error");
-            }
-            cleanup_committed_program_config_transaction(&root, &marker);
-            Ok(())
-        })
-        .await
-    }
-
-    async fn rollback_program_config_update(
-        &self,
-        transaction: ProgramConfigTransaction,
-    ) -> Result<()> {
-        let root = self.program_root(&transaction.program_id);
-        blocking(move || {
-            let marker = load_program_config_transaction_marker(&root)?.ok_or_else(|| {
-                CamelliaNexusError::new(
-                    ErrorCode::InvalidState,
-                    "Program/configuration transaction marker is missing",
-                )
-            })?;
-            let config_target = transaction_config_target(&root, &marker)?;
-            if config_target != transaction.config_target || marker.committed {
-                return Err(CamelliaNexusError::new(
-                    ErrorCode::InvalidState,
-                    "Program/configuration transaction can no longer be rolled back",
-                ));
-            }
-            rollback_program_config_transaction(&root, &marker)
         })
         .await
     }
@@ -784,18 +1309,9 @@ impl ProgramStore for FileStore {
                 return Ok(());
             }
             let bin = root.join("bin");
-            let old = root.join("bin.old");
             let new = root.join("bin.new");
-            if !bin.exists() && old.exists() {
-                fs::rename(&old, &bin)?;
-            }
-            if bin.exists() {
-                if old.exists() {
-                    discard_directory_background(&old)?;
-                }
-                if new.exists() {
-                    discard_directory_background(&new)?;
-                }
+            if bin.exists() && new.exists() {
+                discard_directory_background(&new)?;
             }
             Ok(())
         })
@@ -821,16 +1337,9 @@ impl ProgramStore for FileStore {
     }
 }
 
-fn decode_program_spec(content: &[u8]) -> Result<(ProgramSpec, bool)> {
-    let spec: ProgramSpec = serde_json::from_slice(content)?;
-    if spec.schema_version != camellia_nexus_core::SCHEMA_VERSION {
-        return Err(CamelliaNexusError::invalid_spec(format!(
-            "Unsupported schema version {}; this pre-release product accepts only schema {}",
-            spec.schema_version,
-            camellia_nexus_core::SCHEMA_VERSION
-        )));
-    }
-    Ok((spec, false))
+fn decode_program_spec(content: &[u8]) -> Result<ProgramSpec> {
+    serde_json::from_slice(content)
+        .map_err(|error| CamelliaNexusError::invalid_spec(error.to_string()))
 }
 
 fn clean_atomic_temps(directory: &Path) {
@@ -970,10 +1479,37 @@ impl ConfigStore for FileStore {
     }
 
     async fn finalize_replace(&self, spec: &ProgramSpec) -> Result<()> {
+        let _write = self.configuration_writes.lock().await;
         let target = self.config_path(spec)?;
+        let root = self.program_root(&spec.id);
+        let spec = spec.clone();
+        #[cfg(test)]
+        let fail_commit = self.fail_apply_commit.clone();
         blocking(move || {
             let backup = suffixed_path(&target, ".bak");
             let pending = suffixed_path(&target, ".pending");
+            #[cfg(test)]
+            let fail_stage = fail_commit.swap(0, std::sync::atomic::Ordering::SeqCst);
+            #[cfg(test)]
+            if fail_stage == 1 {
+                return Err(CamelliaNexusError::new(ErrorCode::Storage, "Injected failure before apply commit"));
+            }
+            match mark_configuration_apply_committed(&root, &spec) {
+                Ok(true) => {
+                    #[cfg(test)]
+                    if fail_stage == 2 {
+                        return Err(committed_apply_recovery(CamelliaNexusError::new(ErrorCode::Storage, "Injected failure after apply commit")));
+                    }
+                    recover_configuration_apply_transaction(&root, &spec)
+                        .map_err(committed_apply_recovery)?;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(if read_configuration_apply_marker(&root)?.is_some_and(|marker|
+                        marker.phase == ConfigurationApplyPhase::Committed)
+                    { committed_apply_recovery(error) } else { error });
+                }
+            }
             if pending.exists() {
                 fs::remove_file(&pending)?;
             }
@@ -981,13 +1517,14 @@ impl ConfigStore for FileStore {
                 // Removing and syncing the pending marker is the durable commit point. The
                 // backup is cleanup only after this point, so a cleanup error can never make
                 // startup recovery roll back a configuration already reported as committed.
-                sync_directory(parent)?;
+                sync_directory(parent).map_err(committed_apply_recovery)?;
                 if backup.exists()
                     && let Err(error) = fs::remove_file(&backup)
                 {
                     tracing::warn!(path = %backup.display(), %error, "could not remove committed configuration backup");
                 }
-                sync_directory(parent)?;
+                // Backup deletion is cleanup after the durable commit.
+                let _ = sync_directory(parent);
             }
             Ok(())
         })
@@ -1048,7 +1585,14 @@ impl ConfigStore for FileStore {
             return Ok(());
         };
         let target = self.config_path(spec)?;
+        let root = self.program_root(&spec.id);
+        let spec = spec.clone();
         blocking(move || {
+            if read_configuration_apply_marker(&root)?.is_some_and(|marker|
+                marker.phase == ConfigurationApplyPhase::Committed)
+            {
+                recover_configuration_apply_transaction(&root, &spec)?;
+            }
             let backup = suffixed_path(&target, ".bak");
             let pending = suffixed_path(&target, ".pending");
             let failed = suffixed_path(&target, ".failed");
@@ -1086,7 +1630,7 @@ impl ConfigStore for FileStore {
                 }
                 sync_directory(parent)?;
             }
-            Ok(())
+            recover_configuration_apply_transaction(&root, &spec)
         })
         .await
     }
@@ -1116,6 +1660,91 @@ fn safe_path(root: &Path, relative: &Path) -> Result<PathBuf> {
         }
     }
     Ok(joined)
+}
+
+fn decode_configuration_state(bytes: &[u8]) -> Result<ConfigurationState> {
+    serde_json::from_slice(bytes).map_err(|error| {
+        CamelliaNexusError::new(ErrorCode::ConfigInvalid, "Configuration state is invalid")
+            .with_details(error.to_string())
+    })
+}
+
+fn configuration_state_stale() -> CamelliaNexusError {
+    CamelliaNexusError::new(ErrorCode::ConfigConflict, "Configuration workspace changed")
+        .with_message_key("CONFIGURATION_STATE_STALE")
+}
+
+fn configuration_draft_stale() -> CamelliaNexusError {
+    CamelliaNexusError::new(ErrorCode::ConfigConflict, "Final editor draft changed")
+        .with_message_key("CONFIGURATION_DRAFT_STALE")
+}
+
+fn read_configuration_state_file(path: &Path) -> Result<Option<ConfigurationState>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = read_with_overflow_byte(path, CONFIGURATION_STATE_MAX_BYTES)?;
+    if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::ConfigInvalid,
+            "Configuration workspace exceeds the 32 MiB limit",
+        ));
+    }
+    decode_configuration_state(&bytes).map(Some)
+}
+
+fn validate_editor_session_size(draft: &FinalEditorSession) -> Result<()> {
+    if draft.working_content.len() > MAX_CONFIG_BYTES || draft.base_content.len() > MAX_CONFIG_BYTES
+    {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::ConfigInvalid,
+            "Final editor document exceeds the 4 MiB limit",
+        ));
+    }
+    Ok(())
+}
+
+fn write_configuration_state_file(path: &Path, state: &ConfigurationState) -> Result<()> {
+    if let Some(draft) = &state.editor_session {
+        validate_editor_session_size(draft)?;
+    }
+    let bytes = serde_json::to_vec_pretty(state)?;
+    if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::ConfigInvalid,
+            "Configuration workspace exceeds the 32 MiB limit",
+        ));
+    }
+    write_bytes_atomic(path, &bytes)
+}
+
+fn valid_content_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Remove large source bodies from a crash-recovery marker while ensuring the
+/// referenced content has already been durably materialized in its sidecar.
+fn compact_configuration_state(sidecar_root: &Path, state: &mut ConfigurationState) -> Result<()> {
+    for snapshot in state.source_snapshots.values_mut() {
+        if !valid_content_hash(&snapshot.content_hash) {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration source snapshot hash is invalid",
+            ));
+        }
+        if snapshot.content.len() > MAX_CONFIG_BYTES {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigInvalid,
+                "Configuration source exceeds the 4 MiB limit",
+            ));
+        }
+        if !snapshot.content.is_empty() {
+            let path = sidecar_root.join(format!("{}.source", snapshot.content_hash));
+            write_bytes_atomic(&path, snapshot.content.as_bytes())?;
+            snapshot.content.clear();
+        }
+    }
+    Ok(())
 }
 
 fn validated_program_workspace(
@@ -1155,197 +1784,209 @@ fn config_path_in_root(root: &Path, spec: &ProgramSpec) -> Result<PathBuf> {
     safe_path(root, relative)
 }
 
-fn validate_staged_config(root: &Path, target: &Path, staged: &StagedConfig) -> Result<()> {
-    if staged.target != target
-        || staged.backup != suffixed_path(target, ".bak")
-        || staged.path.parent() != target.parent()
-    {
-        return Err(CamelliaNexusError::new(
-            ErrorCode::InvalidPath,
-            "Staged configuration does not belong to the expected Program target",
-        ));
+fn configuration_recovery_required() -> CamelliaNexusError {
+    CamelliaNexusError::new(ErrorCode::Storage, "Configuration workspace needs recovery")
+        .with_message_key("CONFIGURATION_RECOVERY_REQUIRED")
+}
+
+fn committed_apply_recovery(error: CamelliaNexusError) -> CamelliaNexusError {
+    CamelliaNexusError::new(
+        ErrorCode::Storage,
+        "Configuration commit needs to be reconciled",
+    )
+    .with_message_key("CONFIGURATION_COMMIT_RECOVERY_REQUIRED")
+    .with_details(format!("Commit recovery: {:?}", error.code))
+}
+
+fn read_configuration_apply_marker(root: &Path) -> Result<Option<ConfigurationApplyMarker>> {
+    let path = root.join(CONFIGURATION_APPLY_MARKER);
+    if !path.exists() {
+        return Ok(None);
     }
-    let file_name = staged
-        .path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            CamelliaNexusError::new(
-                ErrorCode::InvalidPath,
-                "Staged configuration has no valid file name",
-            )
-        })?;
-    if !file_name.starts_with(".camellia-nexus-staged-") || staged.path.strip_prefix(root).is_err()
-    {
-        return Err(CamelliaNexusError::new(
-            ErrorCode::InvalidPath,
-            "Staged configuration path is invalid",
-        ));
+    let bytes = read_with_overflow_byte(&path, CONFIGURATION_STATE_MAX_BYTES)?;
+    if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+        return Err(configuration_recovery_required());
     }
-    let metadata = fs::symlink_metadata(&staged.path)?;
-    if !metadata.is_file() || is_link_or_reparse(&metadata) {
-        return Err(CamelliaNexusError::new(
-            ErrorCode::InvalidPath,
-            "Staged configuration is not a regular file",
-        ));
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| configuration_recovery_required())
+}
+
+fn verify_applying_content(
+    root: &Path,
+    spec: &ProgramSpec,
+    marker: &ConfigurationApplyMarker,
+) -> Result<()> {
+    marker.state.ensure_apply_ready()?;
+    let target = config_path_in_root(root, spec)?;
+    let active = read_with_overflow_byte(&target, MAX_CONFIG_BYTES as u64)?;
+    if active.len() > MAX_CONFIG_BYTES {
+        return Err(configuration_recovery_required());
+    }
+    if hash_bytes(&active) != marker.state.desired.revision.content_hash {
+        return Err(configuration_recovery_required());
     }
     Ok(())
 }
 
-fn load_program_config_transaction_marker(
+/// This durable phase is written only after the Controller accepts stabilization.
+fn mark_configuration_apply_committed(root: &Path, spec: &ProgramSpec) -> Result<bool> {
+    let Some(mut marker) = read_configuration_apply_marker(root)? else {
+        return Ok(false);
+    };
+    verify_applying_content(root, spec, &marker)?;
+    if marker.phase != ConfigurationApplyPhase::Committed {
+        marker.phase = ConfigurationApplyPhase::Committed;
+        write_json_atomic(&root.join(CONFIGURATION_APPLY_MARKER), &marker)?;
+    }
+    Ok(true)
+}
+
+fn recover_configuration_apply_transaction(root: &Path, spec: &ProgramSpec) -> Result<()> {
+    let Some(marker) = read_configuration_apply_marker(root)? else {
+        return Ok(());
+    };
+    let target = config_path_in_root(root, spec)?;
+    let pending = suffixed_path(&target, ".pending");
+    if marker.phase == ConfigurationApplyPhase::Committed {
+        verify_applying_content(root, spec, &marker)?;
+        let state_path = root
+            .join(CONFIGURATION_STATE_DIRECTORY)
+            .join(CONFIGURATION_STATE_FILE);
+        let mut state =
+            read_configuration_state_file(&state_path)?.unwrap_or_else(|| marker.state.clone());
+        let consume_draft =
+            state.editor_session.is_some() && state.editor_session == marker.state.editor_session;
+        if state.applied.as_ref() != Some(&marker.state.desired)
+            || state.last_known_good.as_ref() != Some(&marker.state.desired)
+            || consume_draft
+        {
+            state.applied = Some(marker.state.desired.clone());
+            state.last_known_good = Some(marker.state.desired.clone());
+            state.state_revision = state.state_revision.saturating_add(1);
+        }
+        if consume_draft {
+            state.editor_session = None;
+        }
+        // The request result commits with Applied/LKG, before any recovery material is removed.
+        for receipt in &marker.state.operation_receipts {
+            if receipt.result.status == camellia_nexus_core::ConfigurationOperationStatus::Pending {
+                state.finish_operation(
+                    &receipt.request.operation_id,
+                    camellia_nexus_core::ConfigurationOperationStatus::Applied,
+                    marker.state.generation,
+                    None,
+                );
+            }
+        }
+        write_configuration_state_file(&state_path, &state)?;
+        let lkg_name = match marker.state.format {
+            ConfigurationFormat::Jsonc => CONFIGURATION_LKG_JSON,
+            ConfigurationFormat::Yaml => CONFIGURATION_LKG_YAML,
+        };
+        write_bytes_atomic(
+            &root.join(CONFIGURATION_STATE_DIRECTORY).join(lkg_name),
+            marker.state.desired.content.as_bytes(),
+        )?;
+        if pending.exists() {
+            fs::remove_file(&pending)?;
+        }
+        if let Some(parent) = target.parent() {
+            sync_directory(parent)?;
+        }
+    } else if pending.exists() {
+        // Prepared transactions must first restore their active-file backup.
+        return Err(configuration_recovery_required());
+    }
+    fs::remove_file(root.join(CONFIGURATION_APPLY_MARKER))?;
+    sync_directory(root)
+}
+
+fn load_configuration_workspace_transaction_marker(
     root: &Path,
-) -> Result<Option<ProgramConfigTransactionMarker>> {
-    let marker_path = root.join(PROGRAM_CONFIG_TRANSACTION_MARKER);
-    if !marker_path.exists() {
+) -> Result<Option<ConfigurationWorkspaceTransactionMarker>> {
+    let path = root.join(CONFIGURATION_WORKSPACE_TRANSACTION_MARKER);
+    if !path.exists() {
         return Ok(None);
     }
-    let bytes = read_with_overflow_byte(&marker_path, 64 * 1024)?;
-    if bytes.len() > 64 * 1024 {
+    let bytes = read_with_overflow_byte(&path, PROGRAM_SPEC_MAX_BYTES * 2)?;
+    if bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES * 2 {
         return Err(CamelliaNexusError::new(
             ErrorCode::Storage,
-            "Program/configuration transaction marker is oversized",
+            "Configuration workspace transaction marker is oversized",
         ));
     }
-    let marker: ProgramConfigTransactionMarker =
+    let marker: ConfigurationWorkspaceTransactionMarker =
         serde_json::from_slice(&bytes).map_err(|error| {
             CamelliaNexusError::new(
                 ErrorCode::Storage,
-                "Program/configuration transaction marker is invalid",
+                "Configuration workspace transaction marker is invalid",
             )
             .with_details(error.to_string())
         })?;
-    if marker.version != PROGRAM_CONFIG_TRANSACTION_VERSION {
-        return Err(CamelliaNexusError::new(
-            ErrorCode::Storage,
-            "Program/configuration transaction marker version is unsupported",
-        ));
-    }
     Ok(Some(marker))
 }
 
-fn transaction_config_target(
-    root: &Path,
-    marker: &ProgramConfigTransactionMarker,
-) -> Result<PathBuf> {
-    let target = safe_path(root, &marker.config_relative_path)?;
-    let staged_name = Path::new(&marker.staged_config_file_name);
-    if staged_name.file_name().and_then(|name| name.to_str())
-        != Some(marker.staged_config_file_name.as_str())
-        || !marker
-            .staged_config_file_name
-            .starts_with(".camellia-nexus-staged-")
-        || target.parent().is_none()
-    {
-        return Err(CamelliaNexusError::new(
-            ErrorCode::Storage,
-            "Program/configuration transaction marker contains an invalid staged path",
-        ));
-    }
-    Ok(target)
-}
-
-fn transaction_staged_config_path(
-    target: &Path,
-    marker: &ProgramConfigTransactionMarker,
-) -> Result<PathBuf> {
-    Ok(target
-        .parent()
-        .ok_or_else(|| {
-            CamelliaNexusError::new(
-                ErrorCode::Storage,
-                "Program/configuration transaction target has no parent",
-            )
-        })?
-        .join(&marker.staged_config_file_name))
-}
-
-fn restore_transaction_backup(backup: &Path, target: &Path) -> Result<()> {
-    if backup.exists() {
-        replace_file(backup, target)?;
-    }
-    Ok(())
-}
-
-fn rollback_program_config_transaction(
-    root: &Path,
-    marker: &ProgramConfigTransactionMarker,
-) -> Result<()> {
-    let target = transaction_config_target(root, marker)?;
-    let staged = transaction_staged_config_path(&target, marker)?;
-    restore_transaction_backup(
-        &root.join(PROGRAM_CONFIG_SPEC_BACKUP),
-        &root.join("program.json"),
-    )?;
-    restore_transaction_backup(&suffixed_path(&target, ".bak"), &target)?;
-    for path in [root.join(PROGRAM_CONFIG_NEXT_SPEC), staged] {
-        if path.exists() {
-            fs::remove_file(path)?;
-        }
-    }
-    let marker_path = root.join(PROGRAM_CONFIG_TRANSACTION_MARKER);
-    if marker_path.exists() {
-        fs::remove_file(marker_path)?;
-    }
-    sync_directory(root)?;
-    if let Some(parent) = target.parent()
-        && parent != root
-    {
-        sync_directory(parent)?;
-    }
-    Ok(())
-}
-
-fn cleanup_committed_program_config_transaction(
-    root: &Path,
-    marker: &ProgramConfigTransactionMarker,
-) {
-    let cleanup = (|| -> Result<()> {
-        let target = transaction_config_target(root, marker)?;
-        let staged = transaction_staged_config_path(&target, marker)?;
-        for path in [
-            root.join(PROGRAM_CONFIG_SPEC_BACKUP),
-            root.join(PROGRAM_CONFIG_NEXT_SPEC),
-            suffixed_path(&target, ".bak"),
-            staged,
-        ] {
-            if path.exists()
-                && let Err(error) = fs::remove_file(&path)
-            {
-                tracing::warn!(path = %path.display(), %error, "could not remove committed program/configuration transaction artifact");
-            }
-        }
-        let marker_path = root.join(PROGRAM_CONFIG_TRANSACTION_MARKER);
-        if marker_path.exists()
-            && let Err(error) = fs::remove_file(&marker_path)
-        {
-            tracing::warn!(path = %marker_path.display(), %error, "could not remove committed program/configuration transaction marker");
-        }
-        if let Err(error) = sync_directory(root) {
-            tracing::warn!(path = %root.display(), %error, "could not sync committed program/configuration transaction cleanup");
-        }
-        if let Some(parent) = target.parent()
-            && parent != root
-            && let Err(error) = sync_directory(parent)
-        {
-            tracing::warn!(path = %parent.display(), %error, "could not sync committed configuration cleanup");
-        }
-        Ok(())
-    })();
-    if let Err(error) = cleanup {
-        tracing::warn!(%error, "could not fully clean a committed program/configuration transaction");
-    }
-}
-
-fn recover_program_config_transaction(root: &Path) -> Result<()> {
-    let Some(marker) = load_program_config_transaction_marker(root)? else {
+fn recover_configuration_workspace_transaction(root: &Path) -> Result<()> {
+    let Some(marker) = load_configuration_workspace_transaction_marker(root)? else {
         return Ok(());
     };
-    if marker.committed {
-        cleanup_committed_program_config_transaction(root, &marker);
-        Ok(())
-    } else {
-        rollback_program_config_transaction(root, &marker)
+    restore_configuration_workspace_files(root, &marker)?;
+    for path in [
+        root.join(CONFIGURATION_WORKSPACE_TRANSACTION_MARKER),
+        root.join(CONFIGURATION_WORKSPACE_STATE_BACKUP),
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        sync_directory(root)?;
     }
+    Ok(())
+}
+
+fn restore_configuration_workspace_files(
+    root: &Path,
+    marker: &ConfigurationWorkspaceTransactionMarker,
+) -> Result<()> {
+    let state_path = root
+        .join(CONFIGURATION_STATE_DIRECTORY)
+        .join(CONFIGURATION_STATE_FILE);
+    let backup_path = root.join(CONFIGURATION_WORKSPACE_STATE_BACKUP);
+    if !marker.state_committed {
+        if marker.previous_state_present {
+            if backup_path.exists() {
+                let bytes = read_with_overflow_byte(&backup_path, CONFIGURATION_STATE_MAX_BYTES)?;
+                if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+                    return Err(configuration_recovery_required());
+                }
+                decode_configuration_state(&bytes)?;
+                write_bytes_atomic(&state_path, &bytes)?;
+            } else {
+                return Err(CamelliaNexusError::new(
+                    ErrorCode::Storage,
+                    "Configuration workspace transaction state backup is missing",
+                )
+                .with_message_key("CONFIGURATION_RECOVERY_REQUIRED"));
+            }
+        } else if state_path.exists() {
+            fs::remove_file(&state_path)?;
+        }
+        write_json_atomic(&root.join("program.json"), &marker.previous_spec)?;
+    } else {
+        write_json_atomic(&root.join("program.json"), &marker.next_spec)?;
+    }
+    sync_directory(root)
+}
+
+fn workspace_commit_recovery(error: CamelliaNexusError) -> CamelliaNexusError {
+    CamelliaNexusError::new(
+        ErrorCode::Storage,
+        "Configuration update needs to be reconciled",
+    )
+    .with_message_key("CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED")
+    .with_details(format!("Workspace recovery: {:?}", error.code))
 }
 
 fn load_program_package_transaction_marker(
@@ -1360,7 +2001,8 @@ fn load_program_package_transaction_marker(
         return Err(CamelliaNexusError::new(
             ErrorCode::Storage,
             "Managed package transaction marker is oversized",
-        ));
+        )
+        .with_message_key("PROGRAM_PACKAGE_RECOVERY_REQUIRED"));
     }
     let marker: ProgramPackageTransactionMarker =
         serde_json::from_slice(&bytes).map_err(|error| {
@@ -1368,14 +2010,9 @@ fn load_program_package_transaction_marker(
                 ErrorCode::Storage,
                 "Managed package transaction marker is invalid",
             )
+            .with_message_key("PROGRAM_PACKAGE_RECOVERY_REQUIRED")
             .with_details(error.to_string())
         })?;
-    if marker.version != PROGRAM_PACKAGE_TRANSACTION_VERSION {
-        return Err(CamelliaNexusError::new(
-            ErrorCode::Storage,
-            "Managed package transaction marker version is unsupported",
-        ));
-    }
     Ok(Some(marker))
 }
 
@@ -1422,11 +2059,44 @@ fn clean_discarded_package_directories(root: &Path) {
     }
 }
 
-fn rollback_program_package_transaction(root: &Path) -> Result<()> {
-    restore_transaction_backup(
-        &root.join(PROGRAM_PACKAGE_SPEC_BACKUP),
-        &root.join("program.json"),
-    )?;
+fn package_recovery_required(
+    cause: &CamelliaNexusError,
+    recovery: &CamelliaNexusError,
+) -> CamelliaNexusError {
+    CamelliaNexusError::new(ErrorCode::Storage, "Program replacement requires recovery")
+        .with_message_key("PROGRAM_PACKAGE_RECOVERY_REQUIRED")
+        .with_details(format!(
+            "commit: {:?}; recovery: {:?}",
+            cause.code, recovery.code
+        ))
+}
+
+fn rollback_program_package_transaction(
+    root: &Path,
+    marker: &ProgramPackageTransactionMarker,
+) -> Result<()> {
+    // Keep recovery copies until the Restored phase is durable, so interrupted rollback is repeatable.
+    let spec_backup = root.join(PROGRAM_PACKAGE_SPEC_BACKUP);
+    let bytes = read_with_overflow_byte(&spec_backup, PROGRAM_SPEC_MAX_BYTES)?;
+    if bytes.len() as u64 > PROGRAM_SPEC_MAX_BYTES {
+        return Err(configuration_recovery_required());
+    }
+    write_bytes_atomic(&root.join("program.json"), &bytes)?;
+    if marker.workspace {
+        let bytes = read_with_overflow_byte(
+            &root.join(PROGRAM_PACKAGE_STATE_BACKUP),
+            CONFIGURATION_STATE_MAX_BYTES,
+        )?;
+        if bytes.len() as u64 > CONFIGURATION_STATE_MAX_BYTES {
+            return Err(configuration_recovery_required());
+        }
+        write_bytes_atomic(
+            &root
+                .join(CONFIGURATION_STATE_DIRECTORY)
+                .join(CONFIGURATION_STATE_FILE),
+            &bytes,
+        )?;
+    }
     let active = root.join("bin");
     let backup = root.join("bin.old");
     if backup.exists() {
@@ -1435,59 +2105,79 @@ fn rollback_program_package_transaction(root: &Path) -> Result<()> {
         }
         fs::rename(&backup, &active)?;
     }
-    let next_spec = root.join(PROGRAM_PACKAGE_NEXT_SPEC);
-    if next_spec.exists() {
-        fs::remove_file(next_spec)?;
-    }
-    let staged = root.join("bin.new");
-    if staged.exists() {
-        discard_directory_background(&staged)?;
-    }
-    let marker = root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER);
-    if marker.exists() {
-        fs::remove_file(marker)?;
-    }
-    sync_directory(root)
+    sync_directory(root)?;
+    write_json_atomic(
+        &root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
+        &ProgramPackageTransactionMarker {
+            phase: ProgramPackageTransactionPhase::Restored,
+            workspace: marker.workspace,
+        },
+    )?;
+    cleanup_finished_program_package_transaction(root);
+    Ok(())
 }
 
-fn cleanup_committed_program_package_transaction(root: &Path) {
-    for path in [
-        root.join(PROGRAM_PACKAGE_SPEC_BACKUP),
-        root.join(PROGRAM_PACKAGE_NEXT_SPEC),
-    ] {
-        if path.exists()
-            && let Err(error) = fs::remove_file(&path)
-        {
-            tracing::warn!(path = %path.display(), %error, "could not remove committed managed package metadata artifact");
+fn cleanup_finished_program_package_transaction(root: &Path) {
+    let cleanup = (|| -> Result<()> {
+        for path in [
+            root.join(PROGRAM_PACKAGE_SPEC_BACKUP),
+            root.join(PROGRAM_PACKAGE_NEXT_SPEC),
+            root.join(PROGRAM_PACKAGE_STATE_BACKUP),
+            root.join(PROGRAM_PACKAGE_NEXT_STATE),
+        ] {
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
         }
-    }
-    for path in [root.join("bin.old"), root.join("bin.new")] {
-        if path.exists()
-            && let Err(error) = discard_directory_background(&path)
-        {
-            tracing::warn!(path = %path.display(), %error, "could not remove committed managed package directory artifact");
+        for path in [root.join("bin.old"), root.join("bin.new")] {
+            if path.exists() {
+                discard_directory_background(&path)?;
+            }
         }
-    }
-    let marker = root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER);
-    if marker.exists()
-        && let Err(error) = fs::remove_file(&marker)
-    {
-        tracing::warn!(path = %marker.display(), %error, "could not remove committed managed package transaction marker");
-    }
-    if let Err(error) = sync_directory(root) {
-        tracing::warn!(path = %root.display(), %error, "could not sync committed managed package cleanup");
+        sync_directory(root)?;
+        let marker = root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER);
+        if marker.exists() {
+            fs::remove_file(marker)?;
+        }
+        sync_directory(root)
+    })();
+    if let Err(error) = cleanup {
+        tracing::warn!(code = ?error.code, "managed package cleanup will resume from its durable phase");
     }
 }
 
 fn recover_program_package_transaction(root: &Path) -> Result<()> {
     let Some(marker) = load_program_package_transaction_marker(root)? else {
+        if root.join("bin.old").exists() {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::Storage,
+                "Package recovery phase is unavailable",
+            )
+            .with_message_key("PROGRAM_PACKAGE_RECOVERY_REQUIRED"));
+        }
+        // Preparation copies precede the durable marker; no active files have changed here.
+        for file in [
+            PROGRAM_PACKAGE_SPEC_BACKUP,
+            PROGRAM_PACKAGE_NEXT_SPEC,
+            PROGRAM_PACKAGE_STATE_BACKUP,
+            PROGRAM_PACKAGE_NEXT_STATE,
+        ] {
+            let path = root.join(file);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+        sync_directory(root)?;
         return Ok(());
     };
-    if marker.committed {
-        cleanup_committed_program_package_transaction(root);
-        Ok(())
-    } else {
-        rollback_program_package_transaction(root)
+    match marker.phase {
+        ProgramPackageTransactionPhase::Committed | ProgramPackageTransactionPhase::Restored => {
+            cleanup_finished_program_package_transaction(root);
+            Ok(())
+        }
+        ProgramPackageTransactionPhase::Prepared => {
+            rollback_program_package_transaction(root, &marker)
+        }
     }
 }
 
@@ -1575,10 +2265,56 @@ fn executable_metadata(path: &Path) -> Result<ExecutableMetadata> {
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |duration| duration.as_millis() as u64);
+    let mut file = File::open(path).map_err(|error| {
+        CamelliaNexusError::new(ErrorCode::UnsupportedBinary, "Executable is not readable")
+            .with_details(error.to_string())
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            CamelliaNexusError::new(
+                ErrorCode::UnsupportedBinary,
+                "Executable could not be fingerprinted",
+            )
+            .with_details(error.to_string())
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let after = fs::metadata(path).map_err(|error| {
+        CamelliaNexusError::new(
+            ErrorCode::UnsupportedBinary,
+            "Executable metadata could not be read",
+        )
+        .with_details(error.to_string())
+    })?;
+    let after_modified_unix_ms = after
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_millis() as u64);
+    if after.len() != metadata.len() || after_modified_unix_ms != modified_unix_ms {
+        return Err(CamelliaNexusError::new(
+            ErrorCode::ConfigConflict,
+            "Executable changed while its fingerprint was computed",
+        ));
+    }
+    let sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     Ok(ExecutableMetadata {
-        size: metadata.len(),
-        modified_unix_ms,
-        detected_version: None,
+        fingerprint: CoreBinaryFingerprint {
+            sha256,
+            size: metadata.len(),
+            modified_unix_ms,
+        },
+        probe: None,
+        core_target: None,
     })
 }
 
@@ -1748,15 +2484,18 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf, sync::mpsc};
 
     use camellia_nexus_core::{
-        ConfigStore, CreateAssets, ErrorCode, ExecutableSpec, MAX_CONFIG_BYTES, ProgramId,
-        ProgramSpec, ProgramStore, ProgramType, RestartPolicy, SCHEMA_VERSION,
+        CandidateValidationStatus, ConfigStore, ConfigurationCandidate, ConfigurationDiagnostic,
+        ConfigurationFormat, ConfigurationRevision, ConfigurationState, CoreBinaryFingerprint,
+        CoreCompatibilityProfile, CoreTargetIdentity, CoreValidationEvidence, CreateAssets,
+        ErrorCode, ExecutableSpec, FinalEditorSession, MAX_CONFIG_BYTES, ProgramId, ProgramKind,
+        ProgramSpec, ProgramStore, ProgramType, RestartPolicy, SourceSnapshot,
+        merge_configuration_sources,
     };
 
     use super::{
-        CREATE_COMMITTED_MARKER, FileStore, PROGRAM_CONFIG_TRANSACTION_MARKER,
-        PROGRAM_PACKAGE_NEXT_SPEC, PROGRAM_PACKAGE_SPEC_BACKUP, PROGRAM_PACKAGE_TRANSACTION_MARKER,
-        ProgramConfigTransactionMarker, ProgramPackageTransactionMarker, decode_program_spec,
-        enqueue_directory_cleanup, load_program_config_transaction_marker, read_tail,
+        CREATE_COMMITTED_MARKER, FileStore, PROGRAM_PACKAGE_NEXT_SPEC, PROGRAM_PACKAGE_SPEC_BACKUP,
+        PROGRAM_PACKAGE_TRANSACTION_MARKER, ProgramPackageTransactionMarker,
+        ProgramPackageTransactionPhase, enqueue_directory_cleanup, read_tail,
         read_with_overflow_byte, replace_with_backup, suffixed_path, write_bytes_atomic,
         write_json_atomic,
     };
@@ -1782,7 +2521,6 @@ mod tests {
             .expect("executable parent")
             .to_path_buf();
         ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("fixture").expect("id"),
             name: "Fixture".into(),
             executable: ExecutableSpec::External {
@@ -1799,10 +2537,46 @@ mod tests {
         }
     }
 
+    fn xray_profile() -> CoreCompatibilityProfile {
+        let fingerprint = CoreBinaryFingerprint {
+            sha256: "a".repeat(64),
+            size: 1,
+            modified_unix_ms: 1,
+        };
+        CoreCompatibilityProfile::resolve(
+            &CoreTargetIdentity::unknown(ProgramKind::Xray, None).bind_fingerprint(&fingerprint),
+        )
+        .expect("profile")
+    }
+
+    fn xray_state(
+        generation: u64,
+        merge: camellia_nexus_core::SemanticMergeResult,
+    ) -> ConfigurationState {
+        ConfigurationState::from_merge(ProgramKind::Xray, generation, 1, merge, xray_profile())
+            .expect("configuration state")
+    }
+
+    fn validation_evidence(state: &ConfigurationState) -> CoreValidationEvidence {
+        CoreValidationEvidence {
+            binary_sha256: state
+                .compatibility_profile
+                .target
+                .fingerprint_sha256
+                .clone()
+                .expect("fingerprint"),
+            profile_hash: state.compatibility_profile.profile_hash.clone(),
+            config_hash: state.desired.revision.content_hash.clone(),
+            candidate_generation: state.generation,
+            validator_contract_revision: camellia_nexus_core::CORE_IMPLEMENTATION_REVISION.into(),
+            native_accepted: true,
+            validated_unix_ms: 1,
+        }
+    }
+
     fn configured_spec() -> ProgramSpec {
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         spec
@@ -1938,18 +2712,6 @@ mod tests {
         assert!(!workspace.join(".pending").exists());
     }
 
-    #[test]
-    fn rejects_prelaunch_program_schema_without_migrating_it() {
-        let spec = generic_spec();
-        let mut stale = serde_json::to_value(&spec).expect("serialize");
-        stale["schemaVersion"] = serde_json::Value::from(SCHEMA_VERSION - 1);
-
-        let error = decode_program_spec(&serde_json::to_vec(&stale).expect("bytes"))
-            .expect_err("old pre-release schemas must be rejected");
-
-        assert!(error.to_string().contains("accepts only schema"));
-    }
-
     #[tokio::test]
     async fn clears_current_and_rotated_logs() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -2066,8 +2828,8 @@ mod tests {
         write_json_atomic(
             &workspace.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
             &ProgramPackageTransactionMarker {
-                version: super::PROGRAM_PACKAGE_TRANSACTION_VERSION,
-                committed: true,
+                phase: ProgramPackageTransactionPhase::Committed,
+                workspace: false,
             },
         )
         .expect("committed marker");
@@ -2123,7 +2885,6 @@ mod tests {
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2170,7 +2931,6 @@ mod tests {
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2208,7 +2968,6 @@ mod tests {
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2245,6 +3004,906 @@ mod tests {
                 .expect("load")
                 .content
                 .contains("new")
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_apply_marker_recovers_state_after_active_commit() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"old":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"new":true}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let mut state = xray_state(2, merge);
+        state.mark_candidate_saved().expect("save candidate");
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        store
+            .begin_configuration_apply(&spec.id, &state)
+            .await
+            .expect("begin apply");
+        let hash = store.current_hash(&spec).await.unwrap();
+        let staged = store
+            .stage(&spec, state.desired.content.as_bytes())
+            .await
+            .unwrap();
+        store
+            .atomic_replace_with_backup(staged, &hash)
+            .await
+            .unwrap();
+
+        super::mark_configuration_apply_committed(&store.program_root(&spec.id), &spec)
+            .expect("durable commit phase");
+
+        assert!(suffixed_path(&store.config_path(&spec).unwrap(), ".pending").exists());
+
+        store.recover(&spec).await.expect("recover apply");
+        assert!(store.load(&spec).await.unwrap().content.contains("new"));
+
+        let recovered = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load state")
+            .expect("recovered state");
+        assert_eq!(
+            recovered
+                .applied
+                .as_ref()
+                .map(|candidate| &candidate.revision),
+            Some(&recovered.desired.revision)
+        );
+        assert!(recovered.last_known_good.is_some());
+        assert!(
+            !store
+                .program_root(&spec.id)
+                .join(super::CONFIGURATION_APPLY_MARKER)
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_apply_never_infers_commit_from_matching_active_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = FileStore::new(directory.path().to_owned()).unwrap();
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(b"{}".to_vec()),
+                },
+            )
+            .await
+            .unwrap();
+        store.commit_create(&spec.id).await.unwrap();
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            b"{}",
+            1,
+            false,
+        )
+        .unwrap();
+        let mut state = xray_state(
+            1,
+            merge_configuration_sources(ProgramKind::Xray, &[snapshot]).unwrap(),
+        );
+        state.mark_candidate_saved().unwrap();
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .unwrap();
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .unwrap();
+        store
+            .begin_configuration_apply(&spec.id, &state)
+            .await
+            .unwrap();
+        store.recover(&spec).await.unwrap();
+        let recovered = store
+            .load_configuration_state(&spec.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered, state);
+        assert!(recovered.applied.is_none());
+        assert!(recovered.last_known_good.is_none());
+    }
+
+    #[tokio::test]
+    async fn configuration_state_save_uses_state_revision_compare_and_swap() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"log":{"loglevel":"info"}}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"log":{"loglevel":"info"}}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(1, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("initial state");
+        let mut next = state.clone();
+        next.generation = 2;
+        next.state_revision = 2;
+        next.desired.revision.generation = 2;
+        store
+            .save_configuration_state(&spec.id, &next, Some(1))
+            .await
+            .expect("new generation");
+        let mut stale = state;
+        stale.generation = 3;
+        stale.state_revision = 3;
+        stale.desired.revision.generation = 3;
+        let error = store
+            .save_configuration_state(&spec.id, &stale, Some(1))
+            .await
+            .expect_err("stale generation must be rejected");
+        assert_eq!(error.code, ErrorCode::ConfigConflict);
+        assert_eq!(
+            store
+                .load_configuration_state(&spec.id)
+                .await
+                .expect("load")
+                .expect("state")
+                .generation,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_state_requires_the_current_contract() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"log":{"loglevel":"info"}}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"log":{"loglevel":"info"}}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(1, merge);
+        let mut value = serde_json::to_value(state).expect("state value");
+        value
+            .as_object_mut()
+            .expect("state object")
+            .remove("finalEdit");
+        write_json_atomic(&store.configuration_state_path(&spec.id), &value).expect("write state");
+
+        let error = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect_err("invalid state contract");
+
+        assert_eq!(error.code, ErrorCode::ConfigInvalid);
+        assert_eq!(error.message, "Configuration state is invalid");
+    }
+
+    #[tokio::test]
+    async fn last_known_good_round_trips_for_workspace_recreation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"log":{"loglevel":"info"}}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let content = r#"{"log":{"loglevel":"warning"}}"#;
+
+        store
+            .save_last_known_good(&spec.id, ConfigurationFormat::Jsonc, content)
+            .await
+            .expect("save lkg");
+
+        assert_eq!(
+            store
+                .load_last_known_good(&spec.id, ConfigurationFormat::Jsonc)
+                .await
+                .expect("load lkg")
+                .as_deref(),
+            Some(content)
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_state_sidecar_round_trip_hydrates_and_compacts_state() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"old":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{"large":"value"}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, std::slice::from_ref(&snapshot))
+            .expect("merge");
+        let mut state = xray_state(1, merge);
+        state
+            .source_snapshots
+            .insert(snapshot.source_id.clone(), snapshot.clone());
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("save");
+        let state_path = store.configuration_state_path(&spec.id);
+        let persisted = std::fs::read_to_string(&state_path).expect("state file");
+        let persisted_value: serde_json::Value =
+            serde_json::from_str(&persisted).expect("persisted state json");
+        assert_eq!(
+            persisted_value["sourceSnapshots"]["source"]["content"],
+            serde_json::Value::String(String::new())
+        );
+        let loaded = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load")
+            .expect("state");
+        assert_eq!(loaded.source_snapshots["source"].content, snapshot.content);
+
+        let mut marker_state = state;
+        marker_state.generation = 2;
+        marker_state.desired.revision.generation = 2;
+        store
+            .begin_configuration_apply(&spec.id, &marker_state)
+            .await
+            .expect("marker");
+        let marker = std::fs::read_to_string(
+            store
+                .program_root(&spec.id)
+                .join(super::CONFIGURATION_APPLY_MARKER),
+        )
+        .expect("marker file");
+        let marker_value: serde_json::Value = serde_json::from_str(&marker).expect("marker json");
+        assert_eq!(
+            marker_value["state"]["sourceSnapshots"]["source"]["content"],
+            serde_json::Value::String(String::new())
+        );
+    }
+
+    #[tokio::test]
+    async fn final_editor_draft_initial_revision_can_be_autosaved_once() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            b"{}",
+            1,
+            false,
+        )
+        .unwrap();
+        let state = xray_state(
+            1,
+            merge_configuration_sources(ProgramKind::Xray, &[snapshot]).unwrap(),
+        );
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .unwrap();
+        let draft = FinalEditorSession {
+            session_id: "session".into(),
+            draft_revision: 1,
+            based_on_state_revision: 1,
+            based_on_candidate_generation: 1,
+            base_content: "{}".into(),
+            working_content: "{}".into(),
+            conflicts: Vec::new(),
+            resolutions: BTreeMap::new(),
+            unresolved_conflict_ids: Vec::new(),
+            rebase_required: false,
+            updated_unix_ms: 1,
+        };
+        store
+            .save_final_editor_draft(&spec.id, &draft, Some(0))
+            .await
+            .expect("initial autosave");
+        let second = store
+            .save_final_editor_draft(&spec.id, &draft, Some(0))
+            .await
+            .expect_err("repeated initial revision must conflict");
+        assert_eq!(second.code, ErrorCode::ConfigConflict);
+    }
+
+    #[tokio::test]
+    async fn stale_final_editor_discard_preserves_the_current_draft() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            b"{}",
+            1,
+            false,
+        )
+        .unwrap();
+        let state = xray_state(
+            1,
+            merge_configuration_sources(ProgramKind::Xray, &[snapshot]).unwrap(),
+        );
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .unwrap();
+        let mut draft = FinalEditorSession {
+            session_id: "current-session".into(),
+            draft_revision: 2,
+            based_on_state_revision: 1,
+            based_on_candidate_generation: 1,
+            base_content: "{}".into(),
+            working_content: r#"{"current":true}"#.into(),
+            conflicts: Vec::new(),
+            resolutions: BTreeMap::new(),
+            unresolved_conflict_ids: Vec::new(),
+            rebase_required: false,
+            updated_unix_ms: 2,
+        };
+        store
+            .save_final_editor_draft(&spec.id, &draft, Some(0))
+            .await
+            .expect("save current draft");
+        draft.based_on_state_revision = 2;
+
+        let error = store
+            .discard_final_editor_draft(&spec.id, 1)
+            .await
+            .expect_err("stale discard must fail");
+
+        assert_eq!(error.code, ErrorCode::ConfigConflict);
+        assert_eq!(
+            error.message_key.as_deref(),
+            Some("CONFIGURATION_DRAFT_STALE")
+        );
+        assert_eq!(
+            store
+                .load_final_editor_draft(&spec.id)
+                .await
+                .expect("load draft"),
+            Some(draft)
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_rollback_reenters_after_restoring_files_before_cleanup() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(4, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "new source list".into();
+        store
+            .begin_configuration_workspace_update(&spec.id, &spec, &next_spec, state.state_revision)
+            .await
+            .expect("begin");
+        write_json_atomic(
+            &store.program_root(&spec.id).join("program.json"),
+            &next_spec,
+        )
+        .expect("simulate spec commit");
+        let mut changed = state.clone();
+        changed.generation = 5;
+        changed.desired.revision.generation = 5;
+        store
+            .save_configuration_state(&spec.id, &changed, None)
+            .await
+            .expect("simulate state write");
+
+        let root = store.program_root(&spec.id);
+        let marker = super::load_configuration_workspace_transaction_marker(&root)
+            .unwrap()
+            .unwrap();
+        for _ in 0..2 {
+            super::restore_configuration_workspace_files(&root, &marker).unwrap();
+            assert!(
+                root.join(super::CONFIGURATION_WORKSPACE_STATE_BACKUP)
+                    .exists()
+            );
+            assert!(
+                root.join(super::CONFIGURATION_WORKSPACE_TRANSACTION_MARKER)
+                    .exists()
+            );
+            assert_eq!(
+                store.load_configuration_state(&spec.id).await.unwrap(),
+                Some(state.clone())
+            );
+        }
+        store.load_all().await.expect("recover");
+        assert_eq!(store.load_all().await.expect("load").valid[0].spec, spec);
+        assert_eq!(
+            store
+                .load_configuration_state(&spec.id)
+                .await
+                .expect("load state")
+                .expect("state")
+                .generation,
+            state.generation
+        );
+        assert!(
+            !store
+                .program_root(&spec.id)
+                .join(super::CONFIGURATION_WORKSPACE_TRANSACTION_MARKER)
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn source_transaction_recovery_keeps_the_committed_spec_and_state() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(7, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "committed source list".into();
+        store
+            .begin_configuration_workspace_update(&spec.id, &spec, &next_spec, state.state_revision)
+            .await
+            .expect("begin");
+        write_json_atomic(
+            &store.program_root(&spec.id).join("program.json"),
+            &next_spec,
+        )
+        .expect("simulate spec commit");
+        let mut changed = state;
+        changed.generation = 8;
+        changed.desired.revision.generation = 8;
+        store
+            .save_configuration_state(&spec.id, &changed, None)
+            .await
+            .expect("simulate state commit");
+        store
+            .mark_configuration_workspace_update_committed(&spec.id, &next_spec)
+            .await
+            .expect("mark committed");
+
+        let report = store.load_all().await.expect("recover");
+        assert_eq!(report.valid[0].spec, next_spec);
+        assert_eq!(
+            store
+                .load_configuration_state(&spec.id)
+                .await
+                .expect("load state")
+                .expect("state")
+                .generation,
+            8
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_transaction_rejects_stale_revision_before_writing_recovery_evidence() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(4, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "stale source update".into();
+
+        let error = store
+            .begin_configuration_workspace_update(&spec.id, &spec, &next_spec, 3)
+            .await
+            .expect_err("stale revision must not begin");
+
+        assert_eq!(error.code, ErrorCode::ConfigConflict);
+        let mut stale_spec = spec.clone();
+        stale_spec.name = "concurrent details".into();
+        let error = store
+            .begin_configuration_workspace_update(
+                &spec.id,
+                &stale_spec,
+                &next_spec,
+                state.state_revision,
+            )
+            .await
+            .expect_err("matching candidate state cannot overwrite different program settings");
+        assert_eq!(
+            error.message_key.as_deref(),
+            Some("CONFIGURATION_STATE_STALE")
+        );
+        let root = store.program_root(&spec.id);
+        assert!(
+            !root
+                .join(super::CONFIGURATION_WORKSPACE_TRANSACTION_MARKER)
+                .exists()
+        );
+        assert!(
+            !root
+                .join(super::CONFIGURATION_WORKSPACE_STATE_BACKUP)
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn source_transaction_rollback_keeps_marker_when_state_backup_is_missing() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "source",
+            "Source",
+            ConfigurationFormat::Jsonc,
+            br#"{}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let state = xray_state(4, merge);
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("state");
+        let mut next_spec = spec.clone();
+        next_spec.name = "source update with lost backup".into();
+        store
+            .begin_configuration_workspace_update(&spec.id, &spec, &next_spec, state.state_revision)
+            .await
+            .expect("begin");
+        let root = store.program_root(&spec.id);
+        std::fs::remove_file(root.join(super::CONFIGURATION_WORKSPACE_STATE_BACKUP))
+            .expect("remove backup to simulate storage failure");
+
+        let error = store
+            .rollback_configuration_workspace_update(&spec.id)
+            .await
+            .expect_err("missing backup must block rollback");
+
+        assert_eq!(error.code, ErrorCode::Storage);
+        assert!(
+            root.join(super::CONFIGURATION_WORKSPACE_TRANSACTION_MARKER)
+                .exists()
+        );
+        assert_eq!(
+            store.load_all().await.expect("load report").invalid.len(),
+            1
+        );
+        assert!(
+            root.join(super::CONFIGURATION_WORKSPACE_TRANSACTION_MARKER)
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_candidate_persists_without_replacing_applied_or_lkg() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"valid":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"valid":true}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let mut state = xray_state(1, merge);
+        state.mark_candidate_saved().expect("save candidate");
+        state
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&state)))
+            .expect("validation");
+        state.mark_applied().expect("initial apply");
+        let applied = state.applied.clone();
+        state.generation = 2;
+        state.desired = ConfigurationCandidate {
+            revision: ConfigurationRevision::new(2, "not-json", 2),
+            content: "not-json".into(),
+            compatibility_profile_hash: state.compatibility_profile.profile_hash.clone(),
+            validation: CandidateValidationStatus::Invalid,
+            validation_evidence: None,
+            diagnostics: vec![ConfigurationDiagnostic {
+                location: None,
+                code: "CONFIGURATION_INVALID".into(),
+                message: "Final candidate is not valid JSON".into(),
+                message_key: Some("CONFIGURATION_INVALID".into()),
+                scope: camellia_nexus_core::ConfigurationIssueScope::configuration(),
+                details: None,
+            }],
+            conflicts: Vec::new(),
+        };
+
+        store
+            .save_configuration_state(&spec.id, &state, None)
+            .await
+            .expect("persist invalid desired");
+
+        let recovered = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load state")
+            .expect("state");
+        assert_eq!(
+            recovered.desired.validation,
+            CandidateValidationStatus::Invalid
+        );
+        assert_eq!(recovered.desired.content, "not-json");
+        assert_eq!(
+            recovered.desired.diagnostics[0].code,
+            "CONFIGURATION_INVALID"
+        );
+        assert_eq!(recovered.applied, applied);
+        assert_eq!(recovered.last_known_good, applied);
+    }
+
+    #[tokio::test]
+    async fn configuration_apply_recovery_preserves_a_newer_desired_generation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
+        let spec = configured_spec();
+        store
+            .create_pending(
+                &spec,
+                CreateAssets {
+                    package_source: None,
+                    initial_config: Some(br#"{"old":true}"#.to_vec()),
+                },
+            )
+            .await
+            .expect("create");
+        store.commit_create(&spec.id).await.expect("commit");
+
+        let snapshot = SourceSnapshot::parse(
+            "manual",
+            "Manual",
+            ConfigurationFormat::Jsonc,
+            br#"{"new":true}"#,
+            1,
+            false,
+        )
+        .expect("snapshot");
+        let merge = merge_configuration_sources(ProgramKind::Xray, &[snapshot]).expect("merge");
+        let mut applying = xray_state(2, merge);
+        applying.mark_candidate_saved().expect("save candidate");
+        applying
+            .mark_validation(true, Vec::new(), Some(validation_evidence(&applying)))
+            .expect("validation");
+        store
+            .begin_configuration_apply(&spec.id, &applying)
+            .await
+            .expect("begin apply");
+        std::fs::write(
+            store.config_path(&spec).expect("config path"),
+            applying.desired.content.as_bytes(),
+        )
+        .expect("simulate active commit");
+
+        super::mark_configuration_apply_committed(&store.program_root(&spec.id), &spec)
+            .expect("durable commit phase");
+
+        let applied_revision = applying.desired.revision.clone();
+        let mut newer = applying;
+        newer
+            .guided_intent
+            .set("logging.level", serde_json::Value::String("debug".into()));
+        newer.rebuild_desired(2).expect("newer desired");
+        let newer_revision = newer.desired.revision.clone();
+        store
+            .save_configuration_state(&spec.id, &newer, None)
+            .await
+            .expect("external newer state");
+
+        store.recover(&spec).await.expect("recover apply");
+
+        let recovered = store
+            .load_configuration_state(&spec.id)
+            .await
+            .expect("load state")
+            .expect("recovered state");
+        assert_eq!(recovered.generation, newer_revision.generation);
+        assert_eq!(recovered.desired.revision, newer_revision);
+        assert_eq!(
+            recovered
+                .applied
+                .as_ref()
+                .map(|candidate| &candidate.revision),
+            Some(&applied_revision)
+        );
+        assert_eq!(
+            recovered
+                .last_known_good
+                .as_ref()
+                .map(|candidate| &candidate.revision),
+            Some(&applied_revision)
         );
     }
 
@@ -2286,102 +3945,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_program_config_transaction_recovers_both_old_files() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
-        let spec = configured_spec();
-        store
-            .create_pending(
-                &spec,
-                CreateAssets {
-                    package_source: None,
-                    initial_config: Some(br#"{"old":true}"#.to_vec()),
-                },
-            )
-            .await
-            .expect("create");
-        store.commit_create(&spec.id).await.expect("commit");
-        let mut next = spec.clone();
-        next.name = "Prepared name".into();
-        let base_hash = store.current_hash(&spec).await.expect("base hash");
-        let staged = store.stage(&next, br#"{"new":true}"#).await.expect("stage");
-        store
-            .begin_program_config_update(&spec, &next, staged, &base_hash)
-            .await
-            .expect("begin transaction");
-
-        let report = store.load_all().await.expect("startup recovery");
-        assert!(report.invalid.is_empty(), "{:?}", report.invalid);
-        assert_eq!(report.valid[0].spec.name, spec.name);
-        assert_eq!(
-            store
-                .load(&report.valid[0].spec)
-                .await
-                .expect("config")
-                .content,
-            r#"{"old":true}"#
-        );
-    }
-
-    #[tokio::test]
-    async fn committed_program_config_marker_keeps_both_new_files_after_crash() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let store = FileStore::new(directory.path().to_path_buf()).expect("store");
-        let spec = configured_spec();
-        store
-            .create_pending(
-                &spec,
-                CreateAssets {
-                    package_source: None,
-                    initial_config: Some(br#"{"old":true}"#.to_vec()),
-                },
-            )
-            .await
-            .expect("create");
-        store.commit_create(&spec.id).await.expect("commit");
-        let mut next = spec.clone();
-        next.name = "Committed name".into();
-        let base_hash = store.current_hash(&spec).await.expect("base hash");
-        let staged = store.stage(&next, br#"{"new":true}"#).await.expect("stage");
-        store
-            .begin_program_config_update(&spec, &next, staged, &base_hash)
-            .await
-            .expect("begin transaction");
-
-        let workspace = store.workspace(&spec.id).await.expect("workspace");
-        let marker = load_program_config_transaction_marker(&workspace)
-            .expect("load marker")
-            .expect("pending marker");
-        write_json_atomic(
-            &workspace.join(PROGRAM_CONFIG_TRANSACTION_MARKER),
-            &ProgramConfigTransactionMarker {
-                committed: true,
-                ..marker
-            },
-        )
-        .expect("persist commit point");
-
-        let report = store.load_all().await.expect("startup recovery");
-        assert!(report.invalid.is_empty(), "{:?}", report.invalid);
-        assert_eq!(report.valid[0].spec.name, next.name);
-        assert_eq!(
-            store
-                .load(&report.valid[0].spec)
-                .await
-                .expect("config")
-                .content,
-            r#"{"new":true}"#
-        );
-        assert!(!workspace.join(PROGRAM_CONFIG_TRANSACTION_MARKER).exists());
-    }
-
-    #[tokio::test]
     async fn staged_config_enforces_limits_before_and_after_external_tools() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = FileStore::new(directory.path().to_path_buf()).expect("store");
         let mut spec = generic_spec();
         spec.program_type = ProgramType::Xray {
-            main_config: Some("config/config.json".into()),
             extra_args: Vec::new(),
         };
         store
@@ -2442,8 +4010,10 @@ mod tests {
             std::fs::read(&staged.executable).expect("staged"),
             b"new-content"
         );
+        let mut next = spec.clone();
+        next.executable.set_metadata(staged.metadata.clone());
         store
-            .commit_package(staged, &spec, &spec)
+            .commit_package(staged, &spec, &next, None)
             .await
             .expect("commit package");
         let workspace = store.workspace(&spec.id).await.expect("workspace");
@@ -2471,8 +4041,8 @@ mod tests {
         write_json_atomic(
             &workspace.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
             &ProgramPackageTransactionMarker {
-                version: super::PROGRAM_PACKAGE_TRANSACTION_VERSION,
-                committed: false,
+                phase: ProgramPackageTransactionPhase::Prepared,
+                workspace: false,
             },
         )
         .expect("pending marker");
@@ -2494,6 +4064,254 @@ mod tests {
         );
         assert!(!workspace.join(PROGRAM_PACKAGE_TRANSACTION_MARKER).exists());
         assert!(!workspace.join("bin.old").exists());
+    }
+
+    #[tokio::test]
+    async fn package_failure_after_swap_restores_files_and_can_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, spec, source) = managed_package_fixture(&directory).await;
+        let root = store.workspace(&spec.id).await.unwrap();
+        for stage in [1, 2] {
+            let staged = store.stage_package(&spec, &source).await.unwrap();
+            let mut next = spec.clone();
+            next.executable.set_metadata(staged.metadata.clone());
+            store.fail_package_commit_at(stage);
+            assert_eq!(
+                store
+                    .commit_package(staged, &spec, &next, None)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Storage
+            );
+            assert_eq!(std::fs::read(root.join("bin/tool")).unwrap(), b"old");
+            assert_eq!(store.load_all().await.unwrap().valid[0].spec, spec);
+        }
+        let staged = store.stage_package(&spec, &source).await.unwrap();
+        let mut next = spec.clone();
+        next.executable.set_metadata(staged.metadata.clone());
+        store
+            .commit_package(staged, &spec, &next, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("bin/tool")).unwrap(),
+            b"new-content"
+        );
+    }
+
+    #[tokio::test]
+    async fn package_workspace_restart_recovers_the_durable_commit_phase() {
+        for phase in [
+            ProgramPackageTransactionPhase::Prepared,
+            ProgramPackageTransactionPhase::Committed,
+            ProgramPackageTransactionPhase::Restored,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (store, spec, source) = managed_package_fixture(&directory).await;
+            let root = store.workspace(&spec.id).await.unwrap();
+            let staged = store.stage_package(&spec, &source).await.unwrap();
+            let source_snapshot = SourceSnapshot::parse(
+                "source",
+                "Source",
+                ConfigurationFormat::Jsonc,
+                br#"{"log":{"loglevel":"info"}}"#,
+                1,
+                false,
+            )
+            .unwrap();
+            let mut before = xray_state(
+                1,
+                merge_configuration_sources(ProgramKind::Xray, &[source_snapshot]).unwrap(),
+            );
+            before.applied = Some(before.desired.clone());
+            before.last_known_good = before.applied.clone();
+            store
+                .save_configuration_state(&spec.id, &before, None)
+                .await
+                .unwrap();
+            let state_path = root
+                .join(super::CONFIGURATION_STATE_DIRECTORY)
+                .join(super::CONFIGURATION_STATE_FILE);
+            let state_bytes = std::fs::read(&state_path).unwrap();
+            let mut after = before.clone();
+            after
+                .guided_intent
+                .set("logging.level", serde_json::json!("debug"));
+            after.rebuild_desired(2).unwrap();
+            store
+                .save_configuration_state(&spec.id, &after, Some(before.state_revision))
+                .await
+                .unwrap();
+            let mut next = spec.clone();
+            next.name = "New package".into();
+            write_bytes_atomic(
+                &root.join(PROGRAM_PACKAGE_SPEC_BACKUP),
+                &std::fs::read(root.join("program.json")).unwrap(),
+            )
+            .unwrap();
+            write_bytes_atomic(
+                &root.join(super::PROGRAM_PACKAGE_STATE_BACKUP),
+                &state_bytes,
+            )
+            .unwrap();
+            write_json_atomic(&root.join("program.json"), &next).unwrap();
+            std::fs::rename(root.join("bin"), root.join("bin.old")).unwrap();
+            std::fs::rename(staged.staged_directory, root.join("bin")).unwrap();
+            if phase == ProgramPackageTransactionPhase::Restored {
+                // Simulate completed restoration interrupted during cleanup of its copies.
+                write_json_atomic(&root.join("program.json"), &spec).unwrap();
+                write_bytes_atomic(&state_path, &state_bytes).unwrap();
+                super::discard_directory_background(&root.join("bin")).unwrap();
+                std::fs::rename(root.join("bin.old"), root.join("bin")).unwrap();
+                std::fs::remove_file(root.join(PROGRAM_PACKAGE_SPEC_BACKUP)).unwrap();
+            }
+            write_json_atomic(
+                &root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
+                &ProgramPackageTransactionMarker {
+                    phase,
+                    workspace: true,
+                },
+            )
+            .unwrap();
+            for _ in 0..2 {
+                let report = store.load_all().await.unwrap();
+                assert!(report.invalid.is_empty(), "{:?}", report.invalid);
+                let committed = phase == ProgramPackageTransactionPhase::Committed;
+                assert_eq!(
+                    report.valid[0].spec,
+                    if committed {
+                        next.clone()
+                    } else {
+                        spec.clone()
+                    }
+                );
+                assert_eq!(
+                    store
+                        .load_configuration_state(&spec.id)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    if committed {
+                        after.clone()
+                    } else {
+                        before.clone()
+                    }
+                );
+                assert_eq!(
+                    std::fs::read(root.join("bin/tool")).unwrap(),
+                    if committed {
+                        b"new-content".as_slice()
+                    } else {
+                        b"old".as_slice()
+                    }
+                );
+                assert!(!root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER).exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn package_preparation_restart_discards_only_uncommitted_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, spec, source) = managed_package_fixture(&directory).await;
+        let root = store.workspace(&spec.id).await.unwrap();
+        for name in [
+            PROGRAM_PACKAGE_SPEC_BACKUP,
+            PROGRAM_PACKAGE_NEXT_SPEC,
+            super::PROGRAM_PACKAGE_STATE_BACKUP,
+            super::PROGRAM_PACKAGE_NEXT_STATE,
+        ] {
+            std::fs::write(root.join(name), b"interrupted preparation").unwrap();
+        }
+        let report = store.load_all().await.unwrap();
+        assert!(report.invalid.is_empty());
+        assert_eq!(report.valid[0].spec, spec);
+        assert_eq!(std::fs::read(root.join("bin/tool")).unwrap(), b"old");
+        let staged = store.stage_package(&spec, &source).await.unwrap();
+        store.discard_package(staged).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn package_recovery_blocks_binary_use_until_both_workspace_copies_are_restored() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, spec, _) = managed_package_fixture(&directory).await;
+        let root = store.workspace(&spec.id).await.unwrap();
+        write_bytes_atomic(
+            &root.join(PROGRAM_PACKAGE_SPEC_BACKUP),
+            &std::fs::read(root.join("program.json")).unwrap(),
+        )
+        .unwrap();
+        write_json_atomic(
+            &root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
+            &ProgramPackageTransactionMarker {
+                phase: ProgramPackageTransactionPhase::Prepared,
+                workspace: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .executable_metadata(&spec)
+                .await
+                .unwrap_err()
+                .message_key
+                .as_deref(),
+            Some("PROGRAM_PACKAGE_RECOVERY_REQUIRED")
+        );
+        assert_eq!(store.load_all().await.unwrap().invalid.len(), 1);
+        assert!(root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER).exists());
+        assert!(root.join(PROGRAM_PACKAGE_SPEC_BACKUP).exists());
+        let state = xray_state(
+            1,
+            merge_configuration_sources(
+                ProgramKind::Xray,
+                &[SourceSnapshot::parse(
+                    "source",
+                    "Source",
+                    ConfigurationFormat::Jsonc,
+                    b"{}",
+                    1,
+                    false,
+                )
+                .unwrap()],
+            )
+            .unwrap(),
+        );
+        write_json_atomic(&root.join(super::PROGRAM_PACKAGE_STATE_BACKUP), &state).unwrap();
+        std::fs::create_dir_all(root.join(super::CONFIGURATION_STATE_DIRECTORY)).unwrap();
+        assert!(store.load_all().await.unwrap().invalid.is_empty());
+        assert!(store.executable_metadata(&spec).await.is_ok());
+        assert_eq!(
+            store.load_configuration_state(&spec.id).await.unwrap(),
+            Some(state)
+        );
+    }
+
+    #[tokio::test]
+    async fn package_cleanup_retains_terminal_marker_until_artifacts_are_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, spec, _) = managed_package_fixture(&directory).await;
+        let root = store.workspace(&spec.id).await.unwrap();
+        // A directory where a metadata file is expected reliably fails file removal on all hosts.
+        let blocked = root.join(super::PROGRAM_PACKAGE_NEXT_STATE);
+        std::fs::create_dir(&blocked).unwrap();
+        write_json_atomic(
+            &root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
+            &ProgramPackageTransactionMarker {
+                phase: ProgramPackageTransactionPhase::Committed,
+                workspace: false,
+            },
+        )
+        .unwrap();
+        assert!(store.load_all().await.unwrap().invalid.is_empty());
+        assert!(root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER).exists());
+        assert_eq!(std::fs::read(root.join("bin/tool")).unwrap(), b"old");
+        std::fs::remove_dir(blocked).unwrap();
+        for _ in 0..2 {
+            assert!(store.load_all().await.unwrap().invalid.is_empty());
+            assert!(!root.join(PROGRAM_PACKAGE_TRANSACTION_MARKER).exists());
+        }
     }
 
     #[tokio::test]
@@ -2520,8 +4338,8 @@ mod tests {
         write_json_atomic(
             &workspace.join(PROGRAM_PACKAGE_TRANSACTION_MARKER),
             &ProgramPackageTransactionMarker {
-                version: super::PROGRAM_PACKAGE_TRANSACTION_VERSION,
-                committed: true,
+                phase: ProgramPackageTransactionPhase::Committed,
+                workspace: false,
             },
         )
         .expect("commit marker");

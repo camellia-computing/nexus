@@ -1,9 +1,14 @@
 import type { InvokeArgs } from '@tauri-apps/api/core';
+import { parse as parseYaml } from 'yaml';
+import { parse as parseJsonc, type ParseError } from 'jsonc-parser';
 import { emit } from '@tauri-apps/api/event';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
+import { installPreviewInvokeTransport } from '../api';
 import { canUseProgramLifecycleAction, deriveLicenseAccess } from '../licenseAccess';
+import { semanticPathSegments } from '../editor/configurationMarkerModel';
 import type {
   AppSettings,
+  ConfigSource,
   CustomerPaymentSubmission,
   EntitlementSnapshot,
   LicenseBillingSummary,
@@ -13,6 +18,7 @@ import type {
   ProgramSpec,
   ProgramState,
   ProgramSummary,
+  RemoteUpdate,
   SharedConfigurationContent,
   SharedConfigurationSummary,
   TeamProfile,
@@ -28,9 +34,39 @@ import type {
   WorkspaceSyncChange,
   XrayBalancerInfo,
   XrayDashboardSnapshot,
+  ConfigurationStateView,
+  ConfigurationMutationContext,
+  ConfigurationOperationResult,
+  CoreCompatibilityProfile,
+  CoreAdmissionReport,
+  CoreTargetIdentity,
+  GuidedProjection,
+  GuidedSettingDescriptor,
+  FinalEditorSession,
+  FinalConflictProjection,
+  FinalChangeProjection,
+  ConfigurationConflict,
+  ShareImportPreview,
+  ProgramKind,
 } from '../types';
 
 const nowSeconds = Math.floor(Date.now() / 1_000);
+
+function parsePreviewJsonc(content: string): unknown {
+  const errors: ParseError[] = [];
+  const value = parseJsonc(content, errors, { allowTrailingComma: true, disallowComments: false });
+  if (errors.length || value === undefined) throw new SyntaxError('Invalid JSON configuration');
+  return value;
+}
+
+function parsePreviewSemantic(content: string): unknown {
+  try { return parsePreviewJsonc(content); }
+  catch {
+    const document: unknown = parseYaml(content);
+    if (!document || typeof document !== 'object') throw new SyntaxError('Invalid configuration');
+    return document;
+  }
+}
 const entitlement: EntitlementSnapshot = {
   generation: 1,
   entitlementState: {
@@ -94,6 +130,16 @@ const teamCloudPreview = previewParameters.has('__ui_team_cloud');
 const teamLongLayoutPreview = previewParameters.has('__ui_team_long');
 const xrayDenseLayoutPreview = previewParameters.has('__ui_xray_dense');
 const removedLicensePreview = previewParameters.has('__ui_removed_license');
+const coreTargetPreview = previewParameters.get('__ui_core_target') ?? '';
+const coreEvidencePreview = previewParameters.get('__ui_core_evidence') ?? '';
+const configurationSourcePreview = previewParameters.get('__ui_config_source') ?? '';
+const platformIssuePreview = previewParameters.has('__ui_platform_issue');
+const finalMergeConflictPreview = previewParameters.has('__ui_final_merge_conflict');
+let conflictWriteFailurePending = previewParameters.has('__ui_conflict_fail_once');
+let adoptWriteFailurePending = previewParameters.has('__ui_adopt_fail_once');
+let conflictChoiceRejectedPending = previewParameters.has('__ui_conflict_rejected_once');
+let conflictResponseFailurePending = previewParameters.has('__ui_conflict_response_lost');
+const guidedFinalEditPreview = previewParameters.has('__ui_guided_final_edit');
 const requestedTeamRole = previewParameters.get('__ui_team_role');
 const previewWorkspaceRole: WorkspaceRole = teamMemberPreview
   ? 'operator'
@@ -329,6 +375,17 @@ const slowExternalActions = previewParameters.has('__ui_slow_external');
 const controlledProgramSelection = previewParameters.has('__ui_controlled_program_selection');
 const failExternalActions = previewParameters.has('__ui_fail_external');
 const failedExternalActions = new Set<string>();
+let sourceSaveFailurePending = previewParameters.has('__ui_source_save_error');
+let finalDraftDiscardRacePending = previewParameters.has('__ui_final_draft_discard_race');
+let configurationResponseLostPending = previewParameters.has('__ui_configuration_response_lost');
+let configurationSaveResponseLostPending = previewParameters.has('__ui_configuration_save_response_lost');
+let configurationWorkspaceReads = 0;
+let configurationMetadataFailurePending = previewParameters.has('__ui_config_metadata_error_once');
+let configurationResponseHeldPending = previewParameters.has('__ui_configuration_hold_response');
+let finalDraftWriteFailurePending = previewParameters.has('__ui_final_draft_write_failure');
+let finalDraftResponseHeldPending = previewParameters.has('__ui_final_draft_hold_response');
+let configurationNativeRejectionPending = previewParameters.has('__ui_configuration_native_rejection');
+let finalDraftDiscardRaceSeeded = false;
 
 function mockTeamResult<T>(value: T): T | Promise<T> {
   if (!slowTeamOperations) return value;
@@ -535,21 +592,177 @@ function mockProgramSelectionResult<T>(
   return value;
 }
 
-function managedExecutable(path: string, version: string) {
+function unclassifiedCoreTarget(
+  program: Exclude<ProgramKind, 'generic'>,
+  reportedVersion?: string,
+) {
+  const fingerprintSha256 = 'a'.repeat(64);
+  const releaseTarget = (tag: string, normalizedVersion: string, commitSha: string, report: string) => ({
+    program,
+    coordinate: {
+      kind: 'release' as const,
+      tag,
+      normalizedVersion,
+      commitSha,
+    },
+    basis: 'binaryReported' as const,
+    knowledgeHash: 'preview-knowledge-digest',
+    reportedVersion: report,
+    fingerprintSha256,
+  });
+  if (coreTargetPreview === 'release-xray' && program === 'xray') {
+    return releaseTarget(
+      'v26.3.27',
+      '26.3.27',
+      'd2758a023cd7f4174a5a5fa4ff66e487d4342ba0',
+      'Xray v26.3.27',
+    );
+  }
+  if (coreTargetPreview === 'release-mihomo' && program === 'mihomo') {
+    return releaseTarget(
+      'v1.19.29',
+      '1.19.29',
+      'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+      'Mihomo Meta v1.19.29',
+    );
+  }
+  if (coreTargetPreview === 'release-singbox' && program === 'singBox') {
+    return releaseTarget(
+      'v1.13.18',
+      '1.13.18',
+      '45ca32dcb966f07f97fc888fe8586e359dbe8405',
+      'sing-box version 1.13.18',
+    );
+  }
+  if (coreTargetPreview === 'release-singbox-new' && program === 'singBox') {
+    return releaseTarget(
+      'v1.14.0',
+      '1.14.0',
+      '0b8995879f29a9b98ee027bc17b75e101445b238',
+      'sing-box version 1.14.0',
+    );
+  }
+  if (coreTargetPreview === 'future') {
+    const displayName = program === 'xray'
+      ? 'Xray'
+      : program === 'singBox'
+        ? 'sing-box'
+        : 'Mihomo';
+    return {
+      program,
+      coordinate: { kind: 'unknown' as const },
+      basis: 'binaryReported' as const,
+      knowledgeHash: 'preview-knowledge-digest',
+      reportedVersion: `${displayName} version 99.0.0`,
+      fingerprintSha256,
+    };
+  }
+  if (coreTargetPreview === 'unknown') {
+    return {
+      program,
+      coordinate: { kind: 'unknown' as const },
+      basis: 'unknown' as const,
+      knowledgeHash: 'preview-knowledge-digest',
+      fingerprintSha256,
+    };
+  }
+  const baseline = program === 'xray'
+    ? { version: '26.3.27', commit: 'd2758a023cd7f4174a5a5fa4ff66e487d4342ba0' }
+    : program === 'mihomo'
+      ? { version: '1.19.30', commit: 'ac017cdd246ce8bd547653d927e7bf77d7ee73d5' }
+      : { version: '1.14.0', commit: '0b8995879f29a9b98ee027bc17b75e101445b238' };
+  return releaseTarget(`v${baseline.version}`, baseline.version, baseline.commit, reportedVersion ?? baseline.version);
+}
+
+function mockCoreAdmission(program: ProgramKind, target?: CoreTargetIdentity): CoreAdmissionReport | null {
+  if (program === 'generic') return null;
+  const release = target?.coordinate.kind === 'release' ? target.coordinate : null;
+  const status = release ? 'admitted' : coreTargetPreview === 'future' ? 'notMaintained' : 'unrecognized';
+  return {
+    program,
+    status,
+    messageKey: status === 'admitted' ? 'CORE_ADMISSION_ACCEPTED'
+      : status === 'notMaintained' ? 'CORE_VERSION_NOT_MAINTAINED' : 'CORE_VERSION_UNRECOGNIZED',
+    maintainedFamilies: program === 'xray' ? ['26.3', '26.2']
+      : program === 'mihomo' ? ['1.19', '1.18'] : ['1.14', '1.13'],
+    baseline: release ? {
+      tag: release.tag,
+      version: release.normalizedVersion,
+      commitSha: release.commitSha,
+      modulePath: `example.test/fixture/${program}`,
+      dependencies: [],
+      publishedAt: 'preview-fixture',
+      sourceTimestamp: 'preview-fixture',
+      sourceUrl: 'https://example.test/release',
+    } : null,
+    knowledgeHash: 'preview-knowledge-digest',
+  };
+}
+
+function managedExecutable(
+  path: string,
+  program?: Exclude<ProgramKind, 'generic'>,
+  version?: string,
+) {
+  const target = program ? unclassifiedCoreTarget(program, version) : undefined;
   return {
     mode: 'managed' as const,
     path,
-    metadata: { size: 18_462_720, modifiedUnixMs: Date.now() - 86_400_000, detectedVersion: version },
+    metadata: {
+      fingerprint: {
+        sha256: 'a'.repeat(64),
+        size: 18_462_720,
+        modifiedUnixMs: Date.now() - 86_400_000,
+      },
+      ...(program ? {
+        probe: {
+          revision: 'preview-probe-digest',
+          prerelease: false,
+          hasBuildMetadata: false,
+          ...(target?.reportedVersion ? { reportedVersion: target.reportedVersion } : {}),
+          ...(target?.coordinate.kind === 'release' ? { normalizedVersion: target.coordinate.normalizedVersion } : {}),
+          cliObservations: [],
+        },
+        coreTarget: target,
+      } : {}),
+    },
+  };
+}
+
+function mockCompatibilityProfile(
+  program: ProgramKind,
+  targetOverride?: CoreTargetIdentity,
+): CoreCompatibilityProfile {
+  const targetProgram = program === 'generic' ? 'xray' : program;
+  const target = targetOverride ?? unclassifiedCoreTarget(targetProgram);
+  const featureIds = [
+    'proxy.outbound.vless',
+    'proxy.outbound.shadowsocks',
+    'proxy.outbound.hysteria2',
+    'proxy.outbound.tuicV5',
+  ];
+  const releaseKnown = target.coordinate.kind === 'release';
+  return {
+    target,
+    profileHash: 'preview-core-profile-hash',
+    decisions: featureIds.map((featureId) => ({
+      featureId,
+      availability: !releaseKnown
+        ? 'unconfirmed' as const
+        : featureId === 'proxy.outbound.tuicV5' && target.program === 'xray'
+          ? 'sourceUnavailable' as const
+          : 'sourceDeclared' as const,
+      buildConditions: [],
+      evidence: [],
+    })),
   };
 }
 
 const specs: Record<string, ProgramSpec> = {
   'local-agent': {
-    // ProgramSpec has its own storage schema; this is unrelated to entitlement schema v3.
-    schemaVersion: 3,
     id: 'local-agent',
     name: 'Local telemetry agent',
-    executable: managedExecutable('bin/local-agent', '2.8.1'),
+    executable: managedExecutable('bin/local-agent'),
     type: { kind: 'generic', args: ['--listen', '127.0.0.1:4400'] },
     workingDirectory: 'bin',
     environment: { RUST_LOG: 'info' },
@@ -558,11 +771,10 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'sing-box-edge': {
-    schemaVersion: 3,
     id: 'sing-box-edge',
     name: 'Singapore edge gateway',
-    executable: managedExecutable('bin/sing-box/sing-box', '1.14.0'),
-    type: { kind: 'singBox', mainConfig: 'config.json', extraArgs: ['run'] },
+    executable: managedExecutable('bin/sing-box/sing-box', 'singBox', 'sing-box version 1.14.0'),
+    type: { kind: 'singBox', extraArgs: ['run'] },
     managedConfig: {
       sources: [
         { mode: 'local', id: 'base', name: 'Base policy', enabled: true, path: 'profiles/base.json' },
@@ -579,13 +791,17 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'xray-primary': {
-    schemaVersion: 3,
     id: 'xray-primary',
     name: 'Primary Xray routing fabric',
-    executable: managedExecutable('bin/xray/xray', '25.6.8'),
-    type: { kind: 'xray', mainConfig: 'config.json', extraArgs: ['run'] },
+    executable: managedExecutable('bin/xray/xray', 'xray', 'Xray 25.6.8'),
+    type: { kind: 'xray', extraArgs: ['run'] },
     managedConfig: {
-      sources: [{ mode: 'local', id: 'primary', name: 'Production routing', enabled: true, path: 'profiles/xray.json' }],
+      sources: [
+        { mode: 'local', id: 'primary', name: 'Production routing', enabled: true, path: 'profiles/xray.json' },
+        ...(configurationSourcePreview === 'conflict'
+          ? [{ mode: 'inline' as const, id: 'alternate', name: 'Alternative routing', enabled: true, content: '{"log":{"loglevel":"debug"}}' }]
+          : []),
+      ],
       xrayDashboard: { apiPort: 10085, metricsPort: 11111 },
     },
     workingDirectory: 'bin/xray',
@@ -595,11 +811,10 @@ const specs: Record<string, ProgramSpec> = {
     privilegePolicy: { mode: 'automatic' },
   },
   'mihomo-alpha': {
-    schemaVersion: 3,
     id: 'mihomo-alpha',
     name: 'Mihomo Alpha gateway',
-    executable: managedExecutable('bin/mihomo/mihomo', 'Mihomo Meta alpha'),
-    type: { kind: 'mihomo', mainConfig: 'config/managed.yaml', extraArgs: [] },
+    executable: managedExecutable('bin/mihomo/mihomo', 'mihomo', 'Mihomo Meta alpha'),
+    type: { kind: 'mihomo', extraArgs: [] },
     managedConfig: {
       sources: [
         { mode: 'local', id: 'base', name: 'Base policy', enabled: true, path: 'profiles/base.yaml' },
@@ -783,6 +998,1424 @@ const previewConfigurationDocuments = new Map<string, {
   content: string;
   baseHash: string;
 }>();
+const previewConfigurationStates = new Map<string, ConfigurationStateView>();
+let identityReadReady = false;
+window.addEventListener('camellia-ui-preview:identity-ready', () => { identityReadReady = true; });
+const previewUpstreamDocuments = new Map<string, string>();
+const previewUpstreamContributions = new Map<string, {
+  source: string;
+  writes: Array<{ owner: string; change: FinalChangeProjection; listEdit?: { original?: unknown; replacement?: unknown } }>;
+}>();
+const previewFinalDrafts = new Map<string, FinalEditorSession>();
+const previewConflictOperations = new Map<string, {
+  serialized: string;
+  conflict: FinalConflictProjection;
+  resolution: import('../types').FinalConflictResolution;
+  undone: boolean;
+}>();
+const previewAdoptedChanges = new Map<string, string>();
+const previewConfigurationOperations = new Map<string, {
+  request: ConfigurationMutationContext;
+  result: ConfigurationOperationResult;
+}>();
+
+function previewOperationResult(programId: string, request: ConfigurationMutationContext) {
+  const receipt = previewConfigurationOperations.get(`${programId}:${request.operationId}`);
+  if (receipt && JSON.stringify(receipt.request) !== JSON.stringify(request)) {
+    throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH', message: 'Request changed' };
+  }
+  return receipt?.result;
+}
+
+function previewGuidedSettings(kind: ProgramSpec['type']['kind']): {
+  descriptors: GuidedSettingDescriptor[];
+  projection: GuidedProjection[];
+} {
+  if (kind === 'generic') return { descriptors: [], projection: [] };
+  const descriptors: GuidedSettingDescriptor[] = [{
+    id: 'logging.level',
+    category: 'logging',
+    label: 'Log detail',
+    description: '',
+    control: 'select',
+    allowedValues: kind === 'xray'
+      ? ['debug', 'info', 'warning', 'error', 'none']
+      : kind === 'mihomo' ? ['debug', 'info', 'warning', 'error', 'silent'] : ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'panic'],
+  }];
+  const values = new Map<string, unknown>([['logging.level', kind === 'xray' ? 'warning' : 'info']]);
+  if (kind === 'singBox') {
+    descriptors.push(
+      { id: 'dns.strategy', category: 'dns', label: 'DNS address preference', description: '', control: 'select', allowedValues: ['prefer_ipv4', 'prefer_ipv6', 'ipv4_only', 'ipv6_only'] },
+      { id: 'routing.autoDetectInterface', category: 'routing', label: 'Choose network interface automatically', description: '', control: 'toggle', allowedValues: [] },
+      { id: 'logging.timestamp', category: 'logging', label: 'Show log time', description: '', control: 'toggle', allowedValues: [], advanced: true },
+      { id: 'dns.disableCache', category: 'dns', label: 'Disable DNS cache', description: '', control: 'toggle', allowedValues: [], advanced: true },
+      { id: 'dns.timeout', category: 'dns', label: 'DNS timeout', description: '', control: 'text', allowedValues: [], advanced: true },
+    );
+    values.set('dns.strategy', 'prefer_ipv4');
+    values.set('routing.autoDetectInterface', true);
+  } else if (kind === 'xray') {
+    descriptors.push({ id: 'routing.domainStrategy', category: 'routing', label: 'Domain matching', description: '', control: 'select', allowedValues: ['AsIs', 'IPIfNonMatch', 'IPOnDemand'] });
+    descriptors.push({ id: 'logging.dns', category: 'logging', label: 'Log DNS requests', description: '', control: 'toggle', allowedValues: [], advanced: true });
+    descriptors.push({ id: 'dns.queryStrategy', category: 'dns', label: 'DNS address preference', description: '', control: 'select', allowedValues: ['UseIP', 'UseIPv4', 'UseIPv6'] });
+    values.set('routing.domainStrategy', 'AsIs');
+  } else {
+    descriptors.push(
+      { id: 'network.ipv6', category: 'routing', label: 'Allow IPv6 connections', description: '', control: 'toggle', allowedValues: [], advanced: true },
+      { id: 'tun.enabled', category: 'tun', label: 'Use a virtual network adapter', description: '', control: 'toggle', allowedValues: [] },
+      { id: 'tun.strictRoute', category: 'tun', label: 'Prevent traffic outside these routes', description: '', control: 'toggle', allowedValues: [], advanced: true, enabledWhen: 'tun.enabled' },
+      { id: 'dns.enabled', category: 'dns', label: 'Use program DNS', description: '', control: 'toggle', allowedValues: [] },
+      { id: 'dns.mode', category: 'dns', label: 'DNS mode', description: 'Configure DNS mode, or follow the source configuration.', control: 'select', allowedValues: ['normal', 'fake-ip', 'redir-host'] },
+      { id: 'routing.mode', category: 'routing', label: 'Traffic mode', description: '', control: 'select', allowedValues: ['rule', 'global', 'direct'] },
+    );
+    values.set('network.ipv6', true);
+    values.set('tun.enabled', false);
+    values.set('tun.strictRoute', false);
+    values.set('dns.enabled', true);
+    values.set('dns.mode', 'fake-ip');
+    values.set('routing.mode', 'rule');
+  }
+  return {
+    descriptors,
+    projection: descriptors.map((descriptor) => ({
+      settingId: descriptor.id,
+      status: 'inherited',
+      value: values.get(descriptor.id),
+    })),
+  };
+}
+
+function configurationState(programId: string): ConfigurationStateView {
+  const existing = previewConfigurationStates.get(programId);
+  if (existing) return structuredClone(existing);
+  const spec = specs[programId];
+  const document = configDocument(programId);
+  const kind = spec?.type.kind ?? 'generic';
+  const format = document.language === 'yaml' ? 'yaml' : 'jsonc';
+  const guided = previewGuidedSettings(kind);
+  const metadataTarget = kind === 'generic'
+    ? undefined
+    : spec?.executable.metadata?.coreTarget;
+  const compatibilityProfile = mockCompatibilityProfile(kind, metadataTarget);
+  const evidenceStale = coreEvidencePreview === 'stale';
+  const evidenceMismatch = coreEvidencePreview === 'profile-mismatch';
+  const sourceBlocked = configurationSourcePreview === 'invalid'
+    || configurationSourcePreview === 'unavailable';
+  const sourceConflict = configurationSourcePreview === 'conflict' && programId === 'xray-primary';
+  const candidateNeedsAttention = evidenceStale || evidenceMismatch || sourceBlocked || sourceConflict;
+  let desiredHash = candidateNeedsAttention
+    ? 'preview-pending-desired-hash'
+    : 'preview-desired-hash';
+  const generation = candidateNeedsAttention ? 2 : 1;
+  const diagnostics = evidenceStale
+    ? [{
+        code: 'CORE_VALIDATION_EVIDENCE_STALE',
+        message: 'The binary, compatibility profile, or configuration changed after native validation.',
+        scope: { surface: 'compatibility' as const },
+      }]
+    : evidenceMismatch
+      ? [{
+          code: 'CORE_PROFILE_MISMATCH',
+          message: 'The candidate was validated for a different compatibility profile.',
+          scope: { surface: 'compatibility' as const },
+        }]
+      : sourceBlocked
+        ? [{
+            code: configurationSourcePreview === 'unavailable'
+              ? 'SOURCE_UNAVAILABLE'
+              : 'SOURCE_INVALID',
+            message: configurationSourcePreview === 'unavailable'
+              ? 'No parsed snapshot is available for this source.'
+              : 'The latest source content is invalid; Applied and Last Known Good were retained.',
+            scope: { surface: 'sources' as const, ownerId: 'preview-source' },
+          }]
+        : [];
+  const finalPreviewPath = kind === 'xray'
+    ? [{ kind: 'key' as const, key: 'log' }, { kind: 'key' as const, key: 'loglevel' }]
+    : kind === 'singBox'
+      ? [{ kind: 'key' as const, key: 'log' }, { kind: 'key' as const, key: 'level' }]
+      : [{ kind: 'key' as const, key: 'log-level' }];
+  const finalPreviewConflict: FinalConflictProjection = {
+    conflictId: `preview-final-conflict-${programId}`,
+    reference: { origin: 'candidate', conflictId: `preview-final-conflict-${programId}`, fingerprint: `preview-${programId}-initial` },
+    semanticPath: kind === 'xray' ? '/log/loglevel' : kind === 'singBox' ? '/log/level' : '/log-level',
+    segments: finalPreviewPath,
+    kind: 'modifyVsModify',
+    baseValue: { state: 'present', value: 'warn' },
+    upstreamValue: { state: 'present', value: 'info' },
+    userValue: { state: 'present', value: 'debug' },
+    canMerge: false,
+  };
+  const finalCandidateConflict: ConfigurationConflict = {
+    semanticPath: finalPreviewConflict.semanticPath,
+    reason: 'The upstream configuration and final editor changed the same path',
+    severity: 'error',
+    messageKey: 'FINAL_EDIT_CONFLICT',
+    scope: { surface: 'configuration', ownerId: finalPreviewConflict.conflictId },
+    sourceValue: 'info',
+    userValue: 'debug',
+    effectiveValue: 'info',
+  };
+  let upstreamContent = document.content;
+  let effectiveContent = document.content;
+  if (guidedFinalEditPreview && kind === 'singBox' && format === 'jsonc') {
+    const upstreamDocument = parsePreviewJsonc(document.content);
+    setPreviewGuidedPath(upstreamDocument, ['log', 'level'], 'fatal');
+    upstreamContent = `${JSON.stringify(upstreamDocument, null, 2)}\n`;
+    const finalDocument = structuredClone(upstreamDocument);
+    setPreviewGuidedPath(finalDocument, ['log', 'level'], 'error');
+    effectiveContent = `${JSON.stringify(finalDocument, null, 2)}\n`;
+    desiredHash = previewContentHash(effectiveContent);
+    const logging = guided.projection.find(
+      (projection) => projection.settingId === 'logging.level',
+    );
+    if (logging) {
+      logging.status = 'finalEdit';
+      logging.value = 'fatal';
+      logging.intentValue = 'fatal';
+    }
+  }
+  if (finalMergeConflictPreview && format === 'jsonc') {
+    const effectiveDocument = parsePreviewJsonc(document.content);
+    updatePreviewConflictPath(effectiveDocument, finalPreviewPath, {
+      present: true,
+      value: 'info',
+    });
+    effectiveContent = `${JSON.stringify(effectiveDocument, null, 2)}\n`;
+    upstreamContent = effectiveContent;
+    desiredHash = previewContentHash(effectiveContent);
+  }
+  if (previewParameters.has('__ui_final_draft_conflict') && programId === 'xray-primary') {
+    effectiveContent = effectiveContent.replace('proxy-sg', 'source-route');
+    upstreamContent = effectiveContent;
+    desiredHash = previewContentHash(effectiveContent);
+  }
+  const state: ConfigurationStateView = {
+    kind,
+    format,
+    stateRevision: generation,
+    generation,
+    compatibilityProfile,
+    coreAdmission: mockCoreAdmission(kind, metadataTarget),
+    sourceStatuses: (spec?.managedConfig?.sources ?? []).map((source) => ({
+      sourceId: source.id,
+      sourceName: source.name,
+      freshness: !source.enabled
+        ? 'disabled'
+        : configurationSourcePreview === 'stale'
+          ? 'stale'
+          : configurationSourcePreview === 'invalid'
+            ? 'invalid'
+            : configurationSourcePreview === 'unavailable'
+              ? 'unavailable'
+              : 'fresh',
+      snapshotHash: source.enabled && configurationSourcePreview !== 'unavailable'
+        ? 'preview-source-hash'
+        : undefined,
+      ...(configurationSourcePreview === 'stale'
+        ? { messageKey: 'SOURCE_DOWNLOAD_FAILED' }
+        : configurationSourcePreview === 'invalid'
+          ? { messageKey: 'SOURCE_INVALID' }
+          : configurationSourcePreview === 'unavailable'
+            ? { messageKey: 'SOURCE_FILE_NOT_FOUND' }
+            : {}),
+    })),
+    sourceParseSummaries: {},
+    provenance: [],
+    desired: {
+      revision: { generation, contentHash: desiredHash, createdUnixMs: Date.now() },
+      content: effectiveContent,
+      compatibilityProfileHash: evidenceMismatch
+        ? 'preview-previous-profile-hash'
+        : compatibilityProfile.profileHash,
+      validation: evidenceStale ? 'pending' : evidenceMismatch || sourceBlocked || finalMergeConflictPreview ? 'invalid' : 'valid',
+      ...(!candidateNeedsAttention ? {
+        validationEvidence: {
+          binarySha256: 'a'.repeat(64),
+          profileHash: compatibilityProfile.profileHash,
+          configHash: desiredHash,
+          candidateGeneration: generation,
+          validatorContractRevision: 'preview-validator-test',
+          nativeAccepted: true,
+          validatedUnixMs: Date.now(),
+        },
+      } : {}),
+      diagnostics,
+      conflicts: finalMergeConflictPreview ? [finalCandidateConflict] : sourceConflict ? [{
+        semanticPath: '/log/loglevel',
+        reason: 'Two sources provide different values',
+        severity: 'error',
+        sourceIds: ['primary', 'alternate'],
+        messageKey: 'SOURCE_VALUE_CONFLICT',
+        scope: { surface: 'sources', ownerId: 'alternate' },
+        sourceValue: 'info',
+        userValue: 'debug',
+        effectiveValue: 'info',
+      }] : [],
+    },
+    appliedRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
+    lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
+    guidedDescriptors: guided.descriptors,
+    guidedProjection: guided.projection,
+    managedIntegrations: kind === 'singBox'
+      ? [
+          {
+            integrationId: 'dashboard.singBoxApi',
+            settings: [],
+            status: spec?.managedConfig?.singBoxDashboard ? 'explicit' : 'inactive',
+            effectiveEnabled: !!spec?.managedConfig?.singBoxDashboard,
+            finalPaths: [],
+            issueIds: [],
+          },
+          {
+            integrationId: 'dashboard.singBoxClash',
+            settings: [],
+            status: spec?.managedConfig?.singBoxClashDashboard ? 'explicit' : 'inactive',
+            effectiveEnabled: !!spec?.managedConfig?.singBoxClashDashboard,
+            finalPaths: [],
+            issueIds: [],
+          },
+        ]
+      : kind === 'xray'
+        ? [{ integrationId: 'dashboard.xray', settings: [], status: spec?.managedConfig?.xrayDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.xrayDashboard, finalPaths: [], issueIds: [] }]
+        : kind === 'mihomo'
+          ? [{ integrationId: 'dashboard.mihomo', settings: [], status: spec?.managedConfig?.mihomoDashboard ? 'explicit' : 'inactive', effectiveEnabled: !!spec?.managedConfig?.mihomoDashboard, finalPaths: [], issueIds: [] }]
+          : [],
+    workspace: {
+      editor: {
+        document: {
+          content: effectiveContent,
+          revision: { generation, contentHash: desiredHash, createdUnixMs: Date.now() },
+        },
+        editStatus: finalMergeConflictPreview ? 'conflict' : 'clean',
+        candidateStatus: finalMergeConflictPreview ? 'unsaved' : candidateNeedsAttention ? 'invalid' : 'applied',
+        changes: [],
+        conflicts: finalMergeConflictPreview ? [finalPreviewConflict] : [],
+        diagnostics: [],
+        blockers: [],
+        canSave: !finalMergeConflictPreview,
+        canValidate: !finalMergeConflictPreview,
+        canApply: !candidateNeedsAttention && !finalMergeConflictPreview,
+      },
+    },
+  };
+  if (previewParameters.has('__ui_deleted_final_edit') && programId === 'xray-primary') {
+    state.workspace.editor.changes.push({
+      editId: 'preview-deleted-log-timestamp',
+      semanticPath: '/log/timestamp',
+      segments: [{ kind: 'key', key: 'log' }, { kind: 'key', key: 'timestamp' }],
+      kind: 'deleted',
+      upstreamValue: { state: 'present', value: true },
+      finalValue: { state: 'missing' },
+      issues: [],
+    });
+  }
+  if (previewParameters.has('__ui_two_final_conflicts') && programId === 'xray-primary') {
+    const second: FinalConflictProjection = {
+      ...finalPreviewConflict,
+      conflictId: 'preview-final-conflict-route',
+      reference: { origin: 'candidate', conflictId: 'preview-final-conflict-route', fingerprint: 'preview-route-initial' },
+      semanticPath: '/route/final',
+      segments: [{ kind: 'key', key: 'route' }, { kind: 'key', key: 'final' }],
+      baseValue: { state: 'present', value: 'original-route' },
+      upstreamValue: { state: 'present', value: 'proxy-sg' },
+      userValue: { state: 'present', value: 'mine-route' },
+    };
+    state.workspace.editor.conflicts.push(second);
+    state.desired.conflicts.push({
+      ...finalCandidateConflict,
+      semanticPath: second.semanticPath,
+      scope: { surface: 'configuration', ownerId: second.conflictId },
+    });
+  }
+  previewUpstreamDocuments.set(programId, upstreamContent);
+  previewUpstreamContributions.set(programId, { source: upstreamContent, writes: [] });
+  refreshPreviewWorkspaceGates(state);
+  syncPreviewEditor(state);
+  previewConfigurationStates.set(programId, state);
+  return structuredClone(state);
+}
+
+let previewEditorSessionSequence = 0;
+
+function finalEditorSession(programId: string): FinalEditorSession {
+  const existing = previewFinalDrafts.get(programId);
+  if (existing) {
+    const state = configurationState(programId);
+    const rebased = rebasePreviewFinalEditorSession(existing, state);
+    previewFinalDrafts.set(programId, structuredClone(rebased));
+    return rebased;
+  }
+  const state = configurationState(programId);
+  if (
+    previewParameters.has('__ui_final_draft_discard_race')
+    && programId === 'xray-primary'
+    && !finalDraftDiscardRaceSeeded
+  ) {
+    finalDraftDiscardRaceSeeded = true;
+    const draft: FinalEditorSession = {
+      sessionId: `preview-draft-${programId}`,
+      draftRevision: 1,
+      basedOnStateRevision: state.stateRevision,
+      basedOnCandidateGeneration: state.generation,
+      baseContent: state.desired.content,
+      workingContent: state.desired.content,
+      conflicts: [],
+      resolutions: {},
+      unresolvedConflictIds: [],
+      rebaseRequired: false,
+      updatedUnixMs: Date.now(),
+    };
+    previewFinalDrafts.set(programId, structuredClone(draft));
+    return draft;
+  }
+  if (previewParameters.has('__ui_final_draft_conflict') && programId === 'xray-primary') {
+    const conflictId = 'preview-route-conflict';
+    const workingContent = state.desired.content;
+    const draft: FinalEditorSession = {
+      sessionId: `preview-draft-${programId}`,
+      draftRevision: 1,
+      basedOnStateRevision: state.stateRevision,
+      basedOnCandidateGeneration: state.generation,
+      baseContent: previewUpstreamDocuments.get(programId) ?? state.workspace.editor.document.content,
+      workingContent,
+      conflicts: [{
+        conflictId,
+        segments: [
+          { kind: 'key', key: 'route' },
+          { kind: 'key', key: 'final' },
+        ],
+        semanticPath: '/route/final',
+        kind: 'modifyVsModify',
+        baseValue: { state: 'present', value: 'proxy-sg' },
+        upstreamValue: { state: 'present', value: 'source-route' },
+        userValue: { state: 'present', value: 'mine-route' },
+        canMerge: false,
+      }],
+      resolutions: {},
+      unresolvedConflictIds: [conflictId],
+      rebaseRequired: false,
+      updatedUnixMs: Date.now(),
+    };
+    previewFinalDrafts.set(programId, structuredClone(draft));
+    return draft;
+  }
+  const draft: FinalEditorSession = {
+    sessionId: `preview-draft-${programId}-${++previewEditorSessionSequence}`,
+    draftRevision: 0,
+    basedOnStateRevision: state.stateRevision,
+    basedOnCandidateGeneration: state.generation,
+    baseContent: state.workspace.editor.document.content,
+    workingContent: state.workspace.editor.document.content,
+    conflicts: [],
+    resolutions: {},
+    unresolvedConflictIds: [],
+    rebaseRequired: false,
+    updatedUnixMs: Date.now(),
+  };
+  return draft;
+}
+
+function previewSemanticEqual(left: unknown, right: unknown): boolean {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => [key, normalize(child)]));
+    }
+    return value;
+  };
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
+function rebasePreviewFinalEditorSession(
+  current: FinalEditorSession,
+  state: ConfigurationStateView,
+): FinalEditorSession {
+  const draft = structuredClone(current);
+  if (draft.baseContent === state.desired.content) {
+    draft.rebaseRequired = false;
+    draft.basedOnStateRevision = state.stateRevision;
+    draft.basedOnCandidateGeneration = state.generation;
+    return draft;
+  }
+  let base: unknown;
+  let mine: unknown;
+  let updated: unknown;
+  try {
+    const parse = (content: string): unknown => state.format === 'yaml' ? parseYaml(content) : parsePreviewJsonc(content);
+    base = parse(draft.baseContent);
+    updated = parse(state.desired.content);
+    if (previewSemanticEqual(base, updated)) {
+      draft.baseContent = state.desired.content;
+      draft.basedOnStateRevision = state.stateRevision;
+      draft.basedOnCandidateGeneration = state.generation;
+      draft.rebaseRequired = false;
+      return draft;
+    }
+    mine = parse(draft.workingContent);
+  } catch {
+    draft.rebaseRequired = true;
+    return draft;
+  }
+
+  for (const conflict of draft.conflicts) {
+    if (!draft.unresolvedConflictIds.includes(conflict.conflictId)) continue;
+    const original = conflict.baseValue.state === 'present'
+      ? { present: true, value: conflict.baseValue.value } : { present: false };
+    const user = conflict.userValue.state === 'present'
+      ? { present: true, value: conflict.userValue.value } : { present: false };
+    if (conflict.segments.length === 0) {
+      base = original.value;
+      mine = user.value;
+    } else {
+      updatePreviewConflictPath(base, conflict.segments, original);
+      updatePreviewConflictPath(mine, conflict.segments, user);
+    }
+  }
+
+  const conflicts: FinalEditorSession['conflicts'] = [];
+  const merge = (
+    baseValue: { present: boolean; value?: unknown },
+    mineValue: { present: boolean; value?: unknown },
+    updatedValue: { present: boolean; value?: unknown },
+    segments: FinalEditorSession['conflicts'][number]['segments'],
+  ): { present: boolean; value?: unknown } => {
+    const equal = (
+      left: { present: boolean; value?: unknown },
+      right: { present: boolean; value?: unknown },
+    ) => left.present === right.present
+      && (!left.present || previewSemanticEqual(left.value, right.value));
+    if (equal(mineValue, baseValue)) return structuredClone(updatedValue);
+    if (equal(updatedValue, baseValue)) return structuredClone(mineValue);
+    if (equal(mineValue, updatedValue)) return structuredClone(updatedValue);
+
+    const baseObject = baseValue.present && baseValue.value && typeof baseValue.value === 'object'
+      && !Array.isArray(baseValue.value) ? baseValue.value as Record<string, unknown> : null;
+    const mineObject = mineValue.present && mineValue.value && typeof mineValue.value === 'object'
+      && !Array.isArray(mineValue.value) ? mineValue.value as Record<string, unknown> : null;
+    const updatedObject = updatedValue.present && updatedValue.value && typeof updatedValue.value === 'object'
+      && !Array.isArray(updatedValue.value) ? updatedValue.value as Record<string, unknown> : null;
+    if (baseObject && mineObject && updatedObject) {
+      const result: Record<string, unknown> = {};
+      const keys = new Set([
+        ...Object.keys(baseObject),
+        ...Object.keys(mineObject),
+        ...Object.keys(updatedObject),
+      ]);
+      for (const key of keys) {
+        const child = merge(
+          { present: Object.hasOwn(baseObject, key), value: baseObject[key] },
+          { present: Object.hasOwn(mineObject, key), value: mineObject[key] },
+          { present: Object.hasOwn(updatedObject, key), value: updatedObject[key] },
+          [...segments, { kind: 'key', key }],
+        );
+        if (child.present) result[key] = child.value;
+      }
+      return { present: true, value: result };
+    }
+
+    const semanticPath = segments.length
+      ? `/${segments.map((segment) => segment.kind === 'key'
+          ? segment.key.replaceAll('~', '~0').replaceAll('/', '~1')
+          : `${segment.field}=${segment.value}`
+        ).join('/')}`
+      : '/';
+    conflicts.push({
+      conflictId: `preview-draft-conflict:${semanticPath}`,
+      segments: structuredClone(segments),
+      semanticPath,
+      kind: !baseValue.present ? 'addVsAdd' : !mineValue.present ? 'deleteVsModify' : !updatedValue.present ? 'modifyVsDelete' : 'modifyVsModify',
+      baseValue: baseValue.present ? { state: 'present', value: structuredClone(baseValue.value) } : { state: 'missing' },
+      upstreamValue: updatedValue.present ? { state: 'present', value: structuredClone(updatedValue.value) } : { state: 'missing' },
+      userValue: mineValue.present ? { state: 'present', value: structuredClone(mineValue.value) } : { state: 'missing' },
+      canMerge: false,
+    });
+    return structuredClone(updatedValue);
+  };
+
+  const merged = merge(
+    { present: true, value: base },
+    { present: true, value: mine },
+    { present: true, value: updated },
+    [],
+  );
+  draft.baseContent = state.desired.content;
+  draft.workingContent = `${JSON.stringify(merged.value, null, 2)}\n`;
+  draft.basedOnStateRevision = state.stateRevision;
+  draft.basedOnCandidateGeneration = state.generation;
+  draft.conflicts = conflicts;
+  draft.resolutions = {};
+  draft.unresolvedConflictIds = conflicts.map((conflict) => conflict.conflictId);
+  draft.rebaseRequired = false;
+  draft.draftRevision += 1;
+  draft.updatedUnixMs = Date.now();
+  return draft;
+}
+
+function configurationWorkspaceSnapshot(programId: string): {
+  state: ConfigurationStateView;
+  editorSession: FinalEditorSession;
+} {
+  const state = configurationState(programId);
+  projectPreviewIntent(programId, state);
+  state.managedIntegrations = state.managedIntegrations?.map((integration) => {
+    const settings = previewManagedSettingPaths(specs[programId]).filter((setting) => setting.settingId.startsWith(`${integration.integrationId}.`)).map((setting) => {
+      let effectiveValue: import('../types').SemanticValue = { state: 'missing' };
+      try {
+        const content = previewUpstreamDocuments.get(programId) ?? state.desired.content;
+        const document: unknown = state.format === 'yaml' ? parseYaml(content) : parsePreviewJsonc(content);
+        const found = previewConflictPathValue(document, setting.segments);
+        if (found.present) {
+          const value = setting.settingId.endsWith('Port') && typeof found.value === 'string'
+            ? Number(found.value.split(':').at(-1)) : found.value;
+          effectiveValue = { state: 'present', value };
+        }
+      } catch { effectiveValue = { state: 'missing' }; }
+      const savedValue: import('../types').SemanticValue = setting.value === undefined ? { state: 'missing' } : { state: 'present', value: setting.value };
+      return { settingId: setting.settingId, savedValue, effectiveValue, canUseSavedValue: savedValue.state === 'present' && !previewSemanticEqual(savedValue, effectiveValue) };
+    });
+    return { ...integration, settings, status: settings.some((setting) => setting.canUseSavedValue) ? 'latestSettings' : integration.status };
+  });
+  const editorSession = finalEditorSession(programId);
+  const unresolved = new Set(editorSession.unresolvedConflictIds);
+  state.workspace.editor.conflicts.push(...editorSession.conflicts
+    .filter((item) => unresolved.has(item.conflictId))
+    .map((item) => ({
+      ...item,
+      reference: {
+        origin: 'draft' as const,
+        conflictId: item.conflictId,
+        fingerprint: JSON.stringify(item),
+      },
+    })));
+  state.workspace.editor.conflicts = state.workspace.editor.conflicts.map((conflict) => ({
+    ...conflict,
+    conflictId: `${conflict.reference.origin}:${conflict.reference.conflictId}`,
+  }));
+  // This fixture exercises authoritative diagnostics without mirroring source capability rules.
+  if (platformIssuePreview && programId === 'sing-box-edge') {
+    try {
+      const content = editorSession.draftRevision > 0 && !editorSession.rebaseRequired
+        ? editorSession.workingContent : state.desired.content;
+      const document = parsePreviewJsonc(content) as { inbounds?: { auto_redirect?: boolean }[] };
+      if (document.inbounds?.[0]?.auto_redirect === true) {
+        const code = 'CONFIGURATION_PLATFORM_UNSUPPORTED';
+        const location = { semanticPath: '/inbounds/0/auto_redirect', documentPath: ['inbounds', '0', 'auto_redirect'] };
+        state.workspace.editor.diagnostics.push({ code, message: code, messageKey: code, location, scope: { surface: 'configuration' } });
+        state.workspace.editor.blockers.push({ code, messageKey: code, semanticPath: location.semanticPath,
+          scope: { surface: 'configuration' }, blocks: ['validate', 'apply'], recoveryAction: 'reviewCandidate' });
+        state.workspace.editor.candidateStatus = 'invalid';
+        state.workspace.editor.canValidate = false;
+        state.workspace.editor.canApply = false;
+      }
+    } catch { /* Incomplete text is handled by editor syntax diagnostics. */ }
+  }
+  return { state, editorSession };
+}
+
+function projectPreviewIntent(programId: string, state: ConfigurationStateView): void {
+  const document = (state.format === 'yaml' ? parseYaml(state.desired.content) : parsePreviewJsonc(state.desired.content)) as Record<string, unknown>;
+  state.guidedProjection = state.guidedProjection.map((projection) => {
+    const path = previewGuidedPath(state.kind, projection.settingId);
+    return path ? { ...projection, value: previewConflictPathValue(document, path.map((key) => ({ kind: 'key', key }))).value } : projection;
+  });
+  const field = (key: string, label: string, control: import('../types').GuidedControl, allowedValues: string[] = [], required = false, advanced = false): import('../types').IntentObjectField => ({ key, label, control, allowedValues, required, advanced, secret: key === 'password' });
+  const descriptors: import('../types').IntentObjectDescriptor[] = [{
+    kind: 'listener', category: 'local', label: 'Local proxy', canCreate: true,
+    protocols: state.kind === 'xray' ? ['http', 'socks'] : ['mixed', 'http', 'socks'],
+    fields: [field('protocol', 'Proxy type', 'select', [], true), field('port', 'Port', 'number', [], true), field('access', 'Who can connect', 'select', ['local', 'lan'], true), field('listen', 'Listen address', 'text', [], false, true), field('username', 'Username', 'text'), field('password', 'Password', 'text'), ...(state.kind === 'xray' ? [field('udp', 'Allow UDP', 'toggle', [], false, true)] : [])],
+  }, {
+    kind: 'dnsServer', category: 'dns', label: 'DNS servers', canCreate: true,
+    protocols: state.kind === 'xray' ? ['system', 'udp', 'https'] : ['system', 'udp', 'tls', 'https'],
+    fields: [field('protocol', 'DNS connection', 'select', [], true), field('server', 'Server address', 'text'), ...(state.kind === 'singBox' ? [field('bootstrap', 'Resolve the server through', 'select', [], false, true)] : [])],
+  }];
+  if (state.kind === 'singBox') descriptors.push({ kind: 'tun', category: 'tun', label: 'Virtual network adapter', canCreate: true, protocols: [], fields: [field('address', 'Virtual network addresses', 'text', [], true), field('autoRoute', 'Route traffic automatically', 'toggle'), field('mtu', 'Packet size (MTU)', 'number', [], false, true)] });
+  descriptors.push({ kind: 'routeRule', category: 'routing', label: 'Traffic rule', canCreate: true, protocols: [], fields: [field('match', 'Match', 'select', ['domain', 'subdomain', 'ip'], true), field('value', 'Domain or IP network', 'text', [], true), field('target', 'Send through', 'select', [], true)] });
+  state.intentObjectDescriptors = descriptors;
+  const objects: import('../types').IntentObjectProjection[] = [];
+  const add = (kind: import('../types').IntentObjectKind, label: string, native: unknown, values: Record<string, unknown>) => {
+    const owned = previewUpstreamContributions.get(programId)?.writes.find((write) => write.listEdit && previewSemanticEqual(write.listEdit.replacement, native));
+    const objectId = owned ? owned.owner.slice('intent:'.length) : `${kind}:${label}`;
+    objects.push({ objectId, kind, label, values, contentHash: previewContentHash(JSON.stringify(native)), editable: true, removed: false,
+      canFollow: previewUpstreamContributions.get(programId)?.writes.some((write) => write.owner === `intent:${objectId}`) ?? false });
+  };
+  if (state.kind === 'mihomo') {
+    for (const [protocol, key] of [['mixed', 'mixed-port'], ['http', 'port'], ['socks', 'socks-port']]) {
+      if (Number(document[key]) > 0) add('listener', key, document[key], { protocol, port: document[key], access: document['allow-lan'] === true ? 'lan' : 'local', listen: document['bind-address'] });
+    }
+  } else {
+    for (const inbound of (document.inbounds ?? []) as Record<string, unknown>[]) {
+      const protocol = inbound.type ?? inbound.protocol;
+      if (!inbound.tag || !['mixed', 'http', 'socks', 'tun'].includes(String(protocol))) continue;
+      const listen = String(inbound.listen ?? '');
+      add(protocol === 'tun' ? 'tun' : 'listener', String(inbound.tag), inbound,
+        protocol === 'tun' ? { address: (inbound.address as string[] | undefined)?.join('\n'), autoRoute: inbound.auto_route, mtu: inbound.mtu }
+          : { protocol, port: inbound.listen_port ?? inbound.port, listen, access: listen.startsWith('127.') || listen === '::1' ? 'local' : 'lan' });
+    }
+  }
+  const dns = document.dns as { servers?: Record<string, unknown>[]; nameserver?: string[] } | undefined;
+  if (state.kind === 'mihomo') for (const address of dns?.nameserver ?? []) add('dnsServer', address, address, { protocol: address === 'system' ? 'system' : address.startsWith('https://') ? 'https' : address.startsWith('tls://') ? 'tls' : 'udp', server: address.replace(/^tls:\/\//, '') });
+  for (const server of dns?.servers ?? []) {
+    if (typeof server !== 'object' || !server.tag) continue;
+    const address = String(server.address ?? server.server ?? '');
+    const protocol = server.type === 'local' || address === 'localhost' ? 'system' : server.type ?? (address.startsWith('https://') ? 'https' : 'udp');
+    add('dnsServer', String(server.tag), server, { protocol, server: protocol === 'https' && state.kind === 'singBox' ? `https://${address}${server.path ?? '/dns-query'}` : address });
+  }
+  state.intentObjects = objects;
+  state.intentTargets = [...((document.outbounds ?? []) as Record<string, unknown>[]).flatMap((item) => item.tag ? [{ id: String(item.tag), label: String(item.tag), kind: 'connection' }] : []), ...objects.filter((item) => item.kind === 'dnsServer').map((item) => ({ id: item.label, label: item.label, kind: 'dns' }))];
+  if (state.kind === 'mihomo') state.intentTargets.push(...['DIRECT', 'REJECT'].map((id) => ({ id, label: id, kind: 'connection' })));
+  const rules = state.kind === 'mihomo' ? document.rules : (document[state.kind === 'singBox' ? 'route' : 'routing'] as Record<string, unknown> | undefined)?.rules;
+  for (const rule of (rules ?? []) as unknown[]) {
+    const fields = previewIntentRuleValues(state.kind, rule);
+    if (fields) add('routeRule', String(fields.value), rule, fields);
+  }
+}
+
+function previewIntentRuleValues(kind: string, rule: unknown): Record<string, unknown> | null {
+  if (kind === 'mihomo' && typeof rule === 'string') {
+    const [type, value, target, extra] = rule.split(',');
+    const match = ({ DOMAIN: 'domain', 'DOMAIN-SUFFIX': 'subdomain', 'IP-CIDR': 'ip', 'IP-CIDR6': 'ip' } as Record<string, string>)[type];
+    return match && !extra ? { match, value, target } : null;
+  }
+  if (!rule || typeof rule !== 'object') return null;
+  const fields = rule as Record<string, unknown>;
+  if (kind === 'singBox') {
+    for (const [key, match] of [['domain', 'domain'], ['domain_suffix', 'subdomain'], ['ip_cidr', 'ip']]) {
+      const values = fields[key] as string[] | undefined;
+      if (values?.length === 1 && fields.outbound) return { match, value: values[0], target: fields.outbound };
+    }
+  } else {
+    const values = (fields.domain ?? fields.ip) as string[] | undefined;
+    if (values?.length === 1 && fields.outboundTag) return { match: fields.ip ? 'ip' : values[0].startsWith('full:') ? 'domain' : 'subdomain', value: values[0].replace(/^(full|domain):/, ''), target: fields.outboundTag };
+  }
+  return null;
+}
+
+function recordPreviewIntentList(programId: string, owner: string, path: string[], original: unknown, replacement: unknown): void {
+  const contributions = previewUpstreamContributions.get(programId)!;
+  const previous = contributions.writes.find((write) => write.owner === owner && write.listEdit);
+  const entry = { original: previous?.listEdit ? previous.listEdit.original : original, replacement };
+  contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+  if (entry.original !== undefined || entry.replacement !== undefined) contributions.writes.push({ owner, listEdit: entry, change: { editId: owner, kind: 'modified', issues: [], semanticPath: '/' + path.join('/'), segments: path.map((key) => ({ kind: 'key', key })), upstreamValue: { state: 'missing' }, finalValue: { state: 'missing' } } });
+  updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, []));
+}
+
+function applyPreviewIntentObject(programId: string, change: Exclude<import('../types').ConfigurationIntentAction, { action: 'set' | 'follow' }>, document: unknown): void {
+  const state = configurationState(programId);
+  projectPreviewIntent(programId, state);
+  const root = document as Record<string, unknown>;
+  const creating = change.action === 'createObject';
+  const object = !creating ? state.intentObjects?.find((item) => item.objectId === change.objectId) : undefined;
+  if (!creating && (!object || object.contentHash !== change.expectedHash)) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_OBJECT_STALE', message: 'Setting changed' };
+  const kind = creating ? change.objectKind : object!.kind;
+  const values = change.action === 'createObject' || change.action === 'updateObject' ? change.values : {};
+  const fields = { ...object?.values, ...values };
+  const label = object?.label ?? `nexus-${crypto.randomUUID()}`;
+  let owner = `intent:${object?.objectId ?? `${kind}:${label}`}`;
+  if (change.action === 'followObject') {
+    const contributions = previewUpstreamContributions.get(programId)!;
+    contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+    updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, []));
+    return;
+  }
+  const removed = change.action === 'removeObject';
+  if (kind === 'routeRule') {
+    const path = state.kind === 'mihomo' ? ['rules'] : [state.kind === 'singBox' ? 'route' : 'routing', 'rules'];
+    const list = previewConflictPathValue(root, path.map((key) => ({ kind: 'key', key }))).value as unknown[] | undefined;
+    const original = list?.find((item) => previewIntentRuleValues(state.kind, item)?.value === object?.values.value);
+    if (creating && list?.some((rule) => typeof rule === 'string' ? rule.startsWith('MATCH,') : !!rule && typeof rule === 'object' && Object.keys(rule).every((key) => ['action', 'outbound'].includes(key)))) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_RULE_SHADOWED', message: 'Rule hidden by a catchall' };
+    if (!state.intentTargets?.some((target) => target.kind === 'connection' && target.id === fields.target)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_TARGET_MISSING', message: 'Choose a target' };
+    const replacement = removed ? undefined : state.kind === 'mihomo' ? `${fields.match === 'domain' ? 'DOMAIN' : fields.match === 'subdomain' ? 'DOMAIN-SUFFIX' : 'IP-CIDR'},${fields.value},${fields.target}` : state.kind === 'singBox' ? { [fields.match === 'domain' ? 'domain' : fields.match === 'subdomain' ? 'domain_suffix' : 'ip_cidr']: [fields.value], action: 'route', outbound: fields.target } : { type: 'field', [fields.match === 'ip' ? 'ip' : 'domain']: [fields.match === 'ip' ? fields.value : `${fields.match === 'domain' ? 'full' : 'domain'}:${fields.value}`], outboundTag: fields.target };
+    recordPreviewIntentList(programId, owner, path, original, replacement);
+    return;
+  }
+  if (kind === 'listener') {
+    const port = Number(fields.port);
+    if (!removed && (!Number.isInteger(port) || port < 1 || port > 65535)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_PORT_INVALID', message: 'Invalid port' };
+    if (fields.access === 'lan' && (creating || object?.values.access !== 'lan') && (!fields.username || !fields.password)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_AUTH_REQUIRED', message: 'Authentication required' };
+    const listen = fields.listen || (fields.access === 'lan' ? '0.0.0.0' : '127.0.0.1');
+    if (state.kind === 'mihomo') {
+      const key = fields.protocol === 'mixed' ? 'mixed-port' : fields.protocol === 'http' ? 'port' : 'socks-port';
+      owner = `intent:listener:${key}`;
+      if (removed) delete root[key]; else root[key] = port;
+      if (creating || Object.hasOwn(values, 'access')) { root['allow-lan'] = fields.access === 'lan'; root['bind-address'] = listen; }
+      if (fields.username && fields.password) root.authentication = [`${fields.username}:${fields.password}`];
+    } else {
+      const list = (root.inbounds ??= []) as Record<string, unknown>[];
+      const index = list.findIndex((item) => item.tag === label);
+      if (removed) list.splice(index, 1);
+      else {
+        const native = { ...(index >= 0 ? list[index] : {}), tag: label, listen };
+        if (state.kind === 'singBox') Object.assign(native, { type: fields.protocol, listen_port: port });
+        else Object.assign(native, { protocol: fields.protocol, port });
+        if (fields.username && fields.password) Object.assign(native, state.kind === 'singBox' ? { users: [{ username: fields.username, password: fields.password }] } : { settings: { accounts: [{ user: fields.username, pass: fields.password }], ...(fields.protocol === 'socks' ? { auth: 'password' } : {}) } });
+        if (index >= 0) list[index] = native; else list.push(native);
+      }
+    }
+  } else if (kind === 'dnsServer') {
+    const dns = (root.dns ??= {}) as Record<string, unknown>;
+    if (state.kind === 'mihomo') {
+      const address = fields.protocol === 'system' ? 'system' : fields.protocol === 'tls' ? `tls://${fields.server}` : fields.server;
+      recordPreviewIntentList(programId, owner, ['dns', 'nameserver'], object?.label, removed ? undefined : address);
+      return;
+    }
+    else {
+      const list = (dns.servers ??= []) as Record<string, unknown>[];
+      const index = list.findIndex((item) => item.tag === label);
+      if (removed) list.splice(index, 1);
+      else {
+        const native = { ...(index >= 0 ? list[index] : {}), tag: label };
+        if (state.kind === 'xray') Object.assign(native, { address: fields.protocol === 'system' ? 'localhost' : fields.server });
+        else {
+          const url = fields.protocol === 'https' ? new URL(String(fields.server)) : null;
+          Object.assign(native, { type: fields.protocol === 'system' ? 'local' : fields.protocol, ...(fields.protocol === 'system' ? {} : { server: url?.hostname ?? fields.server }), ...(url ? { path: url.pathname } : {}) });
+        }
+        if (index >= 0) list[index] = native; else list.push(native);
+      }
+    }
+  } else if (kind === 'tun') {
+    const list = (root.inbounds ??= []) as Record<string, unknown>[];
+    const index = list.findIndex((item) => item.tag === label);
+    if (removed) list.splice(index, 1);
+    else {
+      const native = { ...(index >= 0 ? list[index] : {}), tag: label, type: 'tun', address: String(fields.address).split(/\s+/), ...(fields.autoRoute !== undefined ? { auto_route: fields.autoRoute } : {}) };
+      if (index >= 0) list[index] = native; else list.push(native);
+    }
+  } else throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_SETTING_UNAVAILABLE', message: 'Unavailable setting' };
+  const upstream = previewUpstreamDocuments.get(programId) ?? state.desired.content;
+  const changes = previewFinalChanges(upstream, JSON.stringify(document));
+  updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, changes));
+}
+
+function refreshPreviewUnresolvedConflicts(draft: FinalEditorSession): void {
+  let document: unknown;
+  try {
+    document = parsePreviewJsonc(draft.workingContent);
+  } catch {
+    draft.unresolvedConflictIds = draft.conflicts.map((conflict) => conflict.conflictId);
+    return;
+  }
+  draft.unresolvedConflictIds = draft.conflicts
+    .filter((conflict) => {
+      const resolution = draft.resolutions[conflict.conflictId];
+      if (!resolution) return true;
+      const expected = previewConflictResolutionValue(conflict, resolution);
+      const observed = previewConflictPathValue(document, conflict.segments);
+      return !expected.present
+        ? observed.present
+        : !observed.present || JSON.stringify(observed.value) !== JSON.stringify(expected.value);
+    })
+    .map((conflict) => conflict.conflictId);
+}
+
+function previewConflictResolutionValue(
+  conflict: FinalEditorSession['conflicts'][number],
+  resolution: FinalEditorSession['resolutions'][string],
+): { present: boolean; value?: unknown } {
+  const selected = resolution === 'keepMine' ? conflict.userValue
+    : resolution === 'acceptUpstream' ? conflict.upstreamValue
+    : resolution.manualEdit.value;
+  return selected.state === 'missing' ? { present: false } : { present: true, value: selected.value };
+}
+
+function previewConflictPathValue(
+  root: unknown,
+  segments: FinalEditorSession['conflicts'][number]['segments'],
+): { present: boolean; value?: unknown } {
+  let current = root;
+  for (const segment of segments) {
+    if (segment.kind === 'key') {
+      if (!current || typeof current !== 'object' || Array.isArray(current)) {
+        return { present: false };
+      }
+      const object = current as Record<string, unknown>;
+      if (!(segment.key in object)) return { present: false };
+      current = object[segment.key];
+      continue;
+    }
+    if (!Array.isArray(current)) return { present: false };
+    const matches = current.filter((item) => (
+      item && typeof item === 'object' && !Array.isArray(item)
+      && (item as Record<string, unknown>)[segment.field] === segment.value
+    ));
+    if (matches.length !== 1) return { present: false };
+    current = matches[0];
+  }
+  return { present: true, value: current };
+}
+
+function updatePreviewConflictPath(
+  root: unknown,
+  segments: FinalEditorSession['conflicts'][number]['segments'],
+  selected: { present: boolean; value?: unknown },
+): void {
+  if (!root || typeof root !== 'object' || segments.length === 0) return;
+  let current: unknown = root;
+  for (const [index, segment] of segments.slice(0, -1).entries()) {
+    const next = previewConflictPathValue(current, [segment]);
+    if (!next.present || !next.value || typeof next.value !== 'object') {
+      if (!selected.present) return;
+      const container = segments[index + 1].kind === 'identity' ? [] : {};
+      updatePreviewConflictPath(current, [segment], { present: true, value: container });
+    }
+    current = previewConflictPathValue(current, [segment]).value;
+  }
+  const last = segments[segments.length - 1];
+  if (last.kind === 'key' && current && typeof current === 'object' && !Array.isArray(current)) {
+    const object = current as Record<string, unknown>;
+    if (selected.present) object[last.key] = structuredClone(selected.value);
+    else delete object[last.key];
+    return;
+  }
+  if (last.kind === 'identity' && Array.isArray(current)) {
+    const index = current.findIndex((item) => (
+      item && typeof item === 'object' && !Array.isArray(item)
+      && (item as Record<string, unknown>)[last.field] === last.value
+    ));
+    if (selected.present && index >= 0) current[index] = structuredClone(selected.value);
+    else if (selected.present) current.push(structuredClone(selected.value));
+    else if (index >= 0) current.splice(index, 1);
+  }
+}
+
+function previewContentHash(content: string): string {
+  // The preview backend does not need cryptographic hashes, but it does need
+  // content identity to exercise the same revision/evidence rules as the
+  // native backend.  FNV-1a is deterministic, fast and deliberately marked
+  // as a preview value so it can never be mistaken for native evidence.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `preview-content-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function previewGuidedPath(kind: ProgramKind, settingId: string): string[] | undefined {
+  const paths: Record<string, string[]> = {
+    'logging.level': kind === 'xray' ? ['log', 'loglevel'] : kind === 'mihomo' ? ['log-level'] : ['log', 'level'],
+    'logging.timestamp': ['log', 'timestamp'],
+    'logging.dns': ['log', 'dnsLog'],
+    'dns.disableCache': ['dns', kind === 'xray' ? 'disableCache' : 'disable_cache'],
+    'dns.timeout': ['dns', 'timeout'],
+    'dns.queryStrategy': ['dns', 'queryStrategy'],
+    'dns.strategy': ['dns', 'strategy'],
+    'routing.autoDetectInterface': ['route', 'auto_detect_interface'],
+    'routing.domainStrategy': ['routing', 'domainStrategy'],
+    'network.ipv6': ['ipv6'],
+    'tun.enabled': ['tun', 'enable'],
+    'tun.strictRoute': ['tun', 'strict-route'],
+    'dns.enabled': ['dns', 'enable'],
+    'dns.mode': ['dns', 'enhanced-mode'],
+    'routing.mode': ['mode'],
+  };
+  return paths[settingId];
+}
+
+function setPreviewGuidedPath(
+  root: unknown,
+  path: string[],
+  value: unknown,
+): void {
+  if (!root || typeof root !== 'object' || Array.isArray(root) || path.length === 0) return;
+  let current = root as Record<string, unknown>;
+  for (const key of path.slice(0, -1)) {
+    const next = current[key];
+    if (!next || typeof next !== 'object' || Array.isArray(next)) {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  }
+  const leaf = path[path.length - 1];
+  if (value === undefined) delete current[leaf];
+  else current[leaf] = structuredClone(value);
+}
+
+function previewManagedIntegrationContent(
+  spec: ProgramSpec,
+  fallback: string,
+): string {
+  if (spec.type.kind === 'generic') return fallback;
+  let document: Record<string, unknown>;
+  try {
+    const parsed = parsePreviewJsonc(fallback);
+    document = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return fallback;
+  }
+  if (spec.type.kind === 'singBox') {
+    const services = Array.isArray(document.services)
+      ? document.services.filter((service) => !(
+          service && typeof service === 'object' && !Array.isArray(service)
+          && (service as Record<string, unknown>).tag === 'camellia-nexus-api'
+        ))
+      : [];
+    const apiDashboard = spec.managedConfig?.singBoxDashboard;
+    if (apiDashboard) {
+      services.push({
+        type: 'api',
+        tag: 'camellia-nexus-api',
+        listen: '127.0.0.1',
+        listen_port: apiDashboard.listenPort,
+        dashboard: {
+          enabled: true,
+          update_interval: apiDashboard.updateInterval,
+        },
+      });
+    }
+    if (services.length > 0) document.services = services;
+    else delete document.services;
+    const experimental = document.experimental && typeof document.experimental === 'object'
+      && !Array.isArray(document.experimental)
+      ? document.experimental as Record<string, unknown>
+      : {};
+    const clashApi = experimental.clash_api && typeof experimental.clash_api === 'object'
+      && !Array.isArray(experimental.clash_api)
+      ? experimental.clash_api as Record<string, unknown>
+      : {};
+    const clashDashboard = spec.managedConfig?.singBoxClashDashboard;
+    if (clashDashboard) {
+      clashApi.external_controller = `127.0.0.1:${clashDashboard.listenPort}`;
+      clashApi.external_ui = 'clash-dashboard';
+      if (clashDashboard.downloadUrl) {
+        clashApi.external_ui_download_url = clashDashboard.downloadUrl;
+      } else {
+        delete clashApi.external_ui_download_url;
+      }
+      experimental.clash_api = clashApi;
+      document.experimental = experimental;
+    } else {
+      delete clashApi.external_controller;
+      delete clashApi.external_ui;
+      delete clashApi.external_ui_download_url;
+      if (Object.keys(clashApi).length > 0) experimental.clash_api = clashApi;
+      else delete experimental.clash_api;
+      if (Object.keys(experimental).length > 0) document.experimental = experimental;
+      else delete document.experimental;
+    }
+  } else if (spec.type.kind === 'xray') {
+    const dashboard = spec.managedConfig?.xrayDashboard;
+    if (dashboard) {
+      document.api = {
+        ...(
+          document.api && typeof document.api === 'object' && !Array.isArray(document.api)
+            ? document.api as Record<string, unknown>
+            : {}
+        ),
+        tag: 'camellia-nexus-api',
+        listen: `127.0.0.1:${dashboard.apiPort}`,
+        services: [
+          'HandlerService',
+          'LoggerService',
+          'StatsService',
+          'RoutingService',
+          'ReflectionService',
+        ],
+      };
+      document.metrics = {
+        ...(
+          document.metrics && typeof document.metrics === 'object' && !Array.isArray(document.metrics)
+            ? document.metrics as Record<string, unknown>
+            : {}
+        ),
+        tag: 'camellia-nexus-metrics',
+        listen: `127.0.0.1:${dashboard.metricsPort}`,
+      };
+      if (!document.stats || typeof document.stats !== 'object' || Array.isArray(document.stats)) {
+        document.stats = {};
+      }
+    } else {
+      if (
+        document.api && typeof document.api === 'object' && !Array.isArray(document.api)
+        && (document.api as Record<string, unknown>).tag === 'camellia-nexus-api'
+      ) delete document.api;
+      if (
+        document.metrics && typeof document.metrics === 'object' && !Array.isArray(document.metrics)
+        && (document.metrics as Record<string, unknown>).tag === 'camellia-nexus-metrics'
+      ) delete document.metrics;
+    }
+  } else if (spec.type.kind === 'mihomo') {
+    const dashboard = spec.managedConfig?.mihomoDashboard;
+    if (dashboard) {
+      document['external-controller'] = `127.0.0.1:${dashboard.listenPort}`;
+      document['external-ui'] = 'camellia-nexus-mihomo-dashboard';
+      if (dashboard.downloadUrl) document['external-ui-url'] = dashboard.downloadUrl;
+      else delete document['external-ui-url'];
+    } else {
+      delete document['external-controller'];
+      delete document['external-ui'];
+      delete document['external-ui-url'];
+    }
+  }
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+
+function previewInlineSourceContent(spec: ProgramSpec): string | null {
+  const inline = spec.managedConfig?.sources.filter(
+    (source): source is Extract<ConfigSource, { mode: 'inline' }> => (
+      source.mode === 'inline' && source.enabled
+    ),
+  ) ?? [];
+  if (inline.length === 0) return null;
+  let merged: unknown = {};
+  const merge = (current: unknown, next: unknown): unknown => {
+    if (
+      current && next
+      && typeof current === 'object' && !Array.isArray(current)
+      && typeof next === 'object' && !Array.isArray(next)
+    ) {
+      const result = structuredClone(current) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(next)) {
+        result[key] = key in result ? merge(result[key], value) : structuredClone(value);
+      }
+      return result;
+    }
+    return structuredClone(next);
+  };
+  for (const source of inline) merged = merge(merged, parsePreviewJsonc(source.content));
+  return `${JSON.stringify(merged, null, 2)}\n`;
+}
+
+function recordPreviewContributions(programId: string, owner: string, changes: FinalChangeProjection[]): string {
+  const contributions = previewUpstreamContributions.get(programId)!;
+  for (const change of changes) {
+    contributions.writes = contributions.writes.filter((write) =>
+      write.owner !== owner || write.change.segments.length < change.segments.length
+      || !change.segments.every((segment, index) => previewSemanticEqual(segment, write.change.segments[index])));
+    contributions.writes.push({ owner, change: structuredClone(change) });
+  }
+  let document: unknown = parsePreviewSemantic(contributions.source);
+  const source: unknown = structuredClone(document);
+  for (const { owner, change, listEdit } of contributions.writes) {
+    if (listEdit) {
+      const values = [...((previewConflictPathValue(document, change.segments).value ?? []) as unknown[])];
+      const index = listEdit.original === undefined ? -1 : values.findIndex((value) => previewSemanticEqual(value, listEdit.original));
+      if (index >= 0) { if (listEdit.replacement === undefined) values.splice(index, 1); else values[index] = structuredClone(listEdit.replacement); }
+      else if (listEdit.replacement !== undefined && !values.some((value) => previewSemanticEqual(value, listEdit.replacement))) values.push(structuredClone(listEdit.replacement));
+      updatePreviewConflictPath(document, change.segments, { present: true, value: values });
+      continue;
+    }
+    const value = owner === 'sources'
+      ? previewConflictPathValue(source, change.segments)
+      : change.finalValue.state === 'present'
+        ? { present: true, value: change.finalValue.value } : { present: false };
+    if (change.segments.length === 0) document = value.present ? structuredClone(value.value) : {};
+    else updatePreviewConflictPath(document, change.segments, value);
+  }
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+
+function previewSourceUpdate(programId: string, sourceContent: string, explicit: boolean): string {
+  const contributions = previewUpstreamContributions.get(programId)!;
+  const changes = explicit ? previewFinalChanges(contributions.source, sourceContent) : [];
+  contributions.source = sourceContent;
+  const expand = (change: FinalChangeProjection): FinalChangeProjection[] => {
+    const value = change.finalValue.state === 'present' ? change.finalValue.value : undefined;
+    if (change.kind !== 'added' || !value || typeof value !== 'object' || Array.isArray(value)) return [change];
+    return Object.entries(value).flatMap(([key, child]) => expand({
+      ...change, semanticPath: `${change.semanticPath}/${key}`,
+      segments: [...change.segments, { kind: 'key', key }], finalValue: { state: 'present', value: child },
+    }));
+  };
+  return recordPreviewContributions(programId, 'sources', changes.flatMap(expand));
+}
+
+function previewManagedSettingPaths(spec: ProgramSpec) {
+  const managed = spec.managedConfig;
+  const values: [string, string, unknown][] = spec.type.kind === 'singBox' ? [
+    ['dashboard.singBoxApi.listenPort', '/services[tag=camellia-nexus-api]/listen_port', managed?.singBoxDashboard?.listenPort],
+    ['dashboard.singBoxApi.updateInterval', '/services[tag=camellia-nexus-api]/dashboard/update_interval', managed?.singBoxDashboard?.updateInterval],
+    ['dashboard.singBoxClash.listenPort', '/experimental/clash_api/external_controller', managed?.singBoxClashDashboard?.listenPort],
+    ['dashboard.singBoxClash.downloadUrl', '/experimental/clash_api/external_ui_download_url', managed?.singBoxClashDashboard?.downloadUrl],
+  ] : spec.type.kind === 'xray' ? [
+    ['dashboard.xray.apiPort', '/api/listen', managed?.xrayDashboard?.apiPort],
+    ['dashboard.xray.metricsPort', '/metrics/listen', managed?.xrayDashboard?.metricsPort],
+  ] : spec.type.kind === 'mihomo' ? [
+    ['dashboard.mihomo.listenPort', '/external-controller', managed?.mihomoDashboard?.listenPort],
+    ['dashboard.mihomo.downloadUrl', '/external-ui-url', managed?.mihomoDashboard?.downloadUrl],
+  ] : [];
+  return values.map(([settingId, path, value]) => ({ settingId, path, segments: semanticPathSegments(path), value }));
+}
+
+function previewManagedUpdate(previous: ProgramSpec, next: ProgramSpec, current: string, claimedSettings: string[] = []): string {
+  const before = previewManagedIntegrationContent(previous, current);
+  const after = previewManagedIntegrationContent(next, current);
+  const changes = previewFinalChanges(before, after);
+  for (const setting of previewManagedSettingPaths(next).filter((setting) => claimedSettings.includes(setting.settingId))) {
+    const upstream = previewConflictPathValue(parsePreviewJsonc(current), setting.segments);
+    const final = previewConflictPathValue(parsePreviewJsonc(after), setting.segments);
+    if (!final.present || previewSemanticEqual(upstream, final)) continue;
+    changes.push({ editId: `preview-details:${setting.settingId}`, semanticPath: setting.path, segments: setting.segments,
+      kind: 'modified', upstreamValue: upstream.present ? { state: 'present', value: upstream.value } : { state: 'missing' },
+      finalValue: { state: 'present', value: final.value }, issues: [] });
+  }
+  return recordPreviewContributions(next.id, 'details', changes);
+}
+
+function previewFinalChanges(
+  upstreamContent: string,
+  finalContent: string,
+): FinalChangeProjection[] {
+  let upstream: unknown;
+  let finalValue: unknown;
+  try {
+    upstream = parsePreviewSemantic(upstreamContent);
+    finalValue = parsePreviewSemantic(finalContent);
+  } catch {
+    return [];
+  }
+  const changes: FinalChangeProjection[] = [];
+  const walk = (
+    upstreamEntry: { present: boolean; value?: unknown },
+    finalEntry: { present: boolean; value?: unknown },
+    segments: FinalChangeProjection['segments'],
+  ) => {
+    if (
+      upstreamEntry.present === finalEntry.present
+      && (!upstreamEntry.present || previewSemanticEqual(upstreamEntry.value, finalEntry.value))
+    ) return;
+    const upstreamObject = upstreamEntry.present && upstreamEntry.value
+      && typeof upstreamEntry.value === 'object' && !Array.isArray(upstreamEntry.value)
+      ? upstreamEntry.value as Record<string, unknown>
+      : null;
+    const finalObject = finalEntry.present && finalEntry.value
+      && typeof finalEntry.value === 'object' && !Array.isArray(finalEntry.value)
+      ? finalEntry.value as Record<string, unknown>
+      : null;
+    if (upstreamObject && finalObject) {
+      for (const key of new Set([...Object.keys(upstreamObject), ...Object.keys(finalObject)])) {
+        walk(
+          { present: Object.hasOwn(upstreamObject, key), value: upstreamObject[key] },
+          { present: Object.hasOwn(finalObject, key), value: finalObject[key] },
+          [...segments, { kind: 'key', key }],
+        );
+      }
+      return;
+    }
+    const semanticPath = segments.length
+      ? `/${segments.map((segment) => segment.kind === 'key'
+          ? segment.key.replaceAll('~', '~0').replaceAll('/', '~1')
+          : `${segment.field}=${segment.value}`
+        ).join('/')}`
+      : '/';
+    changes.push({
+      editId: `preview-final-edit:${semanticPath}`,
+      semanticPath,
+      segments: structuredClone(segments),
+      kind: !finalEntry.present ? 'deleted' : !upstreamEntry.present ? 'added' : 'modified',
+      upstreamValue: upstreamEntry.present
+        ? { state: 'present', value: structuredClone(upstreamEntry.value) }
+        : { state: 'missing' },
+      finalValue: finalEntry.present
+        ? { state: 'present', value: structuredClone(finalEntry.value) }
+        : { state: 'missing' },
+      issues: [],
+    });
+  };
+  walk(
+    { present: true, value: upstream },
+    { present: true, value: finalValue },
+    [],
+  );
+  return changes;
+}
+
+function refreshPreviewWorkspaceGates(state: ConfigurationStateView): void {
+  const conflictBlockers = state.desired.conflicts
+    .filter((conflict) => conflict.severity === 'error')
+    .map((conflict) => ({
+      code: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
+      messageKey: conflict.messageKey ?? 'CONFIGURATION_CONFLICT',
+      scope: conflict.scope ?? { surface: 'configuration' as const },
+      semanticPath: conflict.semanticPath,
+      blocks: ['save', 'validate', 'apply'] as const,
+      recoveryAction: conflict.messageKey === 'SOURCE_VALUE_CONFLICT'
+        ? 'resolveSourceConflict' as const
+        : conflict.messageKey === 'LAYER_OWNERSHIP_CONFLICT'
+          ? 'resolveLayerConflict' as const
+          : 'openFinalConfiguration' as const,
+    }));
+  const diagnosticBlockers = state.desired.diagnostics.map((diagnostic) => {
+    const sourceOwned = diagnostic.scope?.surface === 'sources';
+    return {
+      code: diagnostic.messageKey ?? diagnostic.code,
+      messageKey: diagnostic.messageKey ?? diagnostic.code,
+      scope: diagnostic.scope ?? { surface: 'configuration' as const },
+      details: !diagnostic.scope || diagnostic.scope.surface === 'configuration'
+        ? diagnostic.details
+        : undefined,
+      blocks: sourceOwned
+        ? ['save' as const, 'validate' as const, 'apply' as const]
+        : ['apply' as const],
+      recoveryAction: sourceOwned ? 'resolveSourceConflict' as const : 'reviewCandidate' as const,
+    };
+  });
+  const needsValidation = state.desired.validation !== 'valid'
+    && conflictBlockers.length === 0
+    && diagnosticBlockers.length === 0;
+  const candidateUnsaved = state.workspace.editor.candidateStatus === 'unsaved';
+  state.workspace.editor.blockers = [
+    ...(state.coreAdmission && state.coreAdmission.status !== 'admitted' ? [{
+      code: state.coreAdmission.messageKey,
+      messageKey: state.coreAdmission.messageKey,
+      scope: { surface: 'compatibility' as const },
+      blocks: ['validate' as const, 'apply' as const],
+      recoveryAction: 'openCompatibility' as const,
+    }] : []),
+    ...conflictBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
+    ...diagnosticBlockers.map((blocker) => ({ ...blocker, blocks: [...blocker.blocks] })),
+    ...(candidateUnsaved && ![...conflictBlockers, ...diagnosticBlockers].some((blocker) => blocker.blocks.includes('save')) ? [{
+      code: 'CONFIGURATION_CANDIDATE_UNSAVED',
+      messageKey: 'CONFIGURATION_CANDIDATE_UNSAVED',
+      scope: { surface: 'configuration' as const },
+      blocks: ['validate' as const, 'apply' as const],
+      recoveryAction: 'openFinalConfiguration' as const,
+    }] : []),
+    ...(needsValidation && !candidateUnsaved ? [{
+      code: 'CORE_VALIDATION_REQUIRED',
+      messageKey: 'CORE_VALIDATION_REQUIRED',
+      scope: { surface: 'configuration' as const },
+      blocks: ['apply' as const],
+      recoveryAction: 'validateCandidate' as const,
+    }] : []),
+  ];
+  state.workspace.editor.canSave = state.workspace.editor.blockers.every(
+    (blocker) => !blocker.blocks.includes('save'),
+  );
+  state.workspace.editor.canValidate = state.workspace.editor.blockers.every(
+    (blocker) => !blocker.blocks.includes('validate'),
+  );
+  state.workspace.editor.canApply = state.workspace.editor.blockers.every(
+    (blocker) => !blocker.blocks.includes('apply'),
+  );
+}
+
+function syncPreviewEditor(state: ConfigurationStateView): void {
+  state.workspace.editor.diagnostics = structuredClone(state.desired.diagnostics);
+  state.workspace.editor.document = {
+    content: state.desired.content,
+    revision: structuredClone(state.desired.revision),
+  };
+  if (state.workspace.editor.conflicts.length > 0) {
+    state.workspace.editor.editStatus = 'conflict';
+  } else if (state.workspace.editor.changes.length > 0) {
+    state.workspace.editor.editStatus = 'modified';
+  } else {
+    state.workspace.editor.editStatus = 'clean';
+  }
+  refreshPreviewWorkspaceGates(state);
+}
+
+function updateConfigurationState(
+  programId: string,
+  update: (state: ConfigurationStateView) => void,
+  advanceGeneration = true,
+): ConfigurationStateView {
+  const state = configurationState(programId);
+  const before = JSON.stringify(state);
+  const previousContent = state.desired.content;
+  const previousProfile = state.compatibilityProfile.profileHash;
+  update(state);
+  if (state.desired.content !== previousContent) {
+    state.desired.revision.contentHash = previewContentHash(state.desired.content);
+    // A content mutation invalidates native evidence. The preview backend
+    // mirrors the real coordinator's fail-closed rule; only the explicit
+    // validation command creates fresh evidence.
+    state.desired.validationEvidence = undefined;
+    if (state.desired.validation === 'valid') state.desired.validation = 'pending';
+    state.workspace.editor.candidateStatus = 'unsaved';
+    const savedDocument = previewConfigurationDocuments.get(programId);
+    previewConfigurationDocuments.set(programId, {
+      ...savedDocument,
+      content: state.desired.content,
+      baseHash: state.desired.revision.contentHash,
+    });
+  }
+  if (advanceGeneration && (state.desired.content !== previousContent
+    || state.compatibilityProfile.profileHash !== previousProfile)) {
+    state.generation += 1;
+    state.desired.revision = {
+      ...state.desired.revision,
+      generation: state.generation,
+      createdUnixMs: Date.now(),
+    };
+  }
+  refreshPreviewWorkspaceGates(state);
+  syncPreviewEditor(state);
+  if (JSON.stringify(state) !== before) state.stateRevision += 1;
+  previewConfigurationStates.set(programId, structuredClone(state));
+  return state;
+}
+
+function updatePreviewUpstream(
+  programId: string,
+  content: string,
+  update: (state: ConfigurationStateView) => void = () => undefined,
+): ConfigurationStateView {
+  const current = configurationState(programId);
+  const previousUpstream = previewUpstreamDocuments.get(programId) ?? current.desired.content;
+  const existingDraft = previewFinalDrafts.get(programId);
+  const existingConflicts = structuredClone(current.workspace.editor.conflicts);
+  const existingDesiredConflicts = structuredClone(current.desired.conflicts);
+  let nextContent = content;
+  let rebasedCommitted: FinalEditorSession | null = null;
+
+  if (!existingDraft && (current.workspace.editor.changes.length > 0 || existingConflicts.length > 0)) {
+    const committedSession: FinalEditorSession = {
+      sessionId: `preview-rebase-${programId}`,
+      draftRevision: 0,
+      basedOnStateRevision: current.stateRevision,
+      basedOnCandidateGeneration: current.generation,
+      baseContent: previousUpstream,
+      workingContent: current.desired.content,
+      conflicts: existingConflicts,
+      resolutions: {},
+      unresolvedConflictIds: existingConflicts.map((conflict) => conflict.conflictId),
+      rebaseRequired: false,
+      updatedUnixMs: Date.now(),
+    };
+    const target = structuredClone(current);
+    target.stateRevision += 1;
+    target.generation += 1;
+    target.desired.content = content;
+    rebasedCommitted = rebasePreviewFinalEditorSession(committedSession, target);
+    nextContent = rebasedCommitted.workingContent;
+  }
+
+  previewUpstreamDocuments.set(programId, content);
+  const state = updateConfigurationState(programId, (next) => {
+    next.desired.content = nextContent;
+    if (previousUpstream !== content) {
+      next.desired.validation = 'pending';
+      next.desired.validationEvidence = undefined;
+      next.desired.diagnostics = [];
+    }
+    next.desired.conflicts = existingConflicts.length > 0 ? existingDesiredConflicts : [];
+    next.workspace.editor.conflicts = existingConflicts;
+    next.workspace.editor.changes = previewFinalChanges(content, nextContent);
+    if (next.format === 'jsonc') {
+      const upstream = parsePreviewJsonc(content);
+      next.guidedProjection = next.guidedProjection.map((projection) => {
+        const path = previewGuidedPath(next.kind, projection.settingId);
+        if (!path) return projection;
+        const value = previewConflictPathValue(upstream, path.map((key) => ({ kind: 'key', key })));
+        return { ...projection, value: value.value };
+      });
+    }
+    update(next);
+  });
+
+  if (rebasedCommitted?.unresolvedConflictIds.length) {
+    rebasedCommitted.basedOnStateRevision = state.stateRevision;
+    rebasedCommitted.basedOnCandidateGeneration = state.generation;
+    rebasedCommitted.baseContent = content;
+    rebasedCommitted.draftRevision = Math.max(1, rebasedCommitted.draftRevision);
+    previewFinalDrafts.set(programId, structuredClone(rebasedCommitted));
+  }
+  return state;
+}
 
 function growingLog(stream: 'stdout' | 'stderr'): string {
   const readCount = logReadCounts[stream]++;
@@ -811,6 +2444,7 @@ function detail(programId: string): ProgramDetail {
   return { spec: structuredClone(spec), state: structuredClone(states[programId]), workingDirectory: spec.workingDirectory };
 }
 
+
 function configDocument(programId: string) {
   const saved = previewConfigurationDocuments.get(programId);
   if (specs[programId]?.type.kind === 'mihomo') {
@@ -824,8 +2458,8 @@ function configDocument(programId: string) {
   const singBox = specs[programId]?.type.kind === 'singBox';
   return {
     content: saved?.content ?? (singBox
-      ? '{\n  "log": { "level": "info" },\n  "outbounds": [\n    { "type": "direct", "tag": "direct" },\n    { "type": "socks", "tag": "proxy-sg", "server": "127.0.0.1", "server_port": 1080 }\n  ],\n  "route": { "final": "proxy-sg" }\n}\n'
-      : '{\n  "log": { "level": "info" },\n  "route": { "final": "proxy-sg" }\n}\n'),
+      ? (platformIssuePreview ? '{\n  "inbounds": [{ "type": "tun", "tag": "tun-in", "auto_route": true, "auto_redirect": true }]\n}\n' : '{\n  "log": { "level": "info" },\n  "outbounds": [\n    { "type": "direct", "tag": "direct" },\n    { "type": "socks", "tag": "proxy-sg", "server": "127.0.0.1", "server_port": 1080 }\n  ],\n  "route": { "final": "proxy-sg" }\n}\n')
+      : '{\n  "log": { "loglevel": "warning" },\n  "route": { "final": "proxy-sg" }\n}\n'),
     baseHash: saved?.baseHash ?? 'preview-hash',
     language: 'jsonc',
     documentationUrl: 'https://example.test/docs',
@@ -844,6 +2478,11 @@ const singBoxConfigurationSchema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
   type: 'object',
   properties: {
+    inbounds: {
+      type: 'array', items: { type: 'object', properties: {
+        type: { type: 'string' }, tag: { type: 'string' }, auto_route: { type: 'boolean' }, auto_redirect: { type: 'boolean' },
+      }, additionalProperties: false },
+    },
     log: {
       type: 'object',
       properties: {
@@ -939,8 +2578,11 @@ function requireLifecycleAccess(action: 'start' | 'restart') {
 
 export function installMockBackend() {
   const recoveredEntitlement = structuredClone(previewEntitlement);
-  mockWindows('main');
-  mockIPC((command, args) => {
+  const tauriInternals = Reflect.get(window, '__TAURI_INTERNALS__');
+  const nativeWindowAvailable = !!tauriInternals
+    && typeof tauriInternals === 'object'
+    && Reflect.has(tauriInternals, 'metadata');
+  const handlePreviewInvoke = (command: string, args?: InvokeArgs) => {
     switch (command) {
       case 'frontend_ready': return null;
       case 'log_frontend_event': return null;
@@ -1539,6 +3181,15 @@ export function installMockBackend() {
         return summaries();
       }
       case 'list_invalid_programs': return [];
+      case 'create_program':
+        if (previewParameters.has('__ui_create_prerelease')) {
+          throw {
+            code: 'UNSUPPORTED_BINARY',
+            messageKey: 'CORE_PRERELEASE_NOT_SUPPORTED',
+            message: 'Unsupported program',
+          };
+        }
+        throw { code: 'MOCK_COMMAND_UNIMPLEMENTED', message: `No UI preview response for ${command}` };
       case 'get_program': {
         const programId = stringArg(args, 'programId');
         return mockProgramSelectionResult(command, programId, detail(programId));
@@ -1556,31 +3207,100 @@ export function installMockBackend() {
       case 'restart_program': requireLifecycleAccess('restart'); setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() }); return null;
       case 'update_program': {
         const next = objectArgs(args).spec;
-        if (next && typeof next === 'object') specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
-        return null;
+        const claimedSettings = (objectArgs(args).claimedManagedSettings ?? []) as string[];
+        let programId = '';
+        if (next && typeof next === 'object') {
+          const nextSpec = next as ProgramSpec;
+          programId = nextSpec.id;
+          const previous = specs[nextSpec.id];
+          const managedChanged = JSON.stringify({
+            singBoxDashboard: previous?.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: previous?.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: previous?.managedConfig?.xrayDashboard,
+            mihomoDashboard: previous?.managedConfig?.mihomoDashboard,
+          }) !== JSON.stringify({
+            singBoxDashboard: nextSpec.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: nextSpec.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: nextSpec.managedConfig?.xrayDashboard,
+            mihomoDashboard: nextSpec.managedConfig?.mihomoDashboard,
+          });
+          specs[nextSpec.id] = structuredClone(nextSpec);
+          if ((managedChanged || claimedSettings.length > 0) && nextSpec.type.kind !== 'generic') {
+            const state = configurationState(nextSpec.id);
+            const upstream = previewManagedUpdate(
+              previous, nextSpec,
+              previewUpstreamDocuments.get(nextSpec.id) ?? state.desired.content,
+              claimedSettings,
+            );
+            updatePreviewUpstream(nextSpec.id, upstream, (nextState) => {
+              nextState.managedIntegrations = (nextState.managedIntegrations ?? []).map((integration) => {
+                const enabled = integration.integrationId === 'dashboard.singBoxApi'
+                  ? !!nextSpec.managedConfig?.singBoxDashboard
+                  : integration.integrationId === 'dashboard.singBoxClash'
+                    ? !!nextSpec.managedConfig?.singBoxClashDashboard
+                    : integration.integrationId === 'dashboard.xray'
+                      ? !!nextSpec.managedConfig?.xrayDashboard
+                      : !!nextSpec.managedConfig?.mihomoDashboard;
+                return { ...integration, status: enabled ? 'explicit' : 'inactive', effectiveEnabled: enabled };
+              });
+            });
+          }
+        }
+        return programId && specs[programId]?.type.kind !== 'generic'
+          ? configurationWorkspaceSnapshot(programId)
+          : null;
       }
       case 'update_program_and_restart': {
         requireLifecycleAccess('restart');
         const next = objectArgs(args).spec;
-        if (next && typeof next === 'object') specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
+        const claimedSettings = (objectArgs(args).claimedManagedSettings ?? []) as string[];
+        let programId = '';
+        if (next && typeof next === 'object') {
+          const nextSpec = next as ProgramSpec;
+          programId = nextSpec.id;
+          const previous = specs[nextSpec.id];
+          const managedChanged = JSON.stringify({
+            singBoxDashboard: previous?.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: previous?.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: previous?.managedConfig?.xrayDashboard,
+            mihomoDashboard: previous?.managedConfig?.mihomoDashboard,
+          }) !== JSON.stringify({
+            singBoxDashboard: nextSpec.managedConfig?.singBoxDashboard,
+            singBoxClashDashboard: nextSpec.managedConfig?.singBoxClashDashboard,
+            xrayDashboard: nextSpec.managedConfig?.xrayDashboard,
+            mihomoDashboard: nextSpec.managedConfig?.mihomoDashboard,
+          });
+          specs[nextSpec.id] = structuredClone(nextSpec);
+          if ((managedChanged || claimedSettings.length > 0) && nextSpec.type.kind !== 'generic') {
+            const state = configurationState(nextSpec.id);
+            const upstream = previewManagedUpdate(
+              previous, nextSpec,
+              previewUpstreamDocuments.get(nextSpec.id) ?? state.desired.content,
+              claimedSettings,
+            );
+            updatePreviewUpstream(nextSpec.id, upstream, (nextState) => {
+              nextState.managedIntegrations = (nextState.managedIntegrations ?? []).map((integration) => {
+                const enabled = integration.integrationId === 'dashboard.singBoxApi'
+                  ? !!nextSpec.managedConfig?.singBoxDashboard
+                  : integration.integrationId === 'dashboard.singBoxClash'
+                    ? !!nextSpec.managedConfig?.singBoxClashDashboard
+                    : integration.integrationId === 'dashboard.xray'
+                      ? !!nextSpec.managedConfig?.xrayDashboard
+                      : !!nextSpec.managedConfig?.mihomoDashboard;
+                return { ...integration, status: enabled ? 'explicit' : 'inactive', effectiveEnabled: enabled };
+              });
+            });
+          }
+        }
         setLifecycleState(args, { status: 'running', pid: 42421, startedUnixMs: Date.now() });
-        return null;
-      }
-      case 'update_program_and_refresh_config': {
-        const next = objectArgs(args).spec;
-        if (next && typeof next === 'object') specs[(next as ProgramSpec).id] = structuredClone(next as ProgramSpec);
-        const id = next && typeof next === 'object' ? (next as ProgramSpec).id : '';
-        return { sourceCount: 1, document: configDocument(id) };
+        return programId && specs[programId]?.type.kind !== 'generic'
+          ? configurationWorkspaceSnapshot(programId)
+          : null;
       }
       case 'remove_program': delete specs[stringArg(args, 'programId')]; return null;
       case 'list_actions': {
         const programId = stringArg(args, 'programId');
         const kind = specs[programId]?.type.kind;
-        if (kind === 'xray') {
-          return mockProgramSelectionResult(command, programId, [
-            { id: 'dump-config', label: 'Dump parsed configuration', allowedStates: ['stopped', 'running'], confirmation: false },
-          ]);
-        }
         if (kind === 'singBox') {
           return mockProgramSelectionResult(command, programId, [
             { id: 'format-config', label: 'Format with sing-box', allowedStates: ['stopped', 'running'], confirmation: false },
@@ -1588,7 +3308,594 @@ export function installMockBackend() {
         }
         return mockProgramSelectionResult(command, programId, []);
       }
-      case 'load_config': return configDocument(stringArg(args, 'programId'));
+      case 'load_config': {
+        const document = configDocument(stringArg(args, 'programId'));
+        if (configurationMetadataFailurePending) {
+          configurationMetadataFailurePending = false;
+          throw new Error('Optional editor metadata is unavailable.');
+        }
+        if (previewParameters.has('__ui_slow_config_metadata')) {
+          return new Promise((resolve) => window.setTimeout(() => resolve(document), 4500));
+        }
+        return document;
+      }
+      case 'get_configuration_workspace_preview': {
+        return configurationWorkspaceSnapshot(stringArg(args, 'programId'));
+      }
+      case 'get_configuration_workspace': {
+        if (new URLSearchParams(window.location.search).has('__ui_identity_read_error') && !identityReadReady) {
+          throw new Error(JSON.stringify({
+            code: 'TIMEOUT', message: 'Program identity probe exceeded its deadline',
+            details: 'bounded identity read timed out',
+          }));
+        }
+        const programId = stringArg(args, 'programId');
+        const snapshot = configurationWorkspaceSnapshot(programId);
+        configurationWorkspaceReads += 1;
+        if (previewParameters.has('__ui_slow_workspace_after_first') && configurationWorkspaceReads > 1) {
+          return new Promise((resolve) => window.setTimeout(() => resolve(snapshot), 2500));
+        }
+        if (previewParameters.has('__ui_slow_verified_workspace')) {
+          return new Promise((resolve) => window.setTimeout(() => resolve(snapshot), 1800));
+        }
+        return snapshot;
+      }
+      case 'preview_configuration_import': {
+        const programId = stringArg(args, 'programId');
+        const targetCore = specs[programId]?.type.kind ?? 'xray';
+        const target = specs[programId]?.executable.metadata?.coreTarget
+          ?? unclassifiedCoreTarget(targetCore === 'generic' ? 'xray' : targetCore);
+        const preview: ShareImportPreview = {
+          normalized: {
+            text: 'vless://preview-redacted',
+            envelope: 'plain',
+            payload: 'singleShareLink',
+            contentHash: 'preview-share-source-hash',
+          },
+          summary: {
+            envelope: 'plain',
+            payload: 'singleShareLink',
+            parserRevision: 'share-parser-preview',
+            totalItems: 1,
+            acceptedItems: 1,
+            rejectedItems: 0,
+            warningCount: 0,
+            protocols: { VLESS: 1 },
+            fidelity: 'exact',
+            collectionStatus: 'success',
+            issues: [],
+          },
+          items: [{
+            itemId: 'share-preview-item',
+            semantic: { protocol: 'VLESS', name: 'Preview node' },
+            fragment: { type: 'vless', server: 'example.com', server_port: 443 },
+            summary: {
+              target,
+              translatorRevision: 'share-translator-preview',
+              profileHash: 'preview-core-profile-hash',
+              knowledgeHash: 'preview-knowledge-digest',
+              featureDecisions: [],
+              fidelity: 'equivalent',
+              warnings: [],
+              blockingIssues: [],
+            },
+            provenance: {},
+          }],
+        };
+        return preview;
+      }
+      case 'update_final_configuration_draft': {
+        const programId = stringArg(args, 'programId');
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:draft-write', { detail: programId }));
+        if (finalDraftWriteFailurePending) {
+          finalDraftWriteFailurePending = false;
+          return new Promise((_, reject) => {
+            window.addEventListener('camellia-ui-preview:reject-draft-write', () => reject({
+              code: 'STORAGE', message: 'Draft storage is temporarily unavailable.',
+            }), { once: true });
+          });
+        }
+        const request = objectArgs(args).request as {
+          draft?: FinalEditorSession;
+          expectedRevision?: number;
+        } | undefined;
+        if (!request?.draft) throw { code: 'INVALID_SPEC', message: 'Draft is required' };
+        const draft = structuredClone(request.draft);
+        const persisted = previewFinalDrafts.get(programId);
+        if (
+          request.expectedRevision !== draft.draftRevision
+          || (persisted && (
+            persisted.draftRevision !== request.expectedRevision
+            || persisted.sessionId !== draft.sessionId
+          ))
+          || (!persisted && request.expectedRevision !== 0)
+        ) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE', message: 'Preview Final editor draft revision is stale' };
+        }
+        if (persisted) {
+          draft.conflicts = structuredClone(persisted.conflicts);
+          draft.resolutions = structuredClone(persisted.resolutions);
+          draft.unresolvedConflictIds = [...persisted.unresolvedConflictIds];
+        }
+        draft.draftRevision += 1;
+        draft.updatedUnixMs = Date.now();
+        refreshPreviewUnresolvedConflicts(draft);
+        previewFinalDrafts.set(programId, structuredClone(draft));
+        if (finalDraftResponseHeldPending) {
+          finalDraftResponseHeldPending = false;
+          const snapshot = configurationWorkspaceSnapshot(programId);
+          return new Promise((resolve) => {
+            window.addEventListener('camellia-ui-preview:release-draft-response', () => resolve(snapshot), { once: true });
+          });
+        }
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'rebase_final_configuration_draft': {
+        const programId = stringArg(args, 'programId');
+        const state = configurationState(programId);
+        const draft = finalEditorSession(programId);
+        draft.basedOnStateRevision = state.stateRevision;
+        draft.basedOnCandidateGeneration = state.generation;
+        draft.resolutions = {};
+        draft.unresolvedConflictIds = draft.conflicts.map((conflict) => conflict.conflictId);
+        draft.rebaseRequired = false;
+        draft.draftRevision += 1;
+        draft.updatedUnixMs = Date.now();
+        previewFinalDrafts.set(programId, structuredClone(draft));
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'adopt_upstream_change': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as import('../types').AdoptUpstreamChangeRequest;
+        const key = `${programId}:${request.operationId}`;
+        const previous = previewAdoptedChanges.get(key);
+        if (previous !== undefined) {
+          if (previous !== JSON.stringify(request)) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH' };
+          return configurationWorkspaceSnapshot(programId);
+        }
+        const current = configurationState(programId);
+        if (current.stateRevision !== request.expectedStateRevision) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE' };
+        if (adoptWriteFailurePending) {
+          adoptWriteFailurePending = false;
+          throw { code: 'STORAGE', message: 'Injected adoption write failure' };
+        }
+        const draft = previewFinalDrafts.get(programId);
+        if (draft && (draft.sessionId !== request.editorSessionId || draft.draftRevision !== request.expectedDraftRevision)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE' };
+        }
+        if (draft && (draft.rebaseRequired || draft.workingContent !== current.desired.content)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_UNCOMMITTED' };
+        }
+        const edit = current.workspace.editor.changes.find((item) => item.editId === request.editId && JSON.stringify(item.segments) === JSON.stringify(request.path));
+        if (!edit) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE' };
+        updateConfigurationState(programId, (state) => {
+          const document = parsePreviewJsonc(state.desired.content);
+          updatePreviewConflictPath(document, edit.segments, edit.upstreamValue.state === 'missing'
+            ? { present: false }
+            : { present: true, value: edit.upstreamValue.value });
+          state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+          state.workspace.editor.changes = state.workspace.editor.changes.filter((item) => item.editId !== edit.editId);
+        });
+        previewAdoptedChanges.set(key, JSON.stringify(request));
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'resolve_configuration_conflict': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as import('../types').ResolveConfigurationConflictRequest;
+        const receiptKey = `${programId}:${request.operationId}`;
+        const prior = previewConflictOperations.get(receiptKey);
+        if (prior) {
+          if (prior.serialized !== JSON.stringify(request)) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH' };
+          return configurationWorkspaceSnapshot(programId);
+        }
+        const current = configurationState(programId);
+        if (request.expectedStateRevision !== current.stateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE' };
+        }
+        if (conflictWriteFailurePending) {
+          conflictWriteFailurePending = false;
+          throw { code: 'STORAGE', message: 'Injected conflict write failure' };
+        }
+        if (conflictChoiceRejectedPending) {
+          conflictChoiceRejectedPending = false;
+          throw { code: 'CONFIG_INVALID', message: 'The selected value cannot be used' };
+        }
+        if (request.action.kind !== 'resolve') {
+          const original = previewConflictOperations.get(`${programId}:${request.action.resolutionOperationId}`);
+          if (!original || original.undone === (request.action.kind === 'undo')) {
+            throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+          }
+          const { conflict: previousConflict, resolution: previousResolution } = original;
+          if (request.action.kind === 'undo') {
+            if (previousConflict.reference.origin === 'draft') {
+              const draft = finalEditorSession(programId);
+              const document = parsePreviewJsonc(draft.workingContent);
+              updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, 'acceptUpstream'));
+              draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
+              draft.conflicts.push(structuredClone(previousConflict));
+              delete draft.resolutions[previousConflict.conflictId];
+              draft.unresolvedConflictIds.push(previousConflict.conflictId);
+              draft.draftRevision += 1;
+              current.stateRevision += 1;
+              draft.basedOnStateRevision = current.stateRevision;
+              previewFinalDrafts.set(programId, structuredClone(draft));
+              previewConfigurationStates.set(programId, structuredClone(current));
+            } else {
+              updateConfigurationState(programId, (state) => {
+                const document = parsePreviewJsonc(state.desired.content);
+                updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, 'acceptUpstream'));
+                state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+                state.workspace.editor.conflicts.push(structuredClone(previousConflict));
+                state.workspace.editor.changes = state.workspace.editor.changes.filter((item) => item.semanticPath !== previousConflict.semanticPath);
+                state.desired.conflicts.push({ semanticPath: previousConflict.semanticPath, reason: 'A final edit needs a choice', severity: 'error', messageKey: 'FINAL_EDIT_CONFLICT', scope: { surface: 'configuration', ownerId: previousConflict.conflictId } });
+              });
+            }
+          } else {
+            const document = parsePreviewJsonc(previousConflict.reference.origin === 'draft' ? finalEditorSession(programId).workingContent : current.desired.content);
+            updatePreviewConflictPath(document, previousConflict.segments, previewConflictResolutionValue(previousConflict, previousResolution));
+            if (previousConflict.reference.origin === 'draft') {
+              const draft = finalEditorSession(programId);
+              draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
+              draft.resolutions[previousConflict.conflictId] = previousResolution;
+              refreshPreviewUnresolvedConflicts(draft);
+              draft.draftRevision += 1;
+              current.stateRevision += 1;
+              draft.basedOnStateRevision = current.stateRevision;
+              previewFinalDrafts.set(programId, structuredClone(draft));
+              previewConfigurationStates.set(programId, structuredClone(current));
+            } else {
+              updateConfigurationState(programId, (state) => {
+                state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+                state.workspace.editor.conflicts = state.workspace.editor.conflicts.filter((item) => item.conflictId !== previousConflict.conflictId);
+                state.desired.conflicts = state.desired.conflicts.filter((item) => item.scope?.ownerId !== previousConflict.conflictId);
+              });
+            }
+          }
+          original.undone = request.action.kind === 'undo';
+          previewConflictOperations.set(receiptKey, { ...original, serialized: JSON.stringify(request) });
+          return configurationWorkspaceSnapshot(programId);
+        }
+        const { reference, resolution } = request.action;
+        const draft = finalEditorSession(programId);
+        if (request.expectedDraftRevision !== undefined && request.expectedDraftRevision !== draft.draftRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE' };
+        }
+        if (reference.origin === 'draft') {
+          const conflict = draft.conflicts.find((item) => item.conflictId === reference.conflictId);
+          if (!conflict || JSON.stringify(conflict) !== reference.fingerprint) {
+            throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+          }
+          const document = parsePreviewJsonc(draft.workingContent);
+          updatePreviewConflictPath(document, conflict.segments, previewConflictResolutionValue(conflict, resolution));
+          draft.workingContent = `${JSON.stringify(document, null, 2)}\n`;
+          draft.resolutions[conflict.conflictId] = resolution;
+          refreshPreviewUnresolvedConflicts(draft);
+          draft.draftRevision += 1;
+          draft.updatedUnixMs = Date.now();
+          current.stateRevision += 1;
+          draft.basedOnStateRevision = current.stateRevision;
+          previewConfigurationStates.set(programId, structuredClone(current));
+          previewFinalDrafts.set(programId, structuredClone(draft));
+          previewConflictOperations.set(receiptKey, { serialized: JSON.stringify(request), conflict: {
+            ...conflict, reference,
+          }, resolution, undone: false });
+          if (conflictResponseFailurePending) {
+            conflictResponseFailurePending = false;
+            throw { code: 'UNKNOWN', message: 'Conflict response unavailable' };
+          }
+          return configurationWorkspaceSnapshot(programId);
+        }
+        const conflict = current.workspace.editor.conflicts.find((item) => item.conflictId === reference.conflictId);
+        if (!conflict || JSON.stringify(conflict.reference) !== JSON.stringify(reference)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_CONFLICT_STALE' };
+        }
+        updateConfigurationState(programId, (state) => {
+          const selected = resolution === 'acceptUpstream'
+            ? conflict.upstreamValue
+            : resolution === 'keepMine'
+              ? conflict.userValue
+              : resolution.manualEdit.value;
+          const document = parsePreviewJsonc(state.desired.content);
+          updatePreviewConflictPath(document, conflict.segments, {
+            present: selected.state === 'present',
+            ...(selected.state === 'present' ? { value: selected.value } : {}),
+          });
+          state.desired.content = `${JSON.stringify(document, null, 2)}\n`;
+          state.desired.conflicts = state.desired.conflicts.filter(
+            (item) => item.scope?.ownerId !== conflict.conflictId,
+          );
+          state.workspace.editor.conflicts = state.workspace.editor.conflicts.filter(
+            (item) => item.conflictId !== conflict.conflictId,
+          );
+          state.workspace.editor.changes = selected.state === conflict.upstreamValue.state
+            && (selected.state === 'missing'
+              || JSON.stringify(selected.value) === JSON.stringify(
+                conflict.upstreamValue.state === 'present' ? conflict.upstreamValue.value : undefined,
+              ))
+            ? state.workspace.editor.changes.filter((item) => item.semanticPath !== conflict.semanticPath)
+            : [...state.workspace.editor.changes.filter((item) => item.semanticPath !== conflict.semanticPath), {
+                editId: `preview-final-edit-${programId}`,
+                semanticPath: conflict.semanticPath,
+                segments: conflict.segments,
+                kind: selected.state === 'missing' ? 'deleted' : 'modified',
+                upstreamValue: structuredClone(conflict.upstreamValue),
+                finalValue: structuredClone(selected),
+                issues: [],
+              } satisfies FinalChangeProjection];
+          state.desired.validation = 'pending';
+          state.desired.validationEvidence = undefined;
+          state.workspace.editor.candidateStatus = 'unsaved';
+        });
+        previewConflictOperations.set(receiptKey, { serialized: JSON.stringify(request), conflict, resolution, undone: false });
+        if (conflictResponseFailurePending) {
+          conflictResponseFailurePending = false;
+          throw { code: 'UNKNOWN', message: 'Conflict response unavailable' };
+        }
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'discard_final_configuration_draft': {
+        const programId = stringArg(args, 'programId');
+        const expectedRevision = objectArgs(args).expectedRevision;
+        const currentDraft = previewFinalDrafts.get(programId);
+        const currentRevision = currentDraft?.draftRevision ?? 0;
+        if (finalDraftDiscardRacePending && currentDraft) {
+          finalDraftDiscardRacePending = false;
+          const conflictId = 'preview-discard-race-conflict';
+          previewFinalDrafts.set(programId, {
+            ...structuredClone(currentDraft),
+            draftRevision: currentDraft.draftRevision + 1,
+            conflicts: [{
+              conflictId,
+              segments: [
+                { kind: 'key', key: 'log' },
+                { kind: 'key', key: 'loglevel' },
+              ],
+              semanticPath: '/log/loglevel',
+              kind: 'modifyVsModify',
+              baseValue: { state: 'present', value: 'warning' },
+              upstreamValue: { state: 'present', value: 'error' },
+              userValue: { state: 'present', value: 'debug' },
+              canMerge: false,
+            }],
+            unresolvedConflictIds: [conflictId],
+            updatedUnixMs: Date.now(),
+          });
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'CONFIGURATION_DRAFT_STALE',
+            message: 'Final configuration draft changed before it could be discarded',
+          };
+        }
+        if (expectedRevision !== currentRevision) {
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'CONFIGURATION_DRAFT_STALE',
+            message: 'Final configuration draft changed before it could be discarded',
+          };
+        }
+        previewFinalDrafts.delete(programId);
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'save_configuration_candidate': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as ConfigurationMutationContext;
+        if (request.kind !== 'save') {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH', message: 'Action changed' };
+        }
+        const recorded = previewOperationResult(programId, request);
+        if (recorded) return { ...configurationWorkspaceSnapshot(programId), operationResult: recorded };
+        const currentState = configurationState(programId);
+        if (request.expectedStateRevision !== currentState.stateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE', message: 'Configuration changed' };
+        }
+        const draft = finalEditorSession(programId);
+        if (draft.draftRevision > 0 && (request.editorSessionId !== draft.sessionId
+          || request.expectedDraftRevision !== draft.draftRevision)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE', message: 'Draft changed' };
+        }
+        refreshPreviewUnresolvedConflicts(draft);
+        if (draft.rebaseRequired || draft.unresolvedConflictIds.length > 0) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'FINAL_EDIT_CONFLICT', message: 'Resolve all preview conflicts before saving' };
+        }
+        let committedContent = draft.workingContent;
+        if (currentState.format === 'jsonc') {
+          committedContent = `${JSON.stringify(parsePreviewJsonc(draft.workingContent), null, 2)}\n`;
+        }
+        const contentChanged = committedContent !== currentState.desired.content;
+        const upstreamContent = previewUpstreamDocuments.get(programId)
+          ?? currentState.desired.content;
+        const state = updateConfigurationState(programId, (current) => {
+          current.desired.content = committedContent;
+          current.desired.validation = 'pending';
+          current.desired.validationEvidence = undefined;
+          current.desired.diagnostics = [];
+          current.desired.conflicts = [];
+          current.workspace.editor.conflicts = [];
+          current.workspace.editor.changes = previewFinalChanges(upstreamContent, committedContent);
+        }, contentChanged);
+        state.workspace.editor.candidateStatus = 'pendingValidation';
+        state.desired.validation = 'pending';
+        state.desired.validationEvidence = undefined;
+        syncPreviewEditor(state);
+        previewConfigurationStates.set(programId, structuredClone(state));
+        previewFinalDrafts.delete(programId);
+        const result: ConfigurationOperationResult = {
+          operationId: request.operationId,
+          status: 'saved',
+          candidateGeneration: state.generation,
+          savedCandidate: structuredClone(state.desired.revision),
+        };
+        previewConfigurationOperations.set(`${programId}:${request.operationId}`, {
+          request: structuredClone(request), result,
+        });
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:configuration-save', { detail: request.operationId }));
+        if (configurationSaveResponseLostPending) {
+          configurationSaveResponseLostPending = false;
+          throw { code: 'TIMEOUT', message: 'The save response was not received.' };
+        }
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
+      }
+      case 'update_configuration_intent': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as import('../types').ConfigurationIntentRequest;
+        const context: ConfigurationMutationContext = {
+          operationId: request.operationId, kind: 'intent', expectedStateRevision: request.expectedStateRevision,
+          editorSessionId: request.editorSessionId, expectedDraftRevision: request.expectedDraftRevision,
+          payloadHash: previewContentHash(JSON.stringify(request.change)),
+        };
+        const receipt = previewOperationResult(programId, context);
+        if (receipt) return { ...configurationWorkspaceSnapshot(programId), operationResult: receipt };
+        const current = configurationState(programId);
+        if (current.stateRevision !== request.expectedStateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE', message: 'Configuration changed' };
+        }
+        const change = request.change;
+        const contributions = previewUpstreamContributions.get(programId)!;
+        const upstreamContent = previewUpstreamDocuments.get(programId) ?? current.desired.content;
+        const parse = (content: string): unknown => current.format === 'yaml' ? parseYaml(content) : parsePreviewJsonc(content);
+        const document = parse(upstreamContent);
+        if (change.action === 'set' || change.action === 'follow') {
+          const descriptor = current.guidedDescriptors.find((item) => item.id === change.settingId);
+          const path = previewGuidedPath(current.kind, change.settingId);
+          if (!descriptor || !path) throw { code: 'INVALID_SPEC', message: 'Unknown setting' };
+          if (change.action === 'set' && descriptor.control === 'select' && !descriptor.allowedValues.includes(String(change.value))) {
+            throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_VALUE_INVALID', message: 'Invalid selection' };
+          }
+          const owner = `intent:${change.settingId}`;
+          if (change.action === 'follow') contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+          else setPreviewGuidedPath(document, path, change.value);
+          const changes = change.action === 'follow' ? [] : previewFinalChanges(upstreamContent, JSON.stringify(document));
+          updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, changes), (state) => {
+            state.guidedProjection = state.guidedProjection.map((item) => item.settingId === change.settingId
+              ? { ...item, status: change.action === 'follow' ? 'inherited' : 'explicit', intentValue: change.action === 'set' ? change.value : undefined } : item);
+          });
+        } else {
+          applyPreviewIntentObject(programId, change, document);
+        }
+        const result: ConfigurationOperationResult = {
+          operationId: request.operationId, status: 'updated', candidateGeneration: configurationState(programId).generation,
+        };
+        previewConfigurationOperations.set(`${programId}:${request.operationId}`, { request: structuredClone(context), result });
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
+      }
+      case 'get_configuration_operation': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as ConfigurationMutationContext;
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: previewOperationResult(programId, request) };
+      }
+      case 'activate_configuration_candidate': {
+        const programId = stringArg(args, 'programId');
+        const admission = configurationState(programId).coreAdmission;
+        if (admission && admission.status !== 'admitted') {
+          throw { code: 'UNSUPPORTED_BINARY', messageKey: admission.messageKey, message: 'Program admission rejected' };
+        }
+        const request = objectArgs(args).request as ConfigurationMutationContext;
+        if (request.kind !== 'apply') {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_MISMATCH', message: 'Action changed' };
+        }
+        const recorded = previewOperationResult(programId, request);
+        if (recorded) return { ...configurationWorkspaceSnapshot(programId), operationResult: recorded };
+        let current = configurationState(programId);
+        if (request.expectedStateRevision !== current.stateRevision) {
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'CONFIGURATION_STATE_STALE',
+            message: 'Configuration changed since it was loaded',
+          };
+        }
+        const draft = finalEditorSession(programId);
+        if (draft.draftRevision > 0 && (request.editorSessionId !== draft.sessionId
+          || request.expectedDraftRevision !== draft.draftRevision)) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_DRAFT_STALE', message: 'Draft changed' };
+        }
+        refreshPreviewUnresolvedConflicts(draft);
+        if (draft.rebaseRequired || draft.unresolvedConflictIds.length > 0) {
+          throw {
+            code: 'CONFIG_CONFLICT',
+            messageKey: 'FINAL_EDIT_CONFLICT',
+            message: 'Resolve final configuration conflicts before applying',
+          };
+        }
+        if (draft.draftRevision > 0) {
+          const committedContent = `${JSON.stringify(parsePreviewJsonc(draft.workingContent), null, 2)}\n`;
+          const upstreamContent = previewUpstreamDocuments.get(programId)
+            ?? current.desired.content;
+          current = updateConfigurationState(programId, (state) => {
+            state.desired.content = committedContent;
+            state.desired.validation = 'pending';
+            state.desired.validationEvidence = undefined;
+            state.desired.diagnostics = [];
+            state.desired.conflicts = [];
+            state.workspace.editor.conflicts = [];
+            state.workspace.editor.changes = previewFinalChanges(upstreamContent, committedContent);
+            state.workspace.editor.candidateStatus = 'pendingValidation';
+          }, committedContent !== current.desired.content);
+        }
+        if (configurationNativeRejectionPending) {
+          configurationNativeRejectionPending = false;
+          current = updateConfigurationState(programId, (state) => {
+            state.desired.validation = 'invalid';
+            state.desired.validationEvidence = undefined;
+            state.desired.diagnostics = [{
+              code: 'CORE_INVALID',
+              message: 'The program reported a value with the wrong type.',
+              messageKey: 'CORE_NATIVE_TYPE_REJECTED',
+              scope: { surface: 'configuration' },
+              details: JSON.stringify({
+                messageKey: 'CORE_NATIVE_TYPE_REJECTED',
+                exitCode: 1,
+                stdoutBytes: 240,
+                stderrBytes: 240,
+              }),
+            }];
+            state.workspace.editor.candidateStatus = 'invalid';
+          }, false);
+          const result: ConfigurationOperationResult = {
+            operationId: request.operationId,
+            status: 'rejected',
+            messageKey: 'CORE_INVALID',
+            candidateGeneration: current.generation,
+            savedCandidate: structuredClone(current.desired.revision),
+          };
+          previewConfigurationOperations.set(`${programId}:${request.operationId}`, {
+            request: structuredClone(request), result,
+          });
+          return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
+        }
+        current = updateConfigurationState(programId, (state) => {
+          state.desired.validation = 'valid';
+          state.desired.validationEvidence = {
+            binarySha256: 'a'.repeat(64),
+            profileHash: state.compatibilityProfile.profileHash,
+            configHash: state.desired.revision.contentHash,
+            candidateGeneration: state.generation,
+            validatorContractRevision: 'preview-validator-test',
+            nativeAccepted: true,
+            validatedUnixMs: Date.now(),
+          };
+          state.desired.diagnostics = [];
+          state.workspace.editor.candidateStatus = 'validated';
+        }, false);
+        updateConfigurationState(programId, (state) => {
+          state.appliedRevision = { ...state.desired.revision };
+          state.lastKnownGoodRevision = { ...state.desired.revision };
+          state.workspace.editor.candidateStatus = 'applied';
+        }, false);
+        previewFinalDrafts.delete(programId);
+        const result: ConfigurationOperationResult = {
+          operationId: request.operationId,
+          status: 'applied',
+          candidateGeneration: configurationState(programId).generation,
+          savedCandidate: structuredClone(current.desired.revision),
+        };
+        previewConfigurationOperations.set(`${programId}:${request.operationId}`, { request: structuredClone(request), result });
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:configuration-activation', { detail: request.operationId }));
+        if (configurationResponseLostPending) {
+          configurationResponseLostPending = false;
+          throw { code: 'TIMEOUT', message: 'The apply response was not received.' };
+        }
+        return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
+      }
       case 'load_configuration_schema': {
         const programId = stringArg(args, 'programId');
         if (specs[programId]?.type.kind !== 'singBox') return null;
@@ -1606,18 +3913,7 @@ export function installMockBackend() {
           contentHash: '0'.repeat(64),
         };
       }
-      case 'validate_config': return { valid: true, stdout: 'Configuration is valid.', stderr: '' };
-      case 'apply_config': {
-        const programId = stringArg(args, 'programId');
-        const baseHash = stringArg(args, 'baseHash');
-        const nextHash = `${baseHash || 'preview-hash'}-next`;
-        previewConfigurationDocuments.set(programId, {
-          content: stringArg(args, 'content'),
-          baseHash: nextHash,
-        });
-        return nextHash;
-      }
-      case 'run_action': return { stdout: 'Diagnostic completed successfully.', stderr: '' };
+      case 'run_action': return { report: { messageKey: 'CORE_CHECK_COMPLETED', exitCode: 0, stdoutBytes: 0, stderrBytes: 0 } };
       case 'read_logs': {
         const programId = stringArg(args, 'programId');
         const stream = stringArg(args, 'stream') === 'stderr' ? 'stderr' : 'stdout';
@@ -1647,15 +3943,119 @@ export function installMockBackend() {
       case 'open_sing_box_dashboard':
       case 'open_mihomo_dashboard':
         return mockExternalAction(command);
-      case 'refresh_config_sources':
-        return { sourceCount: 2, document: configDocument(stringArg(args, 'programId')) };
-      case 'replace_package':
-        return null;
+      case 'refresh_configuration_sources':
+      case 'update_configuration_sources': {
+        const programId = stringArg(args, 'programId');
+        if (command === 'update_configuration_sources') {
+          if (sourceSaveFailurePending) {
+            sourceSaveFailurePending = false;
+            throw {
+              code: 'PROGRAM_BUSY',
+              messageKey: 'CONFIGURATION_OPERATION_BUSY',
+              message: 'Another configuration operation is still in progress',
+              details: 'source transaction lease is currently held',
+            };
+          }
+          const request = objectArgs(args).request;
+          const spec = specs[programId];
+          if (spec?.managedConfig && request && typeof request === 'object') {
+            const value = request as { sources?: ConfigSource[]; remoteUpdate?: RemoteUpdate };
+            if (Array.isArray(value.sources)) {
+              spec.managedConfig.sources = structuredClone(value.sources) as typeof spec.managedConfig.sources;
+            }
+            spec.managedConfig.remoteUpdate = value.remoteUpdate as typeof spec.managedConfig.remoteUpdate;
+          }
+        }
+        const spec = specs[programId];
+        const current = configurationState(programId);
+        const sourceContent = spec ? previewInlineSourceContent(spec) : null;
+        const updateSources = (state: ConfigurationStateView) => {
+          state.sourceStatuses = (spec?.managedConfig?.sources ?? []).map((source) => ({
+            sourceId: source.id,
+            sourceName: source.name,
+            freshness: source.enabled ? 'fresh' : 'disabled',
+            ...(source.enabled ? { snapshotHash: previewContentHash(sourceContent ?? source.id) } : {}),
+          }));
+          if (!spec?.managedConfig?.sources.some((source) => source.id === 'alternate' && source.enabled)) {
+            state.desired.conflicts = state.desired.conflicts.filter(
+              (conflict) => !(conflict.messageKey === 'SOURCE_VALUE_CONFLICT' && conflict.scope?.ownerId === 'alternate'),
+            );
+          }
+        };
+        if (spec && sourceContent) {
+          const upstream = previewSourceUpdate(programId, sourceContent, command === 'update_configuration_sources');
+          updatePreviewUpstream(programId, upstream, updateSources);
+        } else {
+          updateConfigurationState(programId, updateSources, false);
+        }
+        return configurationWorkspaceSnapshot(programId);
+      }
+      case 'replace_package': {
+        const request = objectArgs(args);
+        const programId = String(request.programId);
+        const spec = specs[programId];
+        if (!spec || spec.executable.mode !== 'managed') {
+          throw { code: 'INVALID_STATE', message: 'A managed program is required.' };
+        }
+        if (states[programId]?.status === 'running') {
+          throw { code: 'INVALID_STATE', message: 'Stop the program before replacement.' };
+        }
+        if (spec.type.kind !== 'generic' && request.expectedStateRevision !== configurationState(programId).stateRevision) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE', message: 'Workspace changed.' };
+        }
+        const metadata = spec.executable.metadata;
+        if (metadata) {
+          metadata.fingerprint.sha256 = previewContentHash(String(request.packageSource));
+          metadata.fingerprint.modifiedUnixMs = Date.now();
+          if (metadata.coreTarget) metadata.coreTarget.fingerprintSha256 = metadata.fingerprint.sha256;
+        }
+        if (spec.type.kind === 'generic') return null;
+        updateConfigurationState(programId, (state) => {
+          state.compatibilityProfile.profileHash = previewContentHash(JSON.stringify(metadata));
+          if (metadata?.coreTarget) state.compatibilityProfile.target = structuredClone(metadata.coreTarget);
+          state.desired.compatibilityProfileHash = state.compatibilityProfile.profileHash;
+          state.desired.validation = 'pending';
+          state.desired.validationEvidence = undefined;
+          state.desired.diagnostics = [];
+        });
+        return configurationWorkspaceSnapshot(programId);
+      }
       default:
         if (command.startsWith('plugin:')) return null;
         throw { code: 'MOCK_COMMAND_UNIMPLEMENTED', message: `No UI preview response for ${command}` };
     }
-  }, { shouldMockEvents: true });
+  };
+  const invokeWithResponseControl = (command: string, args?: InvokeArgs) => {
+    const result = handlePreviewInvoke(command, args);
+    if (configurationResponseHeldPending
+      && ['save_configuration_candidate', 'activate_configuration_candidate'].includes(command)) {
+      configurationResponseHeldPending = false;
+      window.dispatchEvent(new Event('camellia-ui-preview:configuration-response-held'));
+      return new Promise((resolve) => {
+        window.addEventListener('camellia-ui-preview:release-configuration-response', () => resolve(result), { once: true });
+      });
+    }
+    return result;
+  };
+  if (nativeWindowAvailable) {
+    installPreviewInvokeTransport(invokeWithResponseControl);
+  } else {
+    mockWindows('main');
+    mockIPC(invokeWithResponseControl, { shouldMockEvents: true });
+  }
+  window.addEventListener('camellia-ui-preview:automatic-config-update', (event) => {
+    const detail = (event as CustomEvent<{ programId?: string }>).detail;
+    const programId = detail?.programId ?? 'xray-primary';
+    const content = '{\n  "log": { "loglevel": "debug" },\n  "automatic": true\n}\n';
+    configurationState(programId);
+    updatePreviewUpstream(programId, previewSourceUpdate(programId, content, false), (current) => {
+      if (current.sourceStatuses[0]) {
+        current.sourceStatuses[0].sourceName = 'Automatically refreshed source';
+        current.sourceStatuses[0].freshness = 'fresh';
+      }
+    });
+    void emit('automatic-config-update', { programId, succeeded: true }).catch(() => null);
+  });
 
   if (previewParameters.has('__ui_revalidation_notice')) {
     window.setTimeout(() => {

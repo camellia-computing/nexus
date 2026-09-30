@@ -1,5 +1,6 @@
 export interface ErrorInfo {
   code?: string;
+  messageKey?: string;
   title: string;
   message: string;
   fallbackMessage: string;
@@ -7,10 +8,43 @@ export interface ErrorInfo {
   suggestion: string;
 }
 
+export type ConfigurationErrorContext =
+  | 'details-save'
+  | 'configuration-load'
+  | 'sources-save'
+  | 'sources-refresh'
+  | 'guided-change'
+  | 'final-editor-draft'
+  | 'configuration-save'
+  | 'configuration-apply'
+  | 'configuration-rebase'
+  | 'configuration-adopt-upstream';
+
 export const TRANSIENT_ERROR_DISMISS_MS = 12_000;
+
+export function configurationNoticeDuration(error: ErrorInfo, context: ConfigurationErrorContext, hasUsableWorkspace = false): number {
+  if (context === 'final-editor-draft'
+    || error.messageKey?.includes('RECOVERY_REQUIRED')
+    || error.messageKey === 'CONFIGURATION_OPERATION_PENDING') return 0;
+  if (context === 'configuration-load') return hasUsableWorkspace ? TRANSIENT_ERROR_DISMISS_MS : 0;
+  if (context === 'sources-refresh') return TRANSIENT_ERROR_DISMISS_MS;
+  // An unconfirmed write retains its original retry request.
+  return configurationChoiceWasRejected(error) || error.code === 'PROGRAM_BUSY'
+    ? TRANSIENT_ERROR_DISMISS_MS : 0;
+}
 
 export function isTransientErrorInfo(error: ErrorInfo | null | undefined) {
   return error?.code === 'TIMEOUT' || error?.code === 'NETWORK' || error?.code === 'RATE_LIMITED';
+}
+
+export function configurationChoiceWasRejected(error: Pick<ErrorInfo, 'code' | 'messageKey'>): boolean {
+  if (error.messageKey === 'CONFIGURATION_OPERATION_PENDING') return false;
+  return ['INVALID_SPEC', 'INVALID_PATH', 'INVALID_STATE', 'CONFIG_INVALID', 'CONFIG_CONFLICT', 'NOT_FOUND', 'REQUEST_TOO_LARGE', 'UNSUPPORTED_BINARY']
+    .includes(error.code ?? '') || (error.code?.startsWith('LICENSE_') ?? false);
+}
+
+export function intentErrorNeedsFinalEditor(error: Pick<ErrorInfo, 'messageKey'> | null | undefined): boolean {
+  return error?.messageKey === 'INTENT_RULE_SHADOWED' || error?.messageKey === 'INTENT_OBJECT_AMBIGUOUS';
 }
 
 export function publicErrorInfo(error: ErrorInfo | null | undefined): ErrorInfo | null {
@@ -39,7 +73,7 @@ const presentations: Record<string, { title: string; message: string }> = {
   STOP_FAILED: { title: 'Program could not stop', message: 'The program process could not be stopped.' },
   CONFIG_INVALID: { title: 'Configuration error', message: 'The configuration could not be applied.' },
   CONFIG_CONFLICT: { title: 'Configuration error', message: 'The configuration could not be applied.' },
-  CONFIGURATION_SCHEMA_INVALID: { title: 'Program schema unavailable', message: 'The program could not provide a usable configuration schema.' },
+  CONFIGURATION_SCHEMA_INVALID: { title: 'Suggestions unavailable', message: 'You can still edit the configuration. Try loading suggestions again.' },
   UNSUPPORTED_BINARY: { title: 'Unsupported program', message: 'The selected executable does not match this program type.' },
   OUTPUT_LIMIT_EXCEEDED: { title: 'Output limit reached', message: 'The operation produced too much output.' },
   TIMEOUT: { title: 'Operation timed out', message: 'The operation did not finish in time.' },
@@ -81,7 +115,7 @@ const presentations: Record<string, { title: string; message: string }> = {
   LICENSE_PAYMENT_PAST_DUE: { title: 'License payment past due', message: 'This license is unavailable because its payment is past due.' },
   LICENSE_CANCELED: { title: 'License canceled', message: 'This license has been canceled.' },
   LICENSE_DEVICE_DENIED: { title: 'Device authorization revoked', message: 'This device is not authorized for the current license.' },
-  LICENSE_DEVICE_REMOVAL_INCOMPLETE: { title: 'Signed out locally', message: 'This app is signed out, but the device record could not be removed from the license service.' },
+  LICENSE_DEVICE_REMOVAL_INCOMPLETE: { title: 'Device could not be removed', message: 'The license service did not confirm removal. Local access was kept unchanged.' },
   LICENSE_REMOTE_SIGNOUT_INCOMPLETE: { title: 'Signed out locally', message: 'Local access was removed, but the license service could not revoke the remote device sessions.' },
   LICENSE_REVALIDATION_REQUIRED: { title: 'License revalidation required', message: 'The license must be revalidated online before protected features can continue.' },
   LICENSE_CLIENT_UPGRADE_REQUIRED: { title: 'Camellia Nexus update required', message: 'This client version no longer meets the signed minimum version policy, so protected features are unavailable.' },
@@ -103,7 +137,7 @@ const suggestions: Record<string, string> = {
   UNSUPPORTED_BINARY: 'Check that the selected binary matches the chosen program type.',
   CONFIG_INVALID: 'Correct the configuration reported by the validator.',
   CONFIG_CONFLICT: 'Reload the configuration before applying your changes.',
-  CONFIGURATION_SCHEMA_INVALID: 'Update the program binary or retry after verifying its schema command.',
+  CONFIGURATION_SCHEMA_INVALID: 'Try again, or keep editing without suggestions.',
   RATE_LIMITED: 'Wait briefly before trying again.',
   NETWORK: 'Check the network connection, proxy settings and source URL.',
   STORAGE: 'Check file permissions and available disk space.',
@@ -155,6 +189,62 @@ const suggestions: Record<string, string> = {
 
 const defaultSuggestion = 'Retry the operation. If it continues, inspect the program logs.';
 
+const admissionMessages: Record<string, string> = {
+  CORE_VERSION_TOO_OLD: 'This version is outside the supported range. Choose a newer program.',
+  CORE_VERSION_NOT_MAINTAINED: 'This program version is not supported yet.',
+  CORE_PRERELEASE_NOT_SUPPORTED: 'Choose a supported stable release instead of a prerelease.',
+  CORE_VERSION_UNRECOGNIZED: 'The program version could not be identified. Choose a recognizable build.',
+  CORE_BINARY_IDENTITY_MISMATCH: 'The program identity is inconsistent. Choose another build.',
+  CORE_KNOWLEDGE_INVALID: 'Program support information could not be loaded.',
+  CORE_PROGRAM_CHECK_UNAVAILABLE: 'This program cannot perform the required checks. Choose another build.',
+};
+
+const assessmentMessages: Record<string, string> = {
+  CORE_CHECK_COMPLETED: 'Check completed.',
+  CORE_NATIVE_REJECTED: 'The current program rejected this candidate.',
+  CORE_NATIVE_FIELD_REJECTED: 'The program reported an unsupported field. Review this configuration.',
+  CORE_NATIVE_TYPE_REJECTED: 'The program reported a value with the wrong type.',
+  CORE_NATIVE_SYNTAX_REJECTED: 'The program could not parse this configuration.',
+  CORE_NATIVE_PORT_REJECTED: 'The program reported an invalid port.',
+  CORE_NATIVE_AUTO_REDIRECT_REJECTED: 'The program could not enable automatic traffic redirection. Check the TUN auto_redirect setting.',
+  CORE_NATIVE_RESOURCE_UNAVAILABLE: 'The program could not read a required file.',
+  CORE_CONFIGURATION_FIELD_UNCONFIRMED: 'This program has not declared a configuration field. Remove it or choose a build that supports it.',
+  CORE_CONFIGURATION_SCHEMA_UNCONFIRMED: 'This program could not provide usable field information. Retry or choose another build.',
+  CONFIGURATION_VALUE_NOT_ALLOWED: 'A value is not supported by this program. Review Final configuration.',
+  CONFIGURATION_PLATFORM_UNSUPPORTED: 'This setting is not available on this program’s platform. Disable or remove it.',
+  CONFIGURATION_AUTO_ROUTE_REQUIRED: 'Turn on automatic routing before enabling automatic redirection.',
+  CONFIGURATION_ASSESSMENT_LIMIT: 'This configuration is too complex to check. Reduce it and try again.',
+  CORE_BUILD_CAPABILITY_UNAVAILABLE: 'This build cannot use a configured feature. Change the setting or choose another build.',
+  CORE_BUILD_CAPABILITY_UNCONFIRMED: 'A configured feature could not be confirmed. Choose a build with identifiable capabilities.',
+};
+
+const sourceMessages: Record<string, string> = {
+  SOURCE_URL_INVALID: 'Use an HTTPS source address without embedded credentials.',
+  SOURCE_FILE_NOT_FOUND: 'Source file not found. Select an existing file.',
+  SOURCE_READ_FAILED: 'Could not read this source. Check file access and retry.',
+  SOURCE_CHANGED: 'This source changed during reading. Retry the update.',
+  SOURCE_TOO_LARGE: 'This source exceeds the size limit. Use a smaller configuration.',
+  SOURCE_ACCESS_DENIED: 'The source denied access. Check its credentials.',
+  SOURCE_TIMEOUT: 'The source did not respond in time. Retry the update.',
+  SOURCE_DOWNLOAD_FAILED: 'Could not download this source. Check the connection and retry.',
+  SOURCE_CREDENTIALS_UNAVAILABLE: 'Enter the source password again.',
+  SOURCE_INVALID: 'This source contains invalid configuration. Edit or disable it.',
+  SOURCE_REFRESH_FAILED: 'Could not update this source. Retry the update.',
+  CORE_TARGET_SOURCE_REJECTED: 'This source has no items supported by the current program.',
+};
+
+export function sourceIssueMessage(messageKey: string): string {
+  return sourceMessages[messageKey] ?? sourceMessages.SOURCE_REFRESH_FAILED;
+}
+
+export function coreAssessmentMessage(messageKey: string | undefined): string | undefined {
+  return messageKey ? assessmentMessages[messageKey] : undefined;
+}
+
+export function coreAdmissionMessage(messageKey: string | undefined): string | undefined {
+  return messageKey ? admissionMessages[messageKey] : undefined;
+}
+
 function isLicenseTrustConfigurationError(details: string) {
   return [
     'entitlement signature is invalid',
@@ -170,9 +260,15 @@ function isLicenseTrustConfigurationError(details: string) {
 }
 
 export function errorInfoOf(error: unknown): ErrorInfo {
-  if (error && typeof error === 'object') {
-    const value = error as Record<string, unknown>;
+  const normalized = normalizeErrorRecord(error);
+  if (normalized) {
+    const value = normalized;
     const code = typeof value.code === 'string' ? value.code : '';
+    const messageKey = typeof value.messageKey === 'string'
+      ? value.messageKey
+      : typeof value.message_key === 'string'
+        ? value.message_key
+        : undefined;
     const presentation = presentations[code] ?? {
       title: 'Operation failed',
       message: 'The operation could not be completed.',
@@ -185,9 +281,35 @@ export function errorInfoOf(error: unknown): ErrorInfo {
     const details = rawDetails.length > 16_000
       ? `${rawDetails.slice(0, 16_000)}\n… output truncated in the interface`
       : rawDetails;
+    if (messageKey && sourceMessages[messageKey]) {
+      return { code, messageKey, title: 'Configuration source needs attention',
+        message: sourceIssueMessage(messageKey), fallbackMessage: sourceIssueMessage(messageKey), details, suggestion: '' };
+    }
+    if (messageKey && admissionMessages[messageKey]) {
+      return {
+        code,
+        messageKey,
+        title: 'Unsupported program',
+        message: admissionMessages[messageKey],
+        fallbackMessage: admissionMessages[messageKey],
+        details,
+        suggestion: '',
+      };
+    }
+    if (messageKey === 'PROGRAM_PACKAGE_RECOVERY_REQUIRED') {
+      return {
+        code, messageKey,
+        title: 'Program needs recovery',
+        message: 'The program replacement could not be restored automatically.',
+        fallbackMessage: '程序更换未能自动恢复。',
+        details,
+        suggestion: 'Reopen the app to recover before making more changes.',
+      };
+    }
     if (isLicenseTrustConfigurationError(details)) {
       return {
         code,
+        messageKey,
         title: 'License configuration error',
         message: 'The license service is not trusted by this build.',
         fallbackMessage: 'The operation could not be completed.',
@@ -197,6 +319,7 @@ export function errorInfoOf(error: unknown): ErrorInfo {
     }
     return {
       code,
+      messageKey,
       title: presentation.title,
       message,
       fallbackMessage: presentation.message,
@@ -209,7 +332,286 @@ export function errorInfoOf(error: unknown): ErrorInfo {
     title: 'Operation failed',
     message,
     fallbackMessage: 'The operation could not be completed.',
-    details: '',
+    details: message,
     suggestion: defaultSuggestion,
+  };
+}
+
+/** Tauri normally rejects with the serialized Rust error object. Some native
+ * WebView versions wrap that payload in an Error or JSON string, so normalize
+ * those transport shapes before classifying the operation. */
+function normalizeErrorRecord(error: unknown): Record<string, unknown> | null {
+  if (error instanceof Error) {
+    return parseErrorText(error.message) ?? {
+      message: error.message || 'Operation failed',
+      details: error.message || 'Operation failed',
+    };
+  }
+  if (typeof error === 'string') {
+    return parseErrorText(error) ?? {
+      message: error.replace(/^Error:\s*/, '') || 'Operation failed',
+      details: error.replace(/^Error:\s*/, '') || 'Operation failed',
+    };
+  }
+  return error && typeof error === 'object'
+    ? error as Record<string, unknown>
+    : null;
+}
+
+function parseErrorText(value: string): Record<string, unknown> | null {
+  const text = value.trim().replace(/^Error:\s*/, '');
+  if (!text.startsWith('{') || !text.endsWith('}')) return null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const configurationContextLabels: Record<ConfigurationErrorContext, { title: string }> = {
+  'details-save': { title: 'Program details could not be saved' },
+  'configuration-load': { title: 'Configuration workspace could not be loaded' },
+  'sources-save': { title: 'Configuration sources could not be saved' },
+  'sources-refresh': { title: 'Configuration sources could not be updated' },
+  'guided-change': { title: 'Could not update this setting' },
+  'final-editor-draft': { title: 'Final configuration draft could not be saved' },
+  'configuration-save': { title: 'Configuration candidate could not be saved' },
+  'configuration-apply': { title: 'Configuration could not be applied' },
+  'configuration-rebase': { title: 'Configuration draft could not be rebased' },
+  'configuration-adopt-upstream': { title: 'Latest setting could not be used' },
+};
+
+/**
+ * Turn a backend configuration error into a context-aware, actionable notice.
+ * The backend message/details remain available under Technical details, while
+ * the stable message and suggestion are safe to translate in the UI.
+ */
+export function configurationErrorInfo(
+  error: unknown,
+  context: ConfigurationErrorContext,
+): ErrorInfo {
+  const base = errorInfoOf(error);
+  if (base.messageKey && admissionMessages[base.messageKey]) return base;
+  const contextTitle = configurationContextLabels[context].title;
+  if (base.messageKey === 'CONFIGURATION_CONFLICT_STALE') return {
+    ...base,
+    title: 'Setting changed',
+    message: 'This setting changed. Review the latest values before choosing again.',
+    fallbackMessage: '此设置已更新。请查看最新值后重新选择。',
+    suggestion: '',
+  };
+  if (base.messageKey === 'CONFIGURATION_OPERATION_PENDING') return {
+    ...base,
+    title: 'Choice still pending',
+    message: 'Retry the earlier choice to confirm its result.',
+    fallbackMessage: '请重试先前的选择以确认结果。',
+    suggestion: '',
+  };
+  if (base.messageKey && sourceMessages[base.messageKey]) return { ...base, title: contextTitle };
+  const assessmentMessage = coreAssessmentMessage(base.messageKey);
+  if (assessmentMessage) {
+    return {
+      ...base,
+      title: 'Configuration needs attention',
+      message: assessmentMessage,
+      details: base.details,
+      suggestion: '',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED') {
+    return {
+      ...base,
+      title: 'Configuration needs recovery',
+      message: 'The configuration update needs confirmation.',
+      fallbackMessage: '配置更新结果需要确认。',
+      details: base.details || base.message,
+      suggestion: 'Reload the workspace before making more changes.',
+    };
+  }
+  if (['CONFIGURATION_OPERATION_INTERRUPTED', 'CONFIGURATION_OPERATION_REJECTED', 'CONFIGURATION_OPERATION_MISMATCH'].includes(base.messageKey ?? '')) {
+    return {
+      ...base,
+      title: 'Review configuration',
+      message: 'Review the current configuration before applying again.',
+      fallbackMessage: '请检查当前配置，再次应用。',
+      details: base.details || base.message,
+      suggestion: '',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_COMMIT_RECOVERY_REQUIRED') {
+    return {
+      ...base,
+      title: 'Configuration needs recovery',
+      message: 'The apply result needs confirmation.',
+      fallbackMessage: '应用结果需要确认。',
+      details: base.details || base.message,
+      suggestion: 'Reload the workspace before making more changes.',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_RECOVERY_REQUIRED') {
+    return {
+      ...base,
+      title: 'Configuration needs recovery',
+      message: 'The operation could not be restored automatically.',
+      fallbackMessage: '操作未能自动恢复。',
+      details: base.details || base.message,
+      suggestion: 'Reload the workspace before making more changes.',
+    };
+  }
+  if (base.messageKey === 'CORE_TARGET_CHANGED' || base.messageKey === 'CORE_VALIDATION_EVIDENCE_STALE') {
+    return {
+      ...base,
+      title: 'Review configuration',
+      message: base.messageKey === 'CORE_TARGET_CHANGED'
+        ? 'The program changed. Review it before applying again.'
+        : 'The configuration needs a fresh check. Review and apply again.',
+      details: base.details || base.message,
+      suggestion: '',
+    };
+  }
+  if (['CONFIGURATION_STATE_STALE', 'CONFIGURATION_GENERATION_STALE', 'CONFIGURATION_DRAFT_STALE']
+    .includes(base.messageKey ?? '')) {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The configuration changed elsewhere before this request was committed.',
+      fallbackMessage: '配置在本次操作提交前已在其他位置更新。当前草稿和有效配置均已保留。',
+      details: base.details || base.message,
+      suggestion: 'Reload the latest configuration state, review the draft, and retry the same request.',
+    };
+  }
+  if (base.messageKey?.startsWith('INTENT_')) {
+    const messages: Record<string, string> = {
+      INTENT_PORT_INVALID: 'Choose a port from 1 to 65535.',
+      INTENT_AUTH_REQUIRED: 'Set both a username and password for network access.',
+      INTENT_ADDRESS_INVALID: 'Enter a valid address.',
+      INTENT_LOCAL_ADDRESS_REQUIRED: 'Use a local-only address or select network access.',
+      INTENT_DNS_BOOTSTRAP_REQUIRED: 'Choose a DNS server to resolve this server address.',
+      INTENT_TARGET_MISSING: 'Choose an available connection or DNS server.',
+      INTENT_TARGET_IN_USE: 'This entry is still used by another setting. Choose a different target first.',
+      INTENT_OBJECT_STALE: 'This entry changed. Open it again to review the latest values.',
+      INTENT_OBJECT_MISSING: 'This entry changed. Open it again to review the latest values.',
+      INTENT_SETTING_UNAVAILABLE: 'This setting is not available in this program.',
+      INTENT_OBJECT_ALREADY_EXISTS: 'This proxy type already exists. Edit it instead.',
+      INTENT_SHARED_ACCESS_CONFLICT: 'These proxies share access settings. Match the existing access or change an existing proxy first.',
+      INTENT_RULE_SHADOWED: 'A rule already handles all traffic. Add this rule before it in Final configuration.',
+      INTENT_OBJECT_AMBIGUOUS: 'These entries are identical. Edit them in Final configuration first.',
+      INTENT_DNS_CYCLE: 'These DNS servers refer to each other. Choose a different resolving server.',
+      INTENT_DURATION_INVALID: 'Enter a duration such as 5s or 1m.',
+      INTENT_PROTOCOL_CHANGE_REQUIRES_NEW_OBJECT: 'To use another type, add a new entry.',
+    };
+    return { ...base, title: contextTitle, message: messages[base.messageKey] ?? 'Review these values and try again.', details: base.details || base.message, suggestion: '' };
+  }
+  if (base.messageKey === 'CONFIGURATION_DRAFT_UNCOMMITTED') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'Finish or discard your unfinished edit first.',
+      fallbackMessage: '请先完成或放弃尚未提交的编辑。',
+      details: base.details || base.message,
+      suggestion: '',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_BLOCKING_CONFLICT') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The candidate still has blocking configuration conflicts and was not saved.',
+      fallbackMessage: '候选配置仍有阻塞性冲突，因此未保存。',
+      details: base.details || base.message,
+      suggestion: 'Resolve each conflict in its owning section or Final configuration, then save again.',
+    };
+  }
+  if (base.code === 'PROGRAM_BUSY') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'This configuration operation is waiting for another program operation to finish.',
+      fallbackMessage: '配置操作正在等待程序完成另一项操作。',
+      suggestion: 'Wait for the current operation to finish, then retry the same request.',
+    };
+  }
+  if (base.messageKey === 'FINAL_EDIT_CONFLICT') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'Resolve conflicts before continuing.',
+      fallbackMessage: '请先解决冲突。',
+      details: base.details || base.message,
+      suggestion: '',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_SYNTAX_INVALID') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'Fix the highlighted configuration syntax.',
+      fallbackMessage: '请修正标出的配置语法。',
+      details: base.details || base.message,
+      suggestion: '',
+    };
+  }
+  if (base.messageKey === 'CONFIGURATION_STATIC_INVALID') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'This configuration needs a correction.',
+      fallbackMessage: '这份配置需要修正。',
+      details: base.details || base.message,
+      suggestion: 'Review the highlighted issue and apply again.',
+    };
+  }
+  if (base.messageKey === 'CORE_INVALID' || base.messageKey === 'CORE_NATIVE_REJECTED') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The selected Core rejected this candidate. Applied and Last Known Good were retained.',
+      fallbackMessage: '当前 Core 拒绝了这份候选配置；Applied 和 Last Known Good 已保留。',
+      suggestion: 'Review the highlighted issue and apply again.',
+    };
+  }
+  if (['configuration-apply', 'configuration-save'].includes(context)
+    && (!base.code || ['TIMEOUT', 'NETWORK', 'INTERNAL', 'STORAGE'].includes(base.code))) {
+    return {
+      ...base,
+      title: contextTitle,
+      message: context === 'configuration-save' ? 'The save result needs confirmation.' : 'The apply result needs confirmation.',
+      fallbackMessage: context === 'configuration-save' ? '保存结果需要确认。' : '应用结果需要确认。',
+      details: base.details || base.message,
+      suggestion: 'Retry to check the result of this request.',
+    };
+  }
+  if (base.code === 'CONFIG_INVALID' || base.code === 'CONFIG_CONFLICT') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'This configuration needs a correction.',
+      fallbackMessage: '这份配置需要修正。',
+      details: base.details || base.message,
+      suggestion: 'Review the highlighted issue and apply again.',
+    };
+  }
+  if (base.code === 'STORAGE') {
+    return {
+      ...base,
+      title: contextTitle,
+      message: 'The configuration could not be saved.',
+      fallbackMessage: '配置未能保存。',
+      details: base.details || base.message,
+      suggestion: 'Retry once. If it continues, inspect the diagnostic logs and available disk space.',
+    };
+  }
+  return {
+    ...base,
+    title: contextTitle,
+    message: 'The configuration request could not be completed.',
+    fallbackMessage: '配置请求未能完成。',
+    details: base.details || base.message,
+    suggestion: base.suggestion === defaultSuggestion
+      ? 'Review the configuration details and retry the same request.'
+      : base.suggestion,
   };
 }

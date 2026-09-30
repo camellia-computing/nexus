@@ -50,23 +50,90 @@ export type ProgramState =
   | { status: 'stopFailed'; pid: number; message: string }
   | { status: 'error'; code: string; message: string };
 
-export interface ExecutableMetadata {
+export interface CoreBinaryFingerprint {
+  sha256: string;
   size: number;
   modifiedUnixMs: number;
-  detectedVersion?: string;
+}
+export interface CoreCliObservation { id: string; available: boolean }
+export interface CoreBuildObservation {
+  goVersion?: { major: number; minor: number; patch: number } | null;
+  operatingSystem: string | null;
+  architecture: string | null;
+  tags: string[] | null;
+  cgo: boolean | null;
+}
+export interface CoreProbeReport {
+  revision: string;
+  reportedVersion?: string;
+  normalizedVersion?: string;
+  prerelease: boolean;
+  hasBuildMetadata: boolean;
+  reportedCommit?: string;
+  build?: CoreBuildObservation;
+  identityIssue?: 'ambiguousOutput' | 'malformedBuildInfo';
+  cliObservations: CoreCliObservation[];
+}
+export type CoreCompatibilityBasis = 'binaryReported' | 'unknown';
+export type CoreVersionCoordinate =
+  | { kind: 'release'; tag: string; normalizedVersion: string; commitSha: string }
+  | { kind: 'unknown' };
+export interface CoreTargetIdentity {
+  program: Exclude<ProgramKind, 'generic'>;
+  coordinate: CoreVersionCoordinate;
+  basis: CoreCompatibilityBasis;
+  knowledgeHash: string;
+  reportedVersion?: string;
+  fingerprintSha256?: string;
+}
+export type CoreFeatureAvailability = 'sourceDeclared' | 'sourceUnavailable' | 'unconfirmed';
+export interface CoreFeatureDecision {
+  featureId: string;
+  availability: CoreFeatureAvailability;
+  buildConditions: string[];
+  evidence: Array<{ source: { modulePath: string; path: string; symbol: string }; bodyHash: string }>;
+}
+export interface CoreCompatibilityProfile {
+  target: CoreTargetIdentity;
+  profileHash: string;
+  decisions: CoreFeatureDecision[];
+}
+export interface CoreValidationEvidence {
+  binarySha256: string;
+  profileHash: string;
+  configHash: string;
+  candidateGeneration: number;
+  validatorContractRevision: string;
+  nativeAccepted: boolean;
+  validatedUnixMs: number;
+}
+
+export interface ExecutableMetadata {
+  fingerprint: CoreBinaryFingerprint;
+  probe?: CoreProbeReport;
+  coreTarget?: CoreTargetIdentity;
 }
 
 export type ExecutableSpec =
-  | { mode: 'managed'; path: string; metadata?: ExecutableMetadata }
-  | { mode: 'external'; path: string; metadata?: ExecutableMetadata };
+  | {
+      mode: 'managed';
+      path: string;
+      metadata?: ExecutableMetadata;
+    }
+  | {
+      mode: 'external';
+      path: string;
+      metadata?: ExecutableMetadata;
+    };
 
 export type ProgramType =
   | { kind: 'generic'; args: string[] }
-  | { kind: 'singBox'; mainConfig?: string; extraArgs: string[] }
-  | { kind: 'xray'; mainConfig?: string; extraArgs: string[] }
-  | { kind: 'mihomo'; mainConfig?: string; extraArgs: string[] };
+  | { kind: 'singBox'; extraArgs: string[] }
+  | { kind: 'xray'; extraArgs: string[] }
+  | { kind: 'mihomo'; extraArgs: string[] };
 
 export type ConfigSource =
+  | { mode: 'inline'; id: string; name: string; enabled: boolean; content: string }
   | { mode: 'local'; id: string; name: string; enabled: boolean; path: string }
   | {
       mode: 'remote';
@@ -117,7 +184,6 @@ export interface ManagedConfig {
 }
 
 export interface ProgramSpec {
-  schemaVersion: number;
   id: string;
   name: string;
   executable: ExecutableSpec;
@@ -165,20 +231,348 @@ export interface ConfigurationSchemaDocument extends ConfigurationSchemaDescript
   contentHash: string;
 }
 
-export interface ConfigUpdateResult {
-  sourceCount: number;
-  document: ConfigDocument;
-}
-
 export interface AutomaticConfigUpdateEvent {
   programId: string;
   succeeded: boolean;
 }
 
-export interface ValidationResult {
-  valid: boolean;
-  stdout: string;
-  stderr: string;
+export type ConfigurationFormat = 'jsonc' | 'yaml';
+export type SourceFreshness = 'fresh' | 'stale' | 'unavailable' | 'invalid' | 'disabled';
+export interface SourceStatus {
+  sourceId: string;
+  sourceName: string;
+  freshness: SourceFreshness;
+  observedHash?: string;
+  snapshotHash?: string;
+  messageKey?: string;
+  observedUnixMs?: number;
+  parseSummary?: SourceParseSummary;
+}
+export type ShareEnvelope = 'plain' | 'base64' | 'base64Url';
+export type SharePayload = 'nativeConfiguration' | 'nativeFragment' | 'singleShareLink' | 'shareCollection' | 'mixed' | 'empty' | 'unknown';
+export type ShareProtocol = 'VLESS' | 'SHADOWSOCKS' | 'HYSTERIA2' | 'TUIC';
+export type ShareParseFidelity = 'exact' | 'compatible' | 'partial' | 'ambiguous' | 'unsupported' | 'invalid';
+export type TranslationFidelity = 'exact' | 'equivalent' | 'lossyWarning' | 'unsupported' | 'unsafe';
+export interface ConfigurationIssue {
+  code: string;
+  message: string;
+  stage: string;
+  severity: 'warning' | 'error';
+  recoverability: string;
+  semanticPath?: string;
+}
+export interface SourceParseSummary {
+  envelope: ShareEnvelope;
+  payload: SharePayload;
+  parserRevision: string;
+  totalItems: number;
+  acceptedItems: number;
+  rejectedItems: number;
+  warningCount: number;
+  protocols: Record<string, number>;
+  fidelity: ShareParseFidelity;
+  collectionStatus: 'empty' | 'success' | 'partialSuccess' | 'noValidItems' | 'invalid';
+  issues: ConfigurationIssue[];
+}
+export interface ShareTranslationSummary {
+  target: CoreTargetIdentity;
+  translatorRevision: string;
+  profileHash: string;
+  knowledgeHash: string;
+  featureDecisions: CoreFeatureDecision[];
+  fidelity: TranslationFidelity;
+  warnings: ConfigurationIssue[];
+  blockingIssues: ConfigurationIssue[];
+}
+export interface TranslatedShareItem {
+  itemId: string;
+  semantic: Record<string, unknown>;
+  fragment?: Record<string, unknown> | null;
+  summary: ShareTranslationSummary;
+  provenance: Record<string, unknown>;
+}
+export interface ShareImportPreview {
+  normalized: { text: string; envelope: ShareEnvelope; payload: SharePayload; contentHash: string };
+  summary: SourceParseSummary;
+  items: TranslatedShareItem[];
+}
+export type SemanticPathSegment =
+  | { kind: 'key'; key: string }
+  | { kind: 'identity'; field: string; value: string };
+export interface FinalEditorSession {
+  sessionId: string;
+  draftRevision: number;
+  basedOnStateRevision: number;
+  basedOnCandidateGeneration: number;
+  baseContent: string;
+  workingContent: string;
+  conflicts: FinalMergeConflict[];
+  resolutions: Record<string, FinalConflictResolution>;
+  unresolvedConflictIds: string[];
+  rebaseRequired: boolean;
+  updatedUnixMs: number;
+}
+export type SemanticValue =
+  | { state: 'missing' }
+  | { state: 'present'; value: unknown };
+export type FinalConflictResolution =
+  | 'acceptUpstream'
+  | 'keepMine'
+  | { manualEdit: { value: SemanticValue } };
+export type CandidateValidationStatus = 'pending' | 'valid' | 'invalid';
+export interface ConfigurationRevision {
+  generation: number;
+  contentHash: string;
+  createdUnixMs: number;
+}
+export interface ConfigurationDiagnostic {
+  location?: { semanticPath: string; documentPath: string[] };
+  code: string;
+  message: string;
+  details?: string;
+  messageKey?: string;
+  parameters?: Record<string, string | number>;
+  scope?: ConfigurationIssueScope;
+}
+export type ConfigurationSurface = 'intent' | 'details' | 'sources' | 'compatibility' | 'configuration';
+export interface ConfigurationIssueScope {
+  surface: ConfigurationSurface;
+  ownerId?: string;
+}
+export interface ConfigurationConflict {
+  semanticPath: string;
+  reason: string;
+  severity: 'warning' | 'error';
+  sourceIds?: string[];
+  messageKey?: string;
+  parameters?: Record<string, string | number>;
+  scope?: ConfigurationIssueScope;
+  sourceValue?: unknown;
+  guidedValue?: unknown;
+  userValue?: unknown;
+  effectiveValue?: unknown;
+}
+export interface ProvenanceEntry {
+  semanticPath: string;
+  sourceIds: string[];
+  upstream: boolean;
+  finalEdit: boolean;
+}
+export interface ConfigurationCandidate {
+  revision: ConfigurationRevision;
+  content: string;
+  compatibilityProfileHash: string;
+  validation: CandidateValidationStatus;
+  validationEvidence?: CoreValidationEvidence;
+  diagnostics: ConfigurationDiagnostic[];
+  conflicts: ConfigurationConflict[];
+}
+export type GuidedControl = 'toggle' | 'select' | 'number' | 'text';
+export interface GuidedSettingDescriptor {
+  id: string;
+  category: string;
+  label: string;
+  description: string;
+  control: GuidedControl;
+  allowedValues: string[];
+  enabledWhen?: string;
+  advanced?: boolean;
+  minimum?: number;
+  maximum?: number;
+  defaultValue?: unknown;
+  available?: boolean;
+  unavailableReason?: string;
+}
+export type IntentObjectKind = 'listener' | 'dnsServer' | 'tun' | 'routeRule';
+export interface IntentObjectField { key: string; label: string; control: GuidedControl; allowedValues: string[]; required: boolean; secret: boolean; advanced: boolean }
+export interface IntentObjectDescriptor { kind: IntentObjectKind; category: string; label: string; fields: IntentObjectField[]; protocols: string[]; canCreate: boolean }
+export interface IntentObjectProjection { objectId: string; kind: IntentObjectKind; label: string; contentHash: string; values: Record<string, unknown>; canFollow: boolean; editable: boolean; removed: boolean }
+export interface IntentTarget { id: string; label: string; kind: string }
+export type ConfigurationIntentAction =
+  | { action: 'set'; settingId: string; value: unknown }
+  | { action: 'follow'; settingId: string }
+  | { action: 'createObject'; objectKind: IntentObjectKind; values: Record<string, unknown> }
+  | { action: 'updateObject'; objectId: string; expectedHash: string; values: Record<string, unknown> }
+  | { action: 'removeObject' | 'followObject'; objectId: string; expectedHash: string };
+export interface ConfigurationIntentRequest {
+  operationId: string; expectedStateRevision: number; editorSessionId?: string; expectedDraftRevision?: number;
+  change: ConfigurationIntentAction;
+}
+export type GuidedProjectionStatus = 'inherited' | 'explicit' | 'custom' | 'overridden' | 'finalEdit';
+export interface GuidedProjection {
+  settingId: string;
+  status: GuidedProjectionStatus;
+  value?: unknown;
+  intentValue?: unknown;
+}
+export type ManagedIntegrationStatus = 'inactive' | 'explicit' | 'overridden' | 'finalOnly' | 'needsAttention' | 'latestSettings';
+export interface ManagedSettingProjection {
+  settingId: string;
+  savedValue: SemanticValue;
+  effectiveValue: SemanticValue;
+  canUseSavedValue: boolean;
+}
+export interface ManagedIntegrationProjection {
+  integrationId: string;
+  status: ManagedIntegrationStatus;
+  effectiveEnabled: boolean;
+  settings: ManagedSettingProjection[];
+  intentValue?: unknown;
+  finalPaths: string[];
+  issueIds: string[];
+}
+export type ConfigurationGate = 'save' | 'validate' | 'apply';
+export type ConfigurationRecoveryAction =
+  | 'openCompatibility'
+  | 'resolveSourceConflict'
+  | 'resolveLayerConflict'
+  | 'openFinalConfiguration'
+  | 'validateCandidate'
+  | 'reviewCandidate';
+export interface ConfigurationGateBlocker {
+  code: string;
+  details?: string;
+  messageKey: string;
+  scope: ConfigurationIssueScope;
+  semanticPath?: string;
+  blocks: ConfigurationGate[];
+  recoveryAction: ConfigurationRecoveryAction;
+}
+export interface ConfigurationEditorIssue {
+  id: string;
+  code: string;
+  messageKey: string;
+  semanticPath: string;
+  severity: 'warning' | 'error';
+  blocking: boolean;
+}
+export type FinalEditStatus = 'clean' | 'modified' | 'conflict';
+export type CandidateStatus = 'unsaved' | 'pendingValidation' | 'invalid' | 'validated' | 'applied';
+export type FinalChangeKind = 'added' | 'modified' | 'deleted';
+export interface FinalChangeProjection {
+  editId: string;
+  semanticPath: string;
+  segments: SemanticPathSegment[];
+  kind: FinalChangeKind;
+  upstreamValue: SemanticValue;
+  finalValue: SemanticValue;
+  issues: ConfigurationEditorIssue[];
+}
+export interface AdoptUpstreamChangeRequest {
+  operationId: string;
+  expectedStateRevision: number;
+  editorSessionId?: string;
+  expectedDraftRevision?: number;
+  editId: string;
+  path: SemanticPathSegment[];
+}
+export type FinalMergeConflictKind = 'addVsAdd' | 'modifyVsModify' | 'deleteVsModify' | 'modifyVsDelete' | 'sequence';
+export interface FinalMergeConflict {
+  conflictId: string;
+  semanticPath: string;
+  segments: SemanticPathSegment[];
+  kind: FinalMergeConflictKind;
+  baseValue: SemanticValue;
+  upstreamValue: SemanticValue;
+  userValue: SemanticValue;
+  canMerge: boolean;
+}
+export interface ConfigurationConflictReference {
+  origin: 'candidate' | 'draft';
+  conflictId: string;
+  fingerprint: string;
+}
+export interface FinalConflictProjection extends FinalMergeConflict {
+  reference: ConfigurationConflictReference;
+}
+export type ConfigurationConflictAction =
+  | { kind: 'resolve'; reference: ConfigurationConflictReference; resolution: FinalConflictResolution }
+  | { kind: 'undo' | 'redo'; resolutionOperationId: string };
+export interface ResolveConfigurationConflictRequest {
+  operationId: string;
+  expectedStateRevision: number;
+  editorSessionId?: string;
+  expectedDraftRevision?: number;
+  action: ConfigurationConflictAction;
+}
+export interface ConfigurationEditorView {
+  document: { content: string; revision: ConfigurationRevision };
+  editStatus: FinalEditStatus;
+  candidateStatus: CandidateStatus;
+  diagnostics: ConfigurationDiagnostic[];
+  changes: FinalChangeProjection[];
+  conflicts: FinalConflictProjection[];
+  blockers: ConfigurationGateBlocker[];
+  canSave: boolean;
+  canValidate: boolean;
+  canApply: boolean;
+}
+export interface ConfigurationWorkspaceView {
+  editor: ConfigurationEditorView;
+}
+export interface CoreAdmissionReport {
+  program: ProgramKind;
+  status: 'admitted' | 'tooOld' | 'notMaintained' | 'prerelease' | 'unrecognized' | 'identityMismatch' | 'probeRejected';
+  messageKey: string;
+  maintainedFamilies: string[];
+  baseline: {
+    tag: string;
+    version: string;
+    commitSha: string;
+    modulePath: string;
+    dependencies: Array<{
+      modulePath: string;
+      version: string;
+      repository: string;
+      commitSha: string;
+      sourceUrl: string;
+    }>;
+    publishedAt: string;
+    sourceTimestamp: string;
+    sourceUrl: string;
+  } | null;
+  knowledgeHash: string;
+}
+export interface ConfigurationStateView {
+  kind: ProgramKind;
+  format: ConfigurationFormat;
+  stateRevision: number;
+  generation: number;
+  compatibilityProfile: CoreCompatibilityProfile;
+  coreAdmission: CoreAdmissionReport | null;
+  sourceStatuses: SourceStatus[];
+  sourceParseSummaries: Record<string, SourceParseSummary>;
+  provenance: ProvenanceEntry[];
+  desired: ConfigurationCandidate;
+  appliedRevision?: ConfigurationRevision;
+  lastKnownGoodRevision?: ConfigurationRevision;
+  guidedDescriptors: GuidedSettingDescriptor[];
+  guidedProjection: GuidedProjection[];
+  intentObjects?: IntentObjectProjection[];
+  intentObjectDescriptors?: IntentObjectDescriptor[];
+  intentTargets?: IntentTarget[];
+  managedIntegrations?: ManagedIntegrationProjection[];
+  workspace: ConfigurationWorkspaceView;
+}
+export interface ConfigurationMutationContext {
+  operationId: string;
+  kind: 'save' | 'apply' | 'intent';
+  expectedStateRevision: number;
+  editorSessionId?: string;
+  expectedDraftRevision?: number;
+  payloadHash?: string;
+}
+export interface ConfigurationOperationResult {
+  operationId: string;
+  status: 'pending' | 'saved' | 'applied' | 'rejected' | 'interrupted' | 'updated';
+  candidateGeneration: number;
+  savedCandidate?: ConfigurationRevision;
+  messageKey?: string;
+}
+export interface ConfigurationWorkspaceSnapshot {
+  state: ConfigurationStateView;
+  editorSession?: FinalEditorSession;
+  operationResult?: ConfigurationOperationResult;
 }
 
 export interface ActionDescriptor {
@@ -189,9 +583,15 @@ export interface ActionDescriptor {
 }
 
 export interface ActionResult {
-  stdout: string;
-  stderr: string;
+  report: NativeDiagnosticReport;
   previewContent?: string;
+}
+
+export interface NativeDiagnosticReport {
+  messageKey: string;
+  exitCode: number | null;
+  stdoutBytes: number;
+  stderrBytes: number;
 }
 
 export interface LogChunk {

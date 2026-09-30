@@ -19,7 +19,7 @@ import {
 } from '../src/programs/shared/configuration.ts';
 import { applySingBoxDashboardChange } from '../src/programs/sing-box/dashboard-state.ts';
 import { mihomoProgram } from '../src/programs/mihomo/index.ts';
-import { errorInfoOf } from '../src/errors.ts';
+import { configurationErrorInfo, configurationNoticeDuration, errorInfoOf, intentErrorNeedsFinalEditor, sourceIssueMessage, TRANSIENT_ERROR_DISMISS_MS } from '../src/errors.ts';
 import {
   clientVersionAdvisory,
   compareCanonicalSemVer,
@@ -50,6 +50,10 @@ import {
   formatConfiguration,
 } from '../src/editor/configurationLanguage.ts';
 import {
+  resolveConfigurationMarkerRange,
+} from '../src/editor/configurationMarkers.ts';
+import { semanticPathSegments } from '../src/editor/configurationMarkerModel.ts';
+import {
   completeJsonSchema,
   parseJsonSchemaDocument,
 } from '../src/editor/jsonSchema.ts';
@@ -61,7 +65,7 @@ const validJsonAnalysis = analyzeConfiguration(
   '{"log":{"level":"info"},"outbounds":[{"tag":"direct"}]}',
 );
 assert.deepEqual(validJsonAnalysis.diagnostics, []);
-const invalidJsonAnalysis = analyzeConfiguration('jsonc', '{"log": {"level": "info",}}');
+const invalidJsonAnalysis = analyzeConfiguration('jsonc', '{"log": {"level": "info",,}}');
 assert.equal(
   invalidJsonAnalysis.diagnostics.some((diagnostic) => diagnostic.severity === 'error'),
   true,
@@ -70,13 +74,19 @@ assert.equal(
   invalidJsonAnalysis.diagnostics.some((diagnostic) => diagnostic.code === 'json.PropertyNameExpected'),
   true,
 );
+const validJsonc = '{/* comment */"mode":"rule",}';
 assert.equal(
-  analyzeConfiguration('jsonc', '{/* comment */"mode":"rule"}').diagnostics.some(
-    (diagnostic) => diagnostic.code === 'json.InvalidCommentToken',
+  analyzeConfiguration('jsonc', validJsonc).diagnostics.some(
+    (diagnostic) => diagnostic.severity === 'error',
   ),
-  true,
-  'native JSON configuration must not silently accept JSONC comments',
+  false,
+  'editor syntax must match the configuration Core JSONC parser',
 );
+assert.equal(
+  resolveConfigurationMarkerRange('jsonc', validJsonc, [], ['mode']).status,
+  'exact',
+);
+assert.equal(formatConfiguration('jsonc', validJsonc).content.includes('/* comment */'), true);
 const duplicateJson = '{"route":{"final":"direct","final":"proxy"}}';
 const duplicateJsonResult = formatConfiguration('jsonc', duplicateJson);
 assert.equal(
@@ -120,6 +130,54 @@ assert.equal(
     (diagnostic) => diagnostic.code === 'yaml.MULTIPLE_DOCS',
   ),
   true,
+);
+
+const identityMarkerPath = [
+  { kind: 'key', key: 'outbounds' },
+  { kind: 'identity', field: 'tag', value: 'edge' },
+  { kind: 'key', key: 'server' },
+];
+const markerJson = '{"outbounds":[{"tag":"direct","server":"direct.example"},{"tag":"edge","server":"edge.example"}]}';
+const markerJsonRange = resolveConfigurationMarkerRange('jsonc', markerJson, identityMarkerPath);
+assert.equal(markerJson.slice(markerJsonRange.from, markerJsonRange.to), '"edge.example"');
+const markerYaml = [
+  'outbounds:',
+  '  - tag: direct',
+  '    server: direct.example',
+  '  - tag: edge',
+  '    server: edge.example',
+  '',
+].join('\n');
+
+for (const [language, content, expected] of [
+  ['jsonc', markerJson, '"edge.example"'],
+  ['yaml', markerYaml, 'edge.example'],
+]) {
+  const range = resolveConfigurationMarkerRange(language, content, [], ['outbounds', '1', 'server']);
+  assert.equal(content.slice(range.from, range.to), expected);
+  assert.equal(range.status, 'exact');
+  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '9', 'server']).status, 'parentAnchor');
+  assert.equal(resolveConfigurationMarkerRange(language, content, [], ['outbounds', '01', 'server']).status, 'parentAnchor');
+}
+const nestedMarker = '{"a":{"value":1},"b":{"value":2},"literal[key]":3,"0":4}';
+for (const [path, expected] of [[['b', 'value'], '2'], [['literal[key]'], '3'], [['0'], '4']]) {
+  const range = resolveConfigurationMarkerRange('jsonc', nestedMarker, [], path);
+  assert.equal(nestedMarker.slice(range.from, range.to), expected);
+  assert.equal(range.status, 'exact');
+}
+const deletedJson = '{"log":{"level":"info"}}';
+const deletedRange = resolveConfigurationMarkerRange('jsonc', deletedJson, [], ['log', 'timestamp']);
+assert.equal(deletedRange.status, 'parentAnchor');
+assert.equal(deletedJson.slice(deletedRange.from, deletedRange.to), '}');
+assert.equal(resolveConfigurationMarkerRange('jsonc', '{"log":', [], ['log', 'timestamp']).status, 'documentUnavailable');
+assert.equal(resolveConfigurationMarkerRange('jsonc', '{"outbounds":[{"tag":"edge"},{"tag":"edge"}]}', identityMarkerPath).status, 'documentUnavailable');
+assert.equal(resolveConfigurationMarkerRange('yaml', 'outbounds:\n  - tag: edge\n  - tag: edge\n', identityMarkerPath).status, 'documentUnavailable');
+const markerYamlRange = resolveConfigurationMarkerRange('yaml', markerYaml, identityMarkerPath);
+assert.equal(markerYaml.slice(markerYamlRange.from, markerYamlRange.to), 'edge.example');
+assert.deepEqual(
+  semanticPathSegments('/outbounds[tag=edge]/server'),
+  identityMarkerPath,
+  'display paths remain a safe fallback when structured segments are unavailable',
 );
 assert.equal(
   analyzeConfiguration('yaml', '- rule\n- direct\n').diagnostics.some(
@@ -485,6 +543,142 @@ globalThis.localStorage = {
   setItem: (key, value) => draftStorage.set(key, value),
   removeItem: (key) => draftStorage.delete(key),
 };
+globalThis.document = { documentElement: { lang: '' } };
+const { hasChineseTranslation } = await import('../src/i18n.ts');
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_RULE_SHADOWED' }), true);
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_OBJECT_AMBIGUOUS' }), true);
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_PORT_INVALID' }), false);
+assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'CONFIGURATION_OPERATION_PENDING' }), false);
+const { dnsServerNeedsResolver, intentSettingOptionMessages, intentOptionMessage } = await import('../src/intentPresentation.ts');
+for (const [setting, options] of Object.entries(intentSettingOptionMessages)) {
+  for (const [value, message] of Object.entries(options)) {
+    assert.equal(intentOptionMessage(value, setting), message);
+    assert.equal(hasChineseTranslation(message), true, `Missing Intent option translation: ${setting}/${value}`);
+  }
+}
+for (const server of ['', null, '192.0.2.50', '2001:db8::53', 'https://[2001:db8::53]/dns-query', 'https://192.0.2.50/dns-query']) {
+  assert.equal(dnsServerNeedsResolver(server), false, `IP DNS must not require another resolver: ${server}`);
+}
+for (const server of ['resolver.example', 'abc', 'https://resolver.example/dns-query']) {
+  assert.equal(dnsServerNeedsResolver(server), true);
+}
+for (const message of [
+  'Add',
+  'Edit',
+  'Done',
+  'Choose an entry',
+  'Choose an entry to edit',
+  'Add a local proxy for your apps to connect to.',
+  'Add a DNS server when you need your own resolver.',
+  'Choose which connection a domain or IP address uses.',
+  'Add a virtual adapter configuration. It stays off until you run the program.',
+  'Finish or cancel this entry first.',
+  'Use program default',
+  'Add a DNS server to choose it here.',
+  'Add a connection in Sources or Final configuration first.',
+  'Access protection',
+  'Entry actions',
+  'Editing',
+  'setting needs a choice',
+  'settings need a choice',
+  'Updated configuration',
+  'Your edit',
+  'Original value',
+  'Accept updated',
+  'Keep mine',
+  'Merge manually',
+  'Merged JSON value',
+  'Merged YAML value',
+  'Enter a valid JSON value for this path.',
+  'Enter a valid YAML value for this path.',
+  'This field was deleted.',
+  'Retry the pending choice before continuing.',
+  'Fix the document format to locate this setting.',
+  'Check completed.',
+  'The program reported an unsupported field. Review this configuration.',
+  'The program reported a value with the wrong type.',
+  'The program could not parse this configuration.',
+  'The program reported an invalid port.',
+  'The program could not enable automatic traffic redirection. Check the TUN auto_redirect setting.',
+  'This setting is not available on this program’s platform. Disable or remove it.',
+  'Turn on automatic routing before enabling automatic redirection.',
+  'The program could not read a required file.',
+  'Program needs recovery',
+  'The program replacement could not be restored automatically.',
+  'Reopen the app to recover before making more changes.',
+  'Program compatibility',
+  'Checks whether this program can use your configuration.',
+  'Detected program',
+  'Not detected',
+  'Retry detection',
+  'Program detection needs attention.',
+  'Review and apply changes in Final configuration.',
+  'Checking this program. You can review the configuration now.',
+  'Checking the current program before applying.',
+  'Check the program in Compatibility before applying.',
+  'Replace program',
+  'Review program detection in Compatibility.',
+  'About compatibility',
+  'Supported versions',
+  'Configuration check',
+  'Your changes are not applied yet.',
+  'Configuration is up to date.',
+  'The program could not use these changes.',
+  'Information for support',
+  'This setting changed in two places. Choose which value to use.',
+  'This program cannot perform the required checks. Choose another build.',
+  'This version is outside the supported range. Choose a newer program.',
+  'This program version is not supported yet.',
+  'Choose a supported stable release instead of a prerelease.',
+  'The program version could not be identified. Choose a recognizable build.',
+  'The program identity is inconsistent. Choose another build.',
+  'Program support information could not be loaded.',
+  'This build cannot use a configured feature. Change the setting or choose another build.',
+  'A configured feature could not be confirmed. Choose a build with identifiable capabilities.',
+  'This program has not declared a configuration field. Remove it or choose a build that supports it.',
+  'This program could not provide usable field information. Retry or choose another build.',
+  'Review and save this candidate.',
+  'Validate this saved candidate.',
+  'Fix the highlighted issue and save again.',
+  'This candidate is ready to apply.',
+  'Resolve conflicts before continuing.',
+  'The updated configuration and your edit changed the same path. Review it before saving or applying.',
+  'Final configuration also edits this setting. Changes here may require conflict resolution there.',
+  'Configuration status',
+  'Merge manually',
+  'Review configuration',
+  'Using latest settings',
+  'Latest setting',
+  'Use this value',
+  'Not set',
+  'Dashboard download URL',
+  'Fix the highlighted configuration syntax.',
+  'This configuration needs a correction.',
+  'Review the highlighted issue and apply again.',
+  'The configuration could not be saved.',
+  'Retry to check the result of this request.',
+  'Submitted changes saved.',
+  'Configuration source needs attention',
+  'These sources set different values. Review one, then pause or edit it and save.',
+  'Review source',
+  'affected setting',
+  'affected settings',
+  ...['SOURCE_URL_INVALID', 'SOURCE_FILE_NOT_FOUND', 'SOURCE_READ_FAILED', 'SOURCE_CHANGED',
+    'SOURCE_TOO_LARGE', 'SOURCE_ACCESS_DENIED', 'SOURCE_TIMEOUT', 'SOURCE_DOWNLOAD_FAILED',
+    'SOURCE_CREDENTIALS_UNAVAILABLE', 'SOURCE_INVALID', 'SOURCE_REFRESH_FAILED', 'CORE_TARGET_SOURCE_REJECTED']
+    .map(sourceIssueMessage),
+]) {
+  assert.equal(hasChineseTranslation(message), true, `Missing Chinese UI text: ${message}`);
+}
+for (const key of ['SOURCE_FILE_NOT_FOUND', 'SOURCE_ACCESS_DENIED', 'SOURCE_INVALID']) {
+  const error = { code: 'NETWORK', messageKey: key, message: 'private-original-message', details: '{"sourceId":"source-a"}' };
+  for (const info of [errorInfoOf(error), configurationErrorInfo(error, 'sources-refresh')]) {
+    assert.equal(info.message, sourceIssueMessage(key));
+    assert.equal(info.suggestion, '');
+    assert.ok(!JSON.stringify(info).includes('private-original-message'));
+  }
+}
+assert.equal(sourceIssueMessage('private-unrecognized-code'), sourceIssueMessage('SOURCE_REFRESH_FAILED'));
 const sensitiveDraft = {
   ...defaultDraft('generic', 'Linux'),
   argumentLine: '--token command-secret',
@@ -673,12 +867,45 @@ assert.equal(storageError.fallbackMessage, 'Application data could not be access
 assert.equal(storageError.details, 'permission denied');
 assert.notEqual(storageError.title, 'storage');
 assert.doesNotMatch(storageError.title, /_/);
+const packageRecovery = errorInfoOf({
+  code: 'STORAGE',
+  messageKey: 'PROGRAM_PACKAGE_RECOVERY_REQUIRED',
+  message: 'Internal commit error',
+  details: 'commit: Storage; recovery: Storage',
+});
+assert.equal(packageRecovery.title, 'Program needs recovery');
+assert.doesNotMatch(packageRecovery.message, /Internal|unchanged|retained/);
+assert.equal(packageRecovery.details, 'commit: Storage; recovery: Storage');
 const configurationSchemaError = errorInfoOf({
   code: 'CONFIGURATION_SCHEMA_INVALID',
   message: 'Program could not generate a configuration schema',
 });
-assert.equal(configurationSchemaError.title, 'Program schema unavailable');
-assert.match(configurationSchemaError.suggestion, /schema command/);
+assert.equal(configurationSchemaError.title, 'Suggestions unavailable');
+assert.match(configurationSchemaError.suggestion, /keep editing/);
+const wrappedAdmissionError = configurationErrorInfo(
+  new Error(JSON.stringify({
+    code: 'UNSUPPORTED_BINARY',
+    messageKey: 'CORE_VERSION_UNRECOGNIZED',
+    message: 'Cannot resolve the supplied program identity',
+    details: 'maintained families: fixture-current, fixture-previous',
+  })),
+  'configuration-load',
+);
+assert.equal(wrappedAdmissionError.code, 'UNSUPPORTED_BINARY');
+assert.equal(wrappedAdmissionError.messageKey, 'CORE_VERSION_UNRECOGNIZED');
+assert.match(wrappedAdmissionError.message, /could not be identified/);
+assert.match(wrappedAdmissionError.details, /maintained families/);
+const unknownConfigurationError = configurationErrorInfo({ code: 'CUSTOM_FAILURE', message: 'internal generation write rejected' }, 'sources-save');
+assert.equal(unknownConfigurationError.message, 'The configuration request could not be completed.');
+assert.equal(unknownConfigurationError.details, 'internal generation write rejected');
+const ambiguousApply = configurationErrorInfo({ code: 'STORAGE', message: 'write failed after commit' }, 'configuration-apply');
+assert.equal(ambiguousApply.message, 'The apply result needs confirmation.');
+const ambiguousSave = configurationErrorInfo({ code: 'TIMEOUT', message: 'save response missing' }, 'configuration-save');
+assert.equal(ambiguousSave.message, 'The save result needs confirmation.');
+assert.equal(ambiguousSave.suggestion, 'Retry to check the result of this request.');
+assert.doesNotMatch(ambiguousApply.message, /kept|retained|unchanged/);
+const genericConflict = configurationErrorInfo({ code: 'CONFIG_CONFLICT', message: 'native validator rejected old generation' }, 'configuration-apply');
+assert.equal(genericConflict.message, 'This configuration needs a correction.');
 for (const [code, title, message] of [
   ['TIMEOUT', 'Operation timed out', 'The operation did not finish in time.'],
   ['NETWORK', 'Network error', 'The network request could not be completed.'],
@@ -1022,5 +1249,42 @@ assert.equal(licenseNoticeRequiresPersistentAttention({
 const catalog = { version: 1, order: ['alpha', 'beta', 'gamma'] };
 assert.deepEqual(moveCatalogItem(catalog, 'gamma', 'beta').order, ['alpha', 'gamma', 'beta']);
 assert.deepEqual(moveCatalogItem(catalog, 'alpha').order, ['beta', 'gamma', 'alpha']);
+
+for (const messageKey of ['CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_AUTO_ROUTE_REQUIRED', 'CONFIGURATION_VALUE_NOT_ALLOWED', 'CONFIGURATION_ASSESSMENT_LIMIT', 'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED', 'CORE_NATIVE_FIELD_REJECTED', 'CORE_NATIVE_TYPE_REJECTED', 'CORE_NATIVE_SYNTAX_REJECTED', 'CORE_NATIVE_PORT_REJECTED', 'CORE_NATIVE_AUTO_REDIRECT_REJECTED', 'CORE_NATIVE_RESOURCE_UNAVAILABLE']) {
+  const error = configurationErrorInfo({ code: 'CONFIG_INVALID', messageKey, message: 'Internal source implementation', details: 'rule: bounded-details' }, 'configuration-apply');
+  assert.equal(error.title, 'Configuration needs attention');
+  assert.equal(error.suggestion, '');
+  assert.equal(error.details, 'rule: bounded-details');
+  assert.doesNotMatch(error.message, /Internal source/);
+}
+for (const messageKey of ['CORE_TARGET_CHANGED', 'CORE_VALIDATION_EVIDENCE_STALE']) {
+  const error = configurationErrorInfo({ code: 'CONFIG_CONFLICT', messageKey, message: 'Internal validation identity mismatch' }, 'configuration-apply');
+  assert.equal(error.title, 'Review configuration');
+  assert.equal(error.suggestion, '');
+  assert.doesNotMatch(error.message, /Internal validation/);
+  assert.match(error.message, /apply/i);
+  assert.ok(hasChineseTranslation(error.message));
+}
+for (const messageKey of ['CORE_VERSION_TOO_OLD', 'CORE_VERSION_NOT_MAINTAINED', 'CORE_PRERELEASE_NOT_SUPPORTED', 'CORE_VERSION_UNRECOGNIZED', 'CORE_BINARY_IDENTITY_MISMATCH', 'CORE_KNOWLEDGE_INVALID']) {
+  const error = errorInfoOf({ code: 'UNSUPPORTED_BINARY', messageKey, message: 'Internal admission failure', details: 'maintained families: supported-range' });
+  assert.equal(error.title, 'Unsupported program');
+  assert.equal(error.suggestion, '');
+  assert.doesNotMatch(error.message, /Internal admission/);
+}
+
+for (const [context, code, key, duration] of [
+  ['configuration-load', 'NETWORK', undefined, 0],
+  ['sources-refresh', 'TIMEOUT', undefined, TRANSIENT_ERROR_DISMISS_MS],
+  ['sources-save', 'CONFIG_INVALID', undefined, TRANSIENT_ERROR_DISMISS_MS],
+  ['configuration-apply', 'CONFIG_INVALID', 'CONFIGURATION_PLATFORM_UNSUPPORTED', TRANSIENT_ERROR_DISMISS_MS],
+  ['configuration-apply', 'TIMEOUT', undefined, 0],
+  ['sources-save', 'NETWORK', undefined, 0],
+  ['final-editor-draft', 'CONFIG_CONFLICT', 'CONFIGURATION_DRAFT_STALE', 0],
+  ['configuration-load', 'STORAGE', 'CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED', 0],
+  ['configuration-apply', 'INVALID_STATE', 'CONFIGURATION_OPERATION_PENDING', 0],
+]) {
+  assert.equal(configurationNoticeDuration(configurationErrorInfo({code, messageKey: key}, context), context), duration);
+}
+assert.equal(configurationNoticeDuration(configurationErrorInfo({code: 'NETWORK'}, 'configuration-load'), 'configuration-load', true), TRANSIENT_ERROR_DISMISS_MS);
 
 console.log('Frontend utility tests passed.');

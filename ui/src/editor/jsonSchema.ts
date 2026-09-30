@@ -63,8 +63,8 @@ export interface JsonSchemaCompletionResult {
 
 const JSON_PARSE_OPTIONS = {
   allowEmptyContent: false,
-  allowTrailingComma: false,
-  disallowComments: true,
+  allowTrailingComma: true,
+  disallowComments: false,
 } as const;
 const MAX_SCHEMA_RECURSION = 64;
 const schemaAnchorIndexes = new WeakMap<

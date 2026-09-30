@@ -8,6 +8,7 @@
 /ui/test-results/
 /ui/.wdio/
 /e2e-output/
+__pycache__/
 /src-tauri/target/
 /src-tauri/gen/
 /src-tauri/binaries/camellia-nexus-privilege-broker-*

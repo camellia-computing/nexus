@@ -23,7 +23,6 @@ export function genericFixtureRequest(
   return {
     request: {
       spec: {
-        schemaVersion: 3,
         id,
         name,
         executable: {
@@ -201,7 +200,7 @@ export async function clickButton(label, rootSelector = 'body') {
         (root, text) => {
           const scope = document.querySelector(root);
           const button = [...(scope?.querySelectorAll('button') ?? [])].find(
-            (candidate) => candidate.textContent?.trim() === text
+            (candidate) => (candidate.getAttribute('aria-label') ?? candidate.textContent)?.trim() === text
           );
           if (
             !(button instanceof HTMLButtonElement) ||
@@ -231,7 +230,7 @@ export async function waitForButtonEnabled(label, rootSelector = 'body') {
         (root, text) => {
           const scope = document.querySelector(root);
           const button = [...(scope?.querySelectorAll('button') ?? [])].find(
-            (candidate) => candidate.textContent?.trim() === text
+            (candidate) => (candidate.getAttribute('aria-label') ?? candidate.textContent)?.trim() === text
           );
           return button instanceof HTMLButtonElement
             && !button.disabled

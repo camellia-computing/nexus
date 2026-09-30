@@ -1,7 +1,5 @@
 use std::{fs::File, io::Read, path::Path};
 
-#[cfg(feature = "desktop")]
-use camellia_nexus_core::ProgramKind;
 use camellia_nexus_core::{
     AdapterRegistry, CamelliaNexusError, ErrorCode, LaunchPlan, PrivilegeAssessment,
     PrivilegeAssessmentContext, PrivilegeConfigInput, PrivilegePolicy, PrivilegeReason,
@@ -134,27 +132,6 @@ fn read_config_inputs(inputs: &[PrivilegeConfigInput]) -> Result<Vec<Vec<u8>>> {
         documents.push(bytes);
     }
     Ok(documents)
-}
-
-#[cfg(feature = "desktop")]
-pub(crate) fn assess_configuration(
-    program_kind: ProgramKind,
-    bytes: &[u8],
-) -> Result<(PrivilegeRequirement, Vec<PrivilegeReason>)> {
-    let adapter = AdapterRegistry::default().get(program_kind);
-    let Some(reasons) = adapter.assess_privilege_configuration(
-        bytes,
-        PrivilegeAssessmentContext::for_current_platform(),
-    )?
-    else {
-        return Ok((PrivilegeRequirement::Unknown, Vec::new()));
-    };
-    let requirement = if reasons.is_empty() {
-        PrivilegeRequirement::Standard
-    } else {
-        PrivilegeRequirement::Elevated
-    };
-    Ok((requirement, reasons))
 }
 
 fn read_bounded(path: &Path, remaining: u64) -> Result<Vec<u8>> {

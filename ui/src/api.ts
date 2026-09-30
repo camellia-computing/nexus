@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke as tauriInvoke, type InvokeArgs } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   ActionDescriptor,
@@ -9,7 +9,6 @@ import type {
   AppSettings,
   ConfigDocument,
   ConfigurationSchemaDocument,
-  ConfigUpdateResult,
   EntitlementSnapshot,
   CustomerPaymentSubmission,
   DeleteWebhookEndpoint,
@@ -68,13 +67,31 @@ import type {
   PrivilegeAssessment,
   ProgramSpec,
   ProgramSummary,
-  ValidationResult,
   UiIntent,
   XrayBalancerInfo,
   XrayDashboardSnapshot,
 } from './types';
 
 export { errorInfoOf, type ErrorInfo } from './errors';
+
+type InvokeTransport = <T>(command: string, args?: InvokeArgs) => Promise<T>;
+
+let invokeTransport: InvokeTransport = <T>(command: string, args?: InvokeArgs) =>
+  tauriInvoke<T>(command, args);
+
+function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
+  return invokeTransport<T>(command, args);
+}
+
+export function installPreviewInvokeTransport(
+  transport: (command: string, args?: InvokeArgs) => unknown | Promise<unknown>,
+): void {
+  if (!import.meta.env.DEV && import.meta.env.MODE !== 'e2e') {
+    throw new Error('The preview invoke transport is unavailable in production builds.');
+  }
+  invokeTransport = async <T>(command: string, args?: InvokeArgs) =>
+    await transport(command, args) as T;
+}
 
 export const api = {
   logFrontendEvent: (
@@ -263,28 +280,81 @@ export const api = {
     initialConfig?: string;
   }) => invoke<void>('create_program', { request }),
   listInvalidPrograms: () => invoke<InvalidProgram[]>('list_invalid_programs'),
-  updateProgram: (spec: ProgramSpec) => invoke<void>('update_program', { spec }),
-  updateProgramAndRestart: (spec: ProgramSpec) =>
-    invoke<void>('update_program_and_restart', { spec }),
-  updateProgramAndRefreshConfig: (spec: ProgramSpec) =>
-    invoke<ConfigUpdateResult>('update_program_and_refresh_config', { spec }),
+  updateProgram: (spec: ProgramSpec, expectedConfigurationGeneration?: number, claimedManagedSettings: string[] = []) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot | null>('update_program', {
+      spec,
+      expectedConfigurationGeneration,
+      claimedManagedSettings,
+    }),
+  updateProgramAndRestart: (spec: ProgramSpec, expectedConfigurationGeneration?: number, claimedManagedSettings: string[] = []) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot | null>('update_program_and_restart', {
+      spec,
+      expectedConfigurationGeneration,
+      claimedManagedSettings,
+    }),
   removeProgram: (programId: string) => invoke<void>('remove_program', { programId }),
   startProgram: (programId: string) => invoke<void>('start_program', { programId }),
   stopProgram: (programId: string) => invoke<void>('stop_program', { programId }),
   restartProgram: (programId: string) => invoke<void>('restart_program', { programId }),
-  replacePackage: (programId: string, packageSource: string) =>
-    invoke<void>('replace_package', { programId, packageSource }),
+  replacePackage: (programId: string, packageSource: string, expectedStateRevision?: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot | null>('replace_package', {
+      programId, packageSource, expectedStateRevision,
+    }),
   listActions: (programId: string) =>
     invoke<ActionDescriptor[]>('list_actions', { programId }),
   loadConfig: (programId: string) => invoke<ConfigDocument>('load_config', { programId }),
   loadConfigurationSchema: (programId: string) =>
     invoke<ConfigurationSchemaDocument | null>('load_configuration_schema', { programId }),
-  validateConfig: (programId: string, content: string, baseHash: string) =>
-    invoke<ValidationResult>('validate_config', { programId, content, baseHash }),
-  applyConfig: (programId: string, content: string, baseHash: string) =>
-    invoke<string>('apply_config', { programId, content, baseHash }),
-  refreshConfigSources: (programId: string) =>
-    invoke<ConfigUpdateResult>('refresh_config_sources', { programId }),
+  getConfigurationWorkspacePreview: (programId: string) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_workspace_preview', { programId }),
+  getConfigurationWorkspace: (programId: string) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_workspace', { programId }),
+  updateConfigurationIntent: (
+    programId: string,
+    request: import('./types').ConfigurationIntentRequest,
+  ) => invoke<import('./types').ConfigurationWorkspaceSnapshot>('update_configuration_intent', { programId, request }),
+  previewConfigurationImport: (programId: string, content: string) =>
+    invoke<import('./types').ShareImportPreview>('preview_configuration_import', {
+      programId,
+      request: { content },
+    }),
+  saveConfigurationDraft: (programId: string, draft: import('./types').FinalEditorSession, expectedRevision: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('update_final_configuration_draft', {
+      programId,
+      request: { draft, expectedRevision },
+    }),
+  rebaseConfigurationDraft: (programId: string, expectedRevision: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('rebase_final_configuration_draft', { programId, expectedRevision }),
+  resolveConfigurationConflict: (programId: string, request: import('./types').ResolveConfigurationConflictRequest) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('resolve_configuration_conflict', { programId, request }),
+  adoptUpstreamChange: (programId: string, request: import('./types').AdoptUpstreamChangeRequest) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('adopt_upstream_change', { programId, request }),
+  discardConfigurationDraft: (programId: string, expectedRevision: number) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('discard_final_configuration_draft', {
+      programId,
+      expectedRevision,
+    }),
+  commitConfigurationDraft: (programId: string, request: import('./types').ConfigurationMutationContext) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('save_configuration_candidate', { programId, request }),
+  getConfigurationOperation: (programId: string, request: import('./types').ConfigurationMutationContext) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_operation', { programId, request }),
+  activateConfigurationCandidate: (programId: string, request: import('./types').ConfigurationMutationContext) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('activate_configuration_candidate', {
+      programId,
+      request,
+    }),
+  refreshConfigurationSources: (programId: string) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('refresh_configuration_sources', { programId }),
+  updateConfigurationSources: (
+    programId: string,
+    sources: import('./types').ConfigSource[],
+    remoteUpdate: import('./types').RemoteUpdate | undefined,
+    expectedGeneration: number,
+  ) =>
+    invoke<import('./types').ConfigurationWorkspaceSnapshot>('update_configuration_sources', {
+      programId,
+      request: { sources, remoteUpdate, expectedGeneration },
+    }),
   runAction: (programId: string, actionId: string, content: string, baseHash: string) =>
     invoke<ActionResult>('run_action', { programId, actionId, content, baseHash }),
   readLogs: (programId: string, stream: 'stdout' | 'stderr', maxBytes = 262144) =>

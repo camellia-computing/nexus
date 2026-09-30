@@ -13,6 +13,7 @@ Camellia Nexus 是一款 Windows 优先、兼容 Linux 与 macOS 的桌面程序
 - 支持普通程序、sing-box、Xray、Mihomo，并为特定程序提供独立扩展能力
 - 支持配置校验、格式化/导出预览、原子保存、失败回滚和实时日志
 - 支持 sing-box/Xray 原生 JSON 与 Mihomo 原生 YAML 配置源的有序合并、手动刷新与定时刷新
+- 支持 VLESS、Shadowsocks、Hysteria2 与 TUIC v5 分享链接/订阅文本的预览、逐项兼容判断和目标 Core 转换
 - 支持 sing-box 原生 API、Clash API、Xray 本地 API Dashboard 与 Mihomo 外部 Web Dashboard
 - 支持托盘控制、窗口状态恢复、系统登录启动、中英文界面和多套外观
 - 支持授权核心、设备注册、短期 entitlement 租约、能力限制和数量限制
@@ -27,11 +28,21 @@ Team 新成员需先使用属于同一 Team 授权的激活码完成设备激活
 - `managed`：导入程序目录并维护隔离副本，适用于独立部署或多实例运行
 - `external`：直接使用现有可执行文件，不复制程序文件
 
-两种模式均以可执行文件所在目录作为工作目录。sing-box、Xray 与 Mihomo 可选择手动配置或托管配置。sing-box/Xray 的手动配置保留用户命令行配置参数并可提供最终覆盖；Mihomo 可在外部配置路径与应用内存储的 YAML 配置之间选择。托管配置由有序原生配置源生成主配置，并禁止命令行配置路径覆盖。Generic 类型保持原始 argv，不进行语义改写。
+两种模式均以可执行文件所在目录作为工作目录。sing-box、Xray 与 Mihomo 始终由客户端持有的唯一活动配置 `config/active.json` 或 `config/active.yaml` 驱动；额外参数不能指定其他配置文件或配置目录。需要引用外部文件时，应将其添加为 Local 配置源。Generic 类型保持原始 argv，不进行语义改写。
 
-配置源按界面顺序合并，后置值优先，最终结果必须通过对应二进制程序的原生校验后才会原子应用。本地源可使用绝对路径或工作目录相对路径；远程源仅接受 HTTPS，并可选 HTTP Basic 认证。自动更新开关只控制调度，不会重置已选间隔；关闭后再次启用仍恢复原间隔。单源限制 4 MiB，总读取限制 16 MiB。
+配置源按界面顺序和各 Core 的真实语义合并。来源可以是内联内容、绝对路径或工作目录相对路径的本地文件，以及仅限 HTTPS 的远程内容；远程源可选 HTTP Basic 认证。自动更新开关只控制调度，不会重置已选间隔；关闭后再次启用仍恢复原间隔。单源限制 4 MiB，总读取限制 16 MiB。一次临时读取、下载或解析失败会保留最近成功解析的快照，不会把来源当作空配置；0 byte、空白内容、失败和合法空映射会被分别处理。
 
-配置编辑器将通用 JSON/YAML 语法、通用 JSON Schema 能力和程序专属语义分层处理。sing-box `1.14.0-beta.2` 及以上版本会从当前 Profile 的确切二进制文件按需生成 Draft 2020-12 Schema，用于结构诊断、属性/值补全以及 sing-box tag 引用补全；结果按可执行文件路径、文件元数据和已探测版本缓存，任一项变化后自动失效。客户端不会跟随配置或 Schema 中的外部引用，也不会自动下载任意 `$schema` 地址。Schema 暂时不可用时编辑器会降级为语法模式，而保存前的目标程序原生校验始终是最终语义门禁。
+Inline、Local 和 Remote 来源会自动区分原生配置、单条分享链接、分享集合及其单层 Base64/Base64URL 包装。分享 Parser 先形成与 Core 无关的协议语义，再由 sing-box、Xray 或 Mihomo Translator 按能力生成普通配置片段；支持 VLESS、Shadowsocks（含 SIP002）、Hysteria2 和 TUIC v5，TUIC v5 到 Xray、`hysteria2+realm`/`hy2+realm`、TUIC v4 token-only、未知 Shadowsocks plugin 以及无法无损表达的关键认证/传输/安全参数会明确拒绝。集合按 item 隔离，至少一个节点可安全转换时以 Partial Success 接受有效项并显示 accepted/rejected 与警告；零有效项保留旧 Snapshot、Applied 和 Last Known Good。原始 observation 与转换片段使用 content-addressed sidecar 保存，普通日志不记录完整 URI、密码、UUID 或 token。
+
+Sources、Intent 和 Details 的主动修改按语义路径的最新操作生效，未修改的表单字段不取得新的覆盖权。后台 Source 刷新更新 Source 负责的路径与新增字段，不抢回用户后来设置的字段。配置 tab 的唯一“最终配置”编辑器实时显示有效候选；手工改动与最新上游进行三方合并，无关路径自动保留，同值自然收敛，只有同一路径的不同改动需要选择。父容器与子字段的冲突按父级聚合，稳定身份数组按元素合并，`1d` 与 `24h0m0s` 等语义等价值不制造冲突。冲突就地提供“使用最新设置”“保留我的修改”和“合并”；取消不写入状态。无效草稿独立保留，可继续编辑，但不会被标成最终候选。解决必要冲突后只需一次“应用更改”，后台完成保存、静态检查、精确二进制检查和原子应用。停止的程序保持停止；运行的程序只需一次重启确认。Ctrl+S 仅保存候选。校验证据绑定当前 binary、profile、config hash 与 candidate generation；应用提交前失败保留旧 Applied/LKG。无法恢复有效状态时明确提示需要恢复并保留恢复材料。
+
+Core 能力知识以官方最新稳定发布为锚点，只维护两个稳定系列：sing-box 和 Mihomo 按主次版本分组，Xray 按实际稳定发布月份分组。各补丁固定到精确源码，配置结构与语义规则分别核对。范围外、预发布和无法识别的程序不能登记、应用、启动或重启；停止、查看、导出和更换程序保持可用。范围内自编译程序必须核验实际构建能力，版本文本不证明官方来源。候选校验证据绑定精确二进制、能力档案、配置摘要与候选代次。完整规范见 [Core 能力知识与准入](docs/core-knowledge.md)。
+
+配置检查会结合程序自身报告的平台、启用条件和对应源码实现；字段能解析不代表能在当前平台使用。例如，Windows 上开启 Linux 专属重定向会在编辑器中提示，关闭的选项不产生无用警告。实际应用仍核对当前二进制并执行原生检查。操作结果提示会适时消失；尚未解决的问题和结果未确认的写入保留恢复入口。
+
+托管程序更换时，程序文件、设置、候选配置和编辑草稿一起提交。提交前失败恢复原状态；恢复无法完成时阻止继续使用该程序并保留恢复材料。成功更换不会自动应用配置，仍需对当前程序重新检查候选。
+
+配置编辑器将通用 JSON/YAML 语法、JSON Schema 和程序专属语义分层处理。具备结构生成能力的 sing-box 构建可从当前精确二进制按需生成 Schema，用于结构诊断、补全和引用检查；缓存随二进制或能力档案变化失效。客户端不会跟随外部引用或下载任意 `$schema` 地址。结构不可用时保留语法编辑，不将其视为配置已受支持；应用流程自动执行静态与原生检查。
 
 Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listeners` 由后置源原位替换，`rules` 等有序列表按界面中的源顺序连接，因此界面顺序同时决定规则优先级。
 
@@ -39,12 +50,17 @@ Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listene
 
 ### 架构
 
+意图页根据当前程序的精确稳定补丁、平台与构建能力提供常用设置。日志、本地代理、DNS、基础流量规则与适用的虚拟网卡设置使用等宽纵向分组、统一对齐的控件与主题色图标；分组与高级选项可按需折叠，展开或切换语言不更改配置。新建代理仅允许本机访问，选择局域网访问时必须设置认证。添加或修改只管理选中的字段，保留其他内容；取消不写配置并恢复焦点。DNS 与轻量规则引用已有目标，不创建远端节点。缺少目标时显示下一步；已有兜底规则遮蔽新规则或条目无法安全区分时，直接提供最终配置入口。复杂规则、无稳定身份的条目和无法安全表达的配置继续在最终配置中编辑。当前条目完成或取消后，使用标题区唯一的“应用更改”，不会启动已停止的程序。
+
+冲突在最终配置编辑器内逐项对比“最新设置”和“我的修改”，并可直接选择或手工合并。删除的字段定位到最近存在的父级，错误选择可用编辑器撤销／重做恢复；重试沿用原请求，避免重复修改。
+
 项目由领域核心、授权核心、桌面集成和 Svelte 管理界面组成。Program Controller 负责单个程序的状态机；每种具体程序类型拥有独立模块，其 Adapter 只生成执行计划；平台层负责进程、文件系统和系统集成。
 
 参考文档：
 
 - [SECURITY.md](SECURITY.md)
 - [docs/dependency-management.md](docs/dependency-management.md)
+- [docs/core-knowledge.md](docs/core-knowledge.md)
 - [docs/licensing-architecture.md](docs/licensing-architecture.md)
 - [docs/production-readiness-audit.md](docs/production-readiness-audit.md)
 - [docs/testing.md](docs/testing.md)
@@ -139,6 +155,8 @@ Camellia Nexus 是需要 Camellia Computing 明确授权的专有软件。源代
 
 ## English
 
+Intent offers common settings for the exact maintained patch, platform, and observed build. Full-width sections with aligned controls and theme-colored icons cover logging, local proxies, DNS, basic traffic rules, and applicable virtual adapters. Sections and advanced options can fold without changing configuration; changing language also writes nothing. A new proxy is local-only; network access requires authentication. Changes touch selected fields and retain unrelated content; Cancel writes nothing and restores focus. DNS and traffic rules use existing targets rather than creating remote nodes. Missing targets show a next step. A preceding catch-all rule or indistinguishable entries offer a direct route to Final configuration. Complex rules, entries without stable identities, and configurations that cannot be expressed safely remain editable there. Finish or cancel the open entry before using the single Apply changes action in the heading; stopped programs stay stopped.
+
 Camellia Nexus is a Windows-first desktop lifecycle manager for local background binaries, with Linux and macOS support. It manages executable paths, arguments, working directories, environment variables, runtime state, logs, configuration and licensing state for generic commands, sing-box, Xray, Mihomo and future specialized program types.
 
 ### Features
@@ -150,6 +168,7 @@ Camellia Nexus is a Windows-first desktop lifecycle manager for local background
 - Generic Program, sing-box, Xray and Mihomo support with type-specific extensions
 - Configuration validation, formatting/export actions, atomic save, rollback and live logs
 - Ordered local or HTTPS native JSON sources for sing-box/Xray and native YAML sources for Mihomo
+- Preview, item-level compatibility decisions, and target-Core translation for VLESS, Shadowsocks, Hysteria2, and TUIC v5 share links or subscription text
 - Native sing-box API, Clash API, Xray local API and Mihomo external Web dashboards
 - Tray controls, window-state restore, login startup, Chinese/English UI and multiple appearance themes
 - Licensing core with device registration, short-lived entitlement leases, capability gates and numeric limits
@@ -164,11 +183,21 @@ Arguments are entered as one command line and parsed into argv before submission
 - `managed`: imports a program directory and maintains an isolated copy
 - `external`: uses an existing executable in place
 
-Both modes use the executable directory as the working folder. sing-box, Xray and Mihomo support manual or managed configuration. sing-box/Xray manual mode preserves user-provided configuration arguments and may include a final override; Mihomo can use either an external configuration path or an application-stored YAML configuration. Managed mode builds the main configuration from ordered native sources and blocks command-line configuration path overrides. Generic Program keeps argv unchanged.
+Both modes use the executable directory as the working folder. sing-box, Xray and Mihomo are always driven by the single client-owned `config/active.json` or `config/active.yaml`; extra arguments cannot select another configuration file or directory. Add an external file as a Local source instead. Generic Programs keep argv unchanged.
 
-Configuration sources are merged in UI order. Later sources take precedence, and the generated result must pass the target binary’s native validation before atomic application. Local sources may be absolute paths or paths relative to the working folder. Remote sources must use HTTPS and may use HTTP Basic authentication. The automatic-update switch controls scheduling only and preserves the selected interval while disabled. Each source is limited to 4 MiB, with a 16 MiB total read limit.
+Configuration sources are merged in UI order using each Core's real semantics. A source may contain Inline content, reference an absolute or working-folder-relative Local file, or use an HTTPS-only Remote endpoint with optional HTTP Basic authentication. The automatic-update switch controls scheduling only and preserves the selected interval while disabled. Each source is limited to 4 MiB, with a 16 MiB total read limit. A transient read, download, or parse failure retains the last successfully parsed snapshot instead of turning the source into an empty configuration; zero bytes, whitespace, failure, and a valid empty mapping remain distinct states.
 
-The configuration editor separates generic JSON/YAML syntax, generic JSON Schema behavior, and program-specific semantics. sing-box `1.14.0-beta.2` or newer lazily generates a Draft 2020-12 Schema from the exact binary owned by the current Profile. It drives structural diagnostics, property/value completion, and sing-box tag-reference completion. Results are cached by executable path, file metadata, and detected version, then invalidated when any of those values changes. The client never follows external references from configuration or Schema content and never downloads an arbitrary `$schema` URL. If Schema support is temporarily unavailable, the editor falls back to syntax mode; the target program’s native validator remains the final semantic gate before saving.
+Inline, Local, and Remote sources automatically distinguish native configuration, a single share link, a share collection, and one Base64/Base64URL envelope layer. The share parser first produces Core-independent protocol semantics, then a sing-box, Xray, or Mihomo translator produces an ordinary configuration fragment according to target capabilities. The first compatibility set covers VLESS, Shadowsocks (including SIP002), Hysteria2, and TUIC v5. TUIC v5 to Xray, `hysteria2+realm`/`hy2+realm`, token-only TUIC v4, unknown Shadowsocks plugins, and critical authentication, transport, or security semantics that the target cannot preserve are rejected explicitly. Collections isolate each item: if at least one item translates safely, Partial Success accepts only those items and reports accepted/rejected counts and warnings; zero valid items retain the previous Snapshot, Applied revision, and Last Known Good. Original observations and translated fragments use content-addressed sidecars, and normal logs never contain full URIs, passwords, UUIDs, or tokens.
+
+Explicit changes in Sources, Intent, and Details follow the latest semantic-path operation; unchanged form fields do not gain new precedence. Background Source refresh updates Source-owned paths and adds new fields without reclaiming later user settings. The single Final configuration editor immediately displays the effective candidate. Manual edits three-way merge with the latest upstream: disjoint changes are retained, equivalent results converge, and only different changes to the same path require a choice. Parent/descendant conflicts are aggregated, stable-identity arrays merge by element, and semantic equivalents such as `1d` and `24h0m0s` do not conflict. Resolve conflicts in place with Accept updated, Keep mine, or Merge; Cancel writes nothing. Invalid drafts remain separately recoverable and are never presented as the effective candidate. After necessary conflicts are resolved, one Apply changes action saves, checks, validates with the exact binary, and applies atomically. Stopped programs stay stopped; running programs require only one restart confirmation. Ctrl+S saves the candidate only. Validation evidence binds the binary, profile, config hash, and candidate generation. Failures before the apply commit preserve Applied/LKG; incomplete recovery is reported explicitly and retains recovery material.
+
+Core knowledge covers two stable release families anchored to the official latest stable release: major/minor for sing-box and Mihomo, and actual stable release months for Xray. Each patch binds an exact source commit; configuration structures and semantic rules are reviewed separately. Out-of-window, prerelease, and unrecognized binaries cannot be registered, applied, started, or restarted. Stop, inspection, export, and replacement remain available. Maintained self-compiled baselines require actual build capability checks; version text never proves official origin. Candidate evidence binds the exact binary, capability profile, configuration hash, and candidate generation. See [Core knowledge and admission](docs/core-knowledge.md).
+
+Configuration checks combine the program's reported platform, activation conditions, and source implementation; accepting a field does not mean it is usable on that platform. For example, enabling Linux-only redirection on Windows produces an editor warning, while inactive options do not create unnecessary warnings. Application independently verifies the current binary and runs its native check. Operation feedback expires when appropriate; unresolved issues and unconfirmed writes retain their recovery action.
+
+Managed package replacement commits program files, settings, candidate configuration and editor draft together. A pre-commit failure restores the previous state; incomplete recovery blocks program use and retains recovery material. Replacement does not apply the candidate automatically; it must be checked against the current program.
+
+The editor separates JSON/YAML syntax, JSON Schema, and program-specific semantics. A sing-box build with schema generation can provide its own structure for diagnostics, completion, and reference checks. Cached results are invalidated by binary or capability-profile changes. The client never follows external references or downloads arbitrary `$schema` URLs. Unavailable schemas leave syntax editing accessible without implying configuration support. Apply performs static and native checks automatically.
 
 For Mihomo, mappings merge recursively; later sources replace same-name `proxies`, `proxy-groups`, and `listeners` in place, while ordered lists such as `rules` are concatenated in UI source order, so that order also defines rule priority.
 
@@ -176,12 +205,15 @@ The same external executable can be referenced by only one Program Profile. Mana
 
 ### Architecture
 
+Conflicts are compared inside the Final configuration editor as “Updated configuration” and “Your edit.” Users can choose either value or merge there. A deleted field anchors to its nearest existing parent. Editor undo and redo restore a choice, and retry uses the original request to avoid duplicate changes.
+
 The project is organized into domain core, licensing core, desktop integration and the Svelte management UI. The Program Controller owns the state machine for one program. Each concrete program type has its own module; its Adapter only produces execution plans. Platform modules own process, filesystem and operating-system integration.
 
 References:
 
 - [SECURITY.md](SECURITY.md)
 - [docs/dependency-management.md](docs/dependency-management.md)
+- [docs/core-knowledge.md](docs/core-knowledge.md)
 - [docs/licensing-architecture.md](docs/licensing-architecture.md)
 - [docs/testing.md](docs/testing.md)
 

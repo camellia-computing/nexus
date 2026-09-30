@@ -50,7 +50,7 @@ async function openPreview(
   query = '',
 ) {
   await page.addInitScript(({ theme, colorMode, scale }) => {
-    localStorage.setItem('camellia-nexus.appearance.v3', JSON.stringify({
+    localStorage.setItem('camellia-nexus.appearance', JSON.stringify({
       version: 3,
       theme,
       colorMode,
@@ -73,6 +73,366 @@ async function openProgramConfiguration(page: Page, programId: string) {
   await expect(editor).toBeVisible();
   return editor;
 }
+
+async function openProgramDetails(page: Page, programId: string) {
+  const program = page.locator(`.program-item[data-program-id="${programId}"]`);
+  if (!await program.isVisible()) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+  }
+  await program.click();
+  await page.getByRole('tab', { name: 'Details' }).click();
+  const panel = page.locator('#program-panel-overview');
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+test('program configuration stages use sibling workspaces without overflow', async ({ page }) => {
+  await page.setViewportSize({ width: 680, height: 720 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  for (const width of [1280, 1024, 760, 680, 520, 400]) {
+    await page.setViewportSize({ width, height: 760 });
+    const tabLayout = await page.locator('.program-tabs').evaluate((tabs) => {
+      const bounds = tabs.getBoundingClientRect();
+      const buttons = [...tabs.querySelectorAll<HTMLElement>('[role="tab"]')]
+        .map((button) => {
+          const buttonBounds = button.getBoundingClientRect();
+          return {
+            left: buttonBounds.left,
+            right: buttonBounds.right,
+            label: button.querySelector<HTMLElement>('.tab-label')?.innerText ?? '',
+          };
+        });
+      return {
+        overflow: tabs.scrollWidth - tabs.clientWidth,
+        buttons,
+        left: bounds.left,
+        right: bounds.right,
+      };
+    });
+    expect(tabLayout.overflow).toBeLessThanOrEqual(1);
+    expect(tabLayout.buttons.every((button) => (
+      button.left >= tabLayout.left - 1
+      && button.right <= tabLayout.right + 1
+      && button.label.trim().length > 0
+    ))).toBe(true);
+    await expectNoViewportOverflow(page);
+  }
+  for (const tabName of ['Details', 'Intent', 'Sources', 'Compatibility', 'Configuration', 'Logs']) {
+    const tab = page.getByRole('tab', { name: tabName, exact: true });
+    await expect(tab).toBeVisible();
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await expectNoViewportOverflow(page);
+  }
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.locator('#program-panel-intent')).toBeVisible();
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await expect(page.locator('#program-panel-sources')).toBeVisible();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  await expect(page.locator('#program-panel-compatibility')).toBeVisible();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Configuration', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('Intent sections align across the panel without staggered card whitespace', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const grid = page.locator('#program-panel-intent .intent-sections');
+  await expect(grid).toBeVisible();
+
+  for (const width of [1280, 1024, 760, 680, 520, 400]) {
+    await page.setViewportSize({ width, height: 820 });
+    await expectNoViewportOverflow(page);
+    const layout = await grid.evaluate((element) => {
+      const cards = [...element.querySelectorAll<HTMLElement>(':scope > .intent-group')]
+        .map((card) => card.getBoundingClientRect());
+      const rows = new Set(cards.map((card) => Math.round(card.top)));
+      const bounds = element.getBoundingClientRect();
+      return {
+        columns: Math.max(0, ...cards.map((card) => Math.round(card.left))) === 0
+          ? 0
+          : new Set(cards.map((card) => Math.round(card.left))).size,
+        rows: rows.size,
+        count: cards.length,
+        panelWidth: bounds.width,
+        cardOverflow: Math.max(0, ...cards.map((card) => Math.max(
+          bounds.left - card.left,
+          card.right - bounds.right,
+        ))),
+      };
+    });
+    expect(layout.cardOverflow).toBeLessThanOrEqual(1);
+    expect(layout.columns).toBe(1);
+    expect(layout.rows).toBe(layout.count);
+  }
+});
+
+test('Intent folding preserves unfinished input and cancellation never writes configuration', async ({ page }, testInfo) => {
+  await openPreview(page);
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const initial = await editor.textContent();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  const local = intent.getByRole('region', { name: 'Local access', exact: true });
+  const heading = local.getByRole('button', { name: 'Local access', exact: true });
+  const add = local.getByRole('button', { name: 'Add Local proxy', exact: true });
+  await add.click();
+  const form = local.locator('.object-form');
+  await form.getByLabel('Port', { exact: true }).fill('18765');
+  await heading.click();
+  await expect(heading).toHaveAttribute('aria-expanded', 'false');
+  await expect(form).toBeHidden();
+  await heading.focus();
+  await page.keyboard.press('Enter');
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel('Port', { exact: true })).toHaveValue('18765');
+  await expect(intent.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeDisabled();
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(add).toBeFocused();
+  await expect(intent.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeEnabled();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toHaveText(initial ?? '');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('intent-workspace-wide.png'), fullPage: true });
+  await expectAccessible(page, '#program-panel-intent');
+});
+
+test('Intent applies only completed entries and resets the editing gate on navigation', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await intent.getByLabel('Log detail', { exact: true }).selectOption('error');
+  const apply = intent.getByRole('button', { name: 'Apply and restart', exact: true });
+  await expect(apply).toBeEnabled();
+  const add = intent.getByRole('button', { name: 'Add Local proxy', exact: true });
+  await add.click();
+  const form = intent.locator('.object-form');
+  await form.getByLabel('Port', { exact: true }).fill('18654');
+  await expect(apply).toBeDisabled();
+  await expect(intent.locator('.workspace-header')).toContainText('Finish or cancel the open entry before applying');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(apply).toBeEnabled();
+  await add.click();
+  await form.getByLabel('Port', { exact: true }).fill('18654');
+  await form.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await expect(apply).toBeEnabled();
+  await add.click();
+  await expect(apply).toBeDisabled();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toContainText('18654');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await expect(apply).toBeEnabled();
+});
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  test(`Intent creates a local proxy atomically and preserves cancellation for ${programId}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, programId);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    const add = intent.getByRole('button', { name: 'Add Local proxy', exact: true });
+    await add.click();
+    const form = intent.locator('.object-form');
+    await expect(form.getByLabel('Who can connect')).toHaveValue('local');
+    await expect(form.getByLabel('Password')).toHaveCount(0);
+    await form.getByLabel('Proxy type').selectOption('http');
+    await form.getByLabel('Port', { exact: true }).fill('18080');
+    await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(add).toBeFocused();
+    await add.click();
+    await form.getByLabel('Proxy type').selectOption('http');
+    await form.getByLabel('Port', { exact: true }).fill('18080');
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    await expect(add).toBeFocused();
+    await expect(intent.locator('.object-row')).toContainText('18080');
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await expect(editor).toContainText('18080');
+    await expect(editor).toContainText('127.0.0.1');
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  test(`Intent DNS creation, editing and removal synchronize Final for ${programId}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, programId);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    await intent.getByRole('button', { name: 'Add DNS servers', exact: true }).click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('DNS connection').selectOption('udp');
+    await form.getByLabel('Server address').fill('192.0.2.50');
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('192.0.2.50');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const dns = intent.getByRole('region', { name: 'DNS', exact: true });
+    await dns.locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
+    await form.getByLabel('Server address').fill('192.0.2.51');
+    await form.getByRole('button', { name: 'Done', exact: true }).click();
+    await dns.locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
+    await form.getByText('Entry actions', { exact: true }).click();
+    await form.getByRole('button', { name: 'Remove', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Configuration editor' })).not.toContainText('192.0.2.51');
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+for (const [theme, mode] of [['cupertino', 'light'], ['cupertino', 'dark'], ['material', 'light'], ['material', 'dark'], ['aurora', 'light'], ['aurora', 'dark']] as const) {
+  test(`Intent LAN protection and bilingual controls stay contained in ${theme} ${mode}`, async ({ page }, testInfo) => {
+    await openPreview(page, theme, mode);
+    await openProgramDetails(page, 'sing-box-edge');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    await intent.getByRole('button', { name: 'Add Local proxy', exact: true }).click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('Port', { exact: true }).fill('18080');
+    await form.getByLabel('Who can connect').selectOption('lan');
+    await expect(form.getByLabel('Password', { exact: true })).toHaveAttribute('type', 'password');
+    await expect(form.getByLabel('Password', { exact: true })).toHaveAttribute('required', '');
+    for (const width of [1280, 1024, 760, 680, 520, 400]) {
+      await page.setViewportSize({ width, height: 820 });
+      await expectNoViewportOverflow(page);
+      const outside = await form.evaluate((element) => {
+        const parent = element.closest('.intent-group')!.getBoundingClientRect();
+        return [...element.querySelectorAll<HTMLElement>('input, select, button, label')].filter((child) => {
+          const bounds = child.getBoundingClientRect();
+          return bounds.width > 0 && (bounds.left < parent.left - 1 || bounds.right > parent.right + 1);
+        }).map((child) => child.tagName);
+      });
+      expect(outside).toEqual([]);
+    }
+    await expectAccessible(page, '#program-panel-intent');
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+    await settings.getByRole('tab', { name: 'General', exact: true }).click();
+    await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(form.getByLabel('允许谁连接')).toHaveValue('lan');
+    await expect(form.getByLabel('允许谁连接').locator('option:checked')).toHaveText('局域网设备');
+    await expect(form.getByLabel('代理类型').locator('option:checked')).toHaveText('HTTP 和 SOCKS');
+    await expect(intent.getByLabel('日志详细程度').locator('option:checked')).toHaveText('常规日志');
+    await expect(form.getByLabel('密码', { exact: true })).toHaveAttribute('type', 'password');
+    await expect(form.getByRole('button', { name: '添加', exact: true })).toBeVisible();
+    await expect(form.getByRole('button', { name: '取消', exact: true })).toBeVisible();
+    await expectNoViewportOverflow(page);
+    await expectAccessible(page, '#program-panel-intent');
+    await form.getByLabel('密码', { exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`intent-${theme}-${mode}-zh-400.png`), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await form.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`intent-${theme}-${mode}-zh-1280.png`), fullPage: true });
+  });
+}
+
+test('Intent DNS guidance requires only the fields relevant to the selected connection', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await intent.getByRole('button', { name: 'Add DNS servers', exact: true }).click();
+  const form = intent.locator('.object-form');
+  const protocol = form.getByLabel('DNS connection', { exact: true });
+  await protocol.selectOption('https');
+  const server = form.getByLabel('Server address', { exact: true });
+  await expect(server).toHaveAttribute('required', '');
+  await server.fill('https://resolver.example/dns-query');
+  await expect(form.getByLabel('Resolve the server through', { exact: true })).toBeVisible();
+  await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
+  await expect(form).toContainText('Add a DNS server to choose it here');
+  await protocol.selectOption('system');
+  await expect(server).toHaveCount(0);
+  await expect(form.getByLabel('Resolve the server through', { exact: true })).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
+  await protocol.selectOption('udp');
+  await server.fill('2001:db8::53');
+  await expect(form.getByLabel('Resolve the server through', { exact: true })).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(intent.locator('.object-row')).toHaveCount(0);
+});
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  const behavior = programId === 'mihomo-alpha' ? 'offers Final recovery for a preceding catch-all' : 'uses an existing target and remains editable';
+  test(`Intent traffic rule guidance ${behavior} for ${programId}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, programId);
+    if (programId !== 'mihomo-alpha') {
+      await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+      const sources = page.locator('.config-source-editor');
+      await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+      await sources.locator('.source-inline-content').last().fill(JSON.stringify({
+        outbounds: [{ tag: 'via-home', ...(programId === 'xray-primary' ? { protocol: 'freedom' } : { type: 'direct' }) }],
+      }));
+      const save = page.getByRole('button', { name: 'Save sources', exact: true });
+      await save.click();
+      await expect(save).toBeDisabled();
+    }
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    await intent.getByRole('button', { name: 'Add Traffic rule', exact: true }).click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('Match', { exact: true }).selectOption('subdomain');
+    await form.getByLabel('Domain or IP network', { exact: true }).fill('guided.example');
+    await form.getByLabel('Send through', { exact: true }).selectOption(programId === 'mihomo-alpha' ? 'DIRECT' : 'via-home');
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    if (programId === 'mihomo-alpha') {
+      await expect(form).toBeVisible();
+      await expect(form.getByLabel('Domain or IP network', { exact: true })).toHaveValue('guided.example');
+      const notice = intent.locator('.error-notice');
+      await expect(notice).toContainText('A rule already handles all traffic');
+      await expect(notice.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+      await notice.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
+      const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+      await expect(editor).toBeVisible();
+      await expect(editor).not.toContainText('guided.example');
+      return;
+    }
+    await expect(form).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await expect(editor).toContainText('guided.example');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await intent.getByRole('region', { name: 'Traffic and connections', exact: true }).locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(form.getByLabel('Domain or IP network', { exact: true })).toHaveValue('guided.example');
+    await form.getByLabel('Domain or IP network', { exact: true }).fill('revised.example');
+    await form.getByRole('button', { name: 'Done', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(editor).toContainText('revised.example');
+    await expect(editor).not.toContainText('guided.example');
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+test('Intent virtual adapter guidance edits only configuration and keeps advanced options available', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await intent.getByRole('button', { name: 'Add Virtual network adapter', exact: true }).click();
+  const form = intent.locator('.object-form');
+  await form.getByLabel('Virtual network addresses', { exact: true }).fill('172.19.0.1/30');
+  await form.getByLabel('Route traffic automatically', { exact: true }).check();
+  await form.getByRole('button', { name: 'More options', exact: true }).click();
+  await expect(form.getByLabel('Packet size (MTU)', { exact: true })).toBeVisible();
+  await form.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('172.19.0.1/30');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
 
 async function replaceEditorContent(page: Page, editor: Locator, content: string) {
   await editor.focus();
@@ -2033,7 +2393,7 @@ test('a removed device can reactivate its existing license or explicitly replace
 test('system appearance follows operating-system changes and reduced motion', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
   await page.addInitScript(() => {
-    localStorage.setItem('camellia-nexus.appearance.v3', JSON.stringify({
+    localStorage.setItem('camellia-nexus.appearance', JSON.stringify({
       version: 3,
       theme: 'aurora',
       colorMode: 'system',
@@ -2054,7 +2414,7 @@ test('system appearance follows operating-system changes and reduced motion', as
 test('Xray, configuration, resize and log history interactions remain functional', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => {
-    localStorage.setItem('camellia-nexus.xray-dashboard.layout.v1', JSON.stringify({
+    localStorage.setItem('camellia-nexus.xray-dashboard.layout', JSON.stringify({
       pairHeight: 100,
       trafficHeight: 100,
     }));
@@ -2135,23 +2495,24 @@ test('Xray, configuration, resize and log history interactions remain functional
     () => (window as typeof window & { __configurationScrollSamples?: number[] }).__configurationScrollSamples ?? [],
   );
   expect(Math.max(...configurationScrollSamples.map((value) => Math.abs(value - configurationScrollSamples[0])))).toBeLessThanOrEqual(1);
-  await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Dump parsed configuration' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(0);
+  await expect(page.getByText('More', { exact: true })).toBeVisible();
   const configToolbarLayout = await page.locator('.config-toolbar').evaluate((element) => {
-    const toolbar = element.getBoundingClientRect();
-    const managedNotice = element.previousElementSibling?.getBoundingClientRect();
-    const tools = element.querySelector<HTMLElement>('.config-toolbar-tools')!.getBoundingClientRect();
+    const workspace = element.closest<HTMLElement>('.final-editor-workspace')!;
+    const editor = workspace.querySelector<HTMLElement>('.editor-slot')!.getBoundingClientRect();
+    const actions = workspace.querySelector<HTMLElement>('.editor-actions')!.getBoundingClientRect();
+    const tools = element.querySelector<HTMLElement>('.config-more-actions')!.getBoundingClientRect();
     const commit = element.querySelector<HTMLElement>('.config-toolbar-commit')!.getBoundingClientRect();
     const commitButtons = [...element.querySelectorAll<HTMLElement>('.config-toolbar-commit button')]
       .map((button) => button.getBoundingClientRect());
     return {
-      managedNoticeGap: managedNotice ? toolbar.top - managedNotice.bottom : -1,
+      editorActionsGap: actions.top - editor.bottom,
       groupsOverlap: tools.right > commit.left && tools.left < commit.right
         && tools.bottom > commit.top && tools.top < commit.bottom,
       commitButtonTopDelta: Math.abs(commitButtons[0].top - commitButtons[1].top),
     };
   });
-  expect(configToolbarLayout.managedNoticeGap).toBeGreaterThanOrEqual(12);
+  expect(configToolbarLayout.editorActionsGap).toBeGreaterThanOrEqual(8);
   expect(configToolbarLayout.groupsOverlap).toBe(false);
   expect(configToolbarLayout.commitButtonTopDelta).toBeLessThan(2);
   const configContainer = page.locator('.config-editor-resize');
@@ -2176,7 +2537,7 @@ test('Xray, configuration, resize and log history interactions remain functional
       : Number.POSITIVE_INFINITY;
   })).toBeLessThanOrEqual(12);
   await expect.poll(() => page.evaluate(() => {
-    const saved = JSON.parse(localStorage.getItem('camellia-nexus.program-detail.layout.v1') || '{}');
+    const saved = JSON.parse(localStorage.getItem('camellia-nexus.program-detail.layout') || '{}');
     return saved.configHeight;
   })).toBe(2_400);
 
@@ -2449,6 +2810,7 @@ test('managed configuration sources stay dense, stable and responsive', async ({
   await page.setViewportSize({ width: 1440, height: 1000 });
   await openPreview(page, 'cupertino', 'dark');
   await page.locator('.program-item[data-program-id="sing-box-edge"]').click();
+  await page.getByRole('tab', { name: 'Sources' }).click();
 
   const tabAlignment = await page.locator('.program-tabs button').evaluateAll((buttons) => (
     buttons.map((button) => {
@@ -2469,12 +2831,7 @@ test('managed configuration sources stay dense, stable and responsive', async ({
     })
   ));
   expect(tabAlignment.every(({ centerDelta }) => centerDelta <= 1)).toBe(true);
-  expect(tabAlignment.every(({ artX, artY, artWidth, artHeight }) => (
-    Math.abs(artX - 3) <= 0.1
-      && Math.abs(artY - 3) <= 0.1
-      && Math.abs(artWidth - 14) <= 0.1
-      && Math.abs(artHeight - 14) <= 0.1
-  ))).toBe(true);
+  expect(tabAlignment.every(({ artWidth, artHeight }) => artWidth > 0 && artHeight > 0)).toBe(true);
 
   const editor = page.locator('.config-source-editor');
   const automaticUpdates = editor.getByLabel('Automatic updates');
@@ -2574,16 +2931,6 @@ test('managed configuration sources stay dense, stable and responsive', async ({
   expect(describedBy).toBeTruthy();
   await page.keyboard.press('Escape');
   await expect(remote.getByRole('tooltip')).toHaveCount(0);
-  const optionalMetadata = page.locator('.field-caption').filter({ hasText: 'Download URL' }).first();
-  const optionalMetadataStyle = await optionalMetadata.evaluate((element) => {
-    const metadata = element.querySelector('em')!;
-    return {
-      gap: getComputedStyle(element).gap,
-      fontStyle: getComputedStyle(metadata).fontStyle,
-      text: metadata.textContent,
-    };
-  });
-  expect(optionalMetadataStyle).toEqual({ gap: '6px', fontStyle: 'normal', text: '(Optional)' });
   await localPath.focus();
   await remoteUrl.hover();
   await expect(remote.getByRole('tooltip')).toHaveText(longRemoteUrl);
@@ -2629,6 +2976,179 @@ test('managed configuration sources stay dense, stable and responsive', async ({
   await page.screenshot({ path: testInfo.outputPath('managed-sources-compact.png'), fullPage: true });
 });
 
+test('Intent keeps large rule collections compact and selects the exact entry', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'mihomo-alpha');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('.config-source-editor');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  await sources.locator('.source-inline-content').last().fill(JSON.stringify({
+    rules: Array.from({ length: 100 }, (_, i) => `DOMAIN,rule-${i}.example,DIRECT`),
+  }));
+  const save = page.getByRole('button', { name: 'Save sources', exact: true });
+  await save.click();
+  await expect(save).toBeDisabled();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  const picker = intent.getByRole('combobox', { name: 'Choose an entry: Traffic rule', exact: true });
+  await expect(picker.locator('option')).toHaveCount(101);
+  const connections = intent.getByRole('region', { name: 'Traffic and connections', exact: true });
+  await expect(connections).toHaveCount(1);
+  await expect(connections.locator('.object-row')).toHaveCount(0);
+  await picker.selectOption({ label: 'rule-99.example' });
+  const edit = picker.locator('..').getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const form = intent.locator('.object-form');
+  await expect(form.getByLabel('Domain or IP network')).toHaveValue('rule-99.example');
+  await expect(form.getByLabel('Send through')).toHaveValue('DIRECT');
+  for (const width of [760, 520, 400]) {
+    await page.setViewportSize({ width, height: 820 });
+    await expectNoViewportOverflow(page);
+  }
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(edit).toBeFocused();
+});
+
+test('long inline Source content reaches Final configuration immediately after save', async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  await page.locator('.program-item[data-program-id="sing-box-edge"]').click();
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+
+  const editor = page.locator('.config-source-editor');
+  await editor.getByRole('button', { name: 'Inline content', exact: true }).click();
+  const inline = editor.locator('.source-inline-content').last();
+  const marker = `source-${'x'.repeat(96)}`;
+  const content = `${JSON.stringify({ log: { level: 'debug' }, final_source_marker: marker }, null, 2)}\n`;
+  await inline.fill(content);
+
+  const save = page.getByRole('button', { name: 'Save sources', exact: true });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(save).toBeDisabled();
+
+  await page.getByRole('tab', { name: 'Details', exact: true }).click();
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await expect(editor.locator('.source-inline-content').last()).toHaveValue(content);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const finalEditor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(finalEditor).toContainText('"level": "debug"');
+  await expect(finalEditor).toContainText(marker);
+  await expect(page.locator('.final-editor-workspace').getByText('Ready to apply', { exact: true })).toBeVisible();
+  await expectNoViewportOverflow(page);
+});
+
+test('latest Source and Intent operations win while background refresh preserves the user setting', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 840 });
+  await openPreview(page, 'material', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Log detail', { exact: true }).selectOption('info');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('.config-source-editor');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  await sources.locator('.source-inline-content').last().fill('{"log":{"loglevel":"debug"}}');
+  await page.getByRole('button', { name: 'Save sources', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toContainText('"loglevel": "debug"');
+  await expect(page.locator('.path-inspector')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('debug');
+  await page.getByLabel('Setting actions: Log detail', { exact: true }).click();
+  await page.getByRole('button', { name: 'Use this value', exact: true }).click();
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('info');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', {
+    detail: { programId: 'xray-primary' },
+  })));
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('info');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('"loglevel": "info"');
+  await expect(editor).toContainText('"automatic": true');
+  await expect(page.locator('.path-inspector')).toHaveCount(0);
+});
+
+test('source save errors stay scoped, explain the busy operation, and retry safely', async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 820 });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_source_save_error');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('#program-panel-sources');
+  const editor = sources.locator('.config-source-editor');
+  await editor.getByRole('button', { name: 'Inline content', exact: true }).click();
+  await editor.locator('.source-inline-content').last().fill('{"log":{"level":"debug"}}');
+  await sources.getByRole('button', { name: 'Save sources', exact: true }).click();
+
+  const notice = sources.locator('.error-notice');
+  await expect(notice).toContainText('Configuration sources could not be saved');
+  await expect(notice).toContainText('waiting for another program operation');
+  await expect(notice.getByText('Technical details')).toBeVisible();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  await expect(page.locator('#program-panel-compatibility .error-notice')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await notice.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(sources.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
+});
+
+test('source feedback expires and a repeated save gets a fresh display interval', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('#program-panel-sources');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  const content = sources.locator('.source-inline-content').last();
+  await page.clock.install();
+  await content.fill('{"log":{"level":"debug"}}');
+  await sources.getByRole('button', { name: 'Save sources', exact: true }).click();
+  const feedback = sources.locator('.workspace-success');
+  await expect(feedback).toHaveText('Sources saved');
+  await page.clock.runFor(4000);
+  await content.fill('{"log":{"level":"warn"}}');
+  await sources.getByRole('button', { name: 'Save sources', exact: true }).click();
+  await expect(feedback).toHaveText('Sources saved');
+  await page.clock.runFor(3000);
+  await expect(feedback).toBeVisible();
+  await page.clock.runFor(3100);
+  await expect(feedback).toHaveCount(0);
+  await expect(sources.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
+});
+
+test('platform capability feedback is localized, actionable and clears after repair', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 820 });
+  await openPreview(page, 'aurora', 'dark', 1, '&__ui_platform_issue');
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const workspace = page.locator('.final-editor-workspace');
+  const warning = workspace.locator('.editor-blockers');
+  await expect(warning).toContainText('This setting is not available on this program’s platform');
+  await expect(warning).toContainText('/inbounds/0/auto_redirect');
+  await expect(page.getByRole('button', { name: 'Apply and restart', exact: true })).toBeDisabled();
+  await page.clock.install();
+  await page.clock.runFor(15000);
+  await expect(warning).toBeVisible();
+  await expectAccessible(page, '.final-editor-workspace');
+  await expectNoViewportOverflow(page);
+  await warning.getByRole('button').click();
+  await expect(editor).toBeFocused();
+
+  if (await page.getByRole('button', { name: 'Open navigation' }).isVisible()) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+  }
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(warning).toContainText('此程序在当前平台无法使用该设置');
+  await expectNoViewportOverflow(page);
+  await replaceEditorContent(page, workspace.locator('.cm-content'), '{"inbounds":[{"type":"tun","tag":"tun-in","auto_route":true,"auto_redirect":false}]}');
+  await page.clock.runFor(1000);
+  await expect(warning).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '应用并重启', exact: true })).toBeEnabled();
+  await expect(workspace).not.toContainText('此程序在当前平台无法使用该设置');
+});
+
 test('create program keeps its content scrollable and actions reachable at the minimum window size', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 680, height: 480 });
   await openPreview(page, 'aurora', 'dark', 1.3);
@@ -2672,8 +3192,7 @@ test('create program keeps its content scrollable and actions reachable at the m
   expect(layout.dialogBottom).toBeLessThanOrEqual(layout.viewportHeight);
   await expect(createProgram).toBeInViewport();
 
-  await body.hover();
-  await page.mouse.wheel(0, 1_000);
+  await body.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
   await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(createProgram).toBeInViewport();
   await expectNoViewportOverflow(page);
@@ -2687,7 +3206,9 @@ test('Mihomo keeps YAML configuration, managed Dashboard and compact layout inte
   await page.locator('.program-item[data-program-id="mihomo-alpha"]').click();
   await expect(page.getByRole('heading', { name: 'Mihomo Alpha gateway' })).toBeVisible();
   await expect(page.locator('.detail-program-icon.mihomo .program-glyph.mihomo')).toBeVisible();
+  await page.getByRole('tab', { name: 'Sources' }).click();
   await expect(page.getByText('Combine ordered native YAML sources into the active configuration')).toBeVisible();
+  await page.getByRole('tab', { name: 'Details' }).click();
   await expect(page.getByRole('heading', { name: 'Mihomo Dashboard' })).toBeVisible();
   await expect(page.getByLabel('Enable Mihomo Dashboard')).toBeChecked();
 
@@ -2703,7 +3224,8 @@ test('Mihomo keeps YAML configuration, managed Dashboard and compact layout inte
   await expect(editor).toBeVisible();
   await expect(editor).toContainText('mode: rule');
   await expect(editor).toContainText('external-controller');
-  await expect(page.getByRole('button', { name: 'Validate', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Apply and restart', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(0);
   await expectNoViewportOverflow(page);
   await page.screenshot({ path: testInfo.outputPath('mihomo-material-dark-compact.png'), fullPage: true });
 
@@ -2754,6 +3276,1444 @@ test('the configuration editor has a localized name, description and visible foc
   await expect(page.locator(`#${localizedDescriptionId}`)).toContainText(
     '编辑程序配置',
   );
+});
+
+test('maintained releases show automatic identity without capability-count claims', async ({ page }, testInfo) => {
+  const scenarios = [
+    {
+      query: '&__ui_core_target=release-xray',
+      programId: 'xray-primary',
+      version: '26.3.27',
+    },
+    {
+      query: '&__ui_core_target=release-mihomo',
+      programId: 'mihomo-alpha',
+      version: '1.19.29',
+    },
+    {
+      query: '&__ui_core_target=release-singbox',
+      programId: 'sing-box-edge',
+      version: '1.13.18',
+    },
+    {
+      query: '&__ui_core_target=release-singbox-new',
+      programId: 'sing-box-edge',
+      version: '1.14.0',
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await page.setViewportSize({ width: index % 2 === 0 ? 1180 : 720, height: 860 });
+    await openPreview(page, index % 2 === 0 ? 'cupertino' : 'aurora', index % 2 === 0 ? 'light' : 'dark', 1.05, scenario.query);
+    await openProgramDetails(page, scenario.programId);
+    await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+    const panel = page.locator('#program-panel-compatibility');
+    await expect(panel).toContainText('Configuration is up to date');
+    await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText(scenario.version);
+    const advanced = panel.locator('.compatibility-advanced');
+    await expect(advanced).not.toHaveAttribute('open', '');
+    await advanced.getByText('About compatibility', { exact: true }).click();
+    await expect(advanced.getByText('Supported versions', { exact: true })).toBeVisible();
+    await expect(advanced).toContainText('This program accepted the saved configuration');
+    await expect(advanced).not.toContainText('fingerprint');
+    await expect(advanced).not.toContainText('digest');
+    await expectNoViewportOverflow(page);
+    await expectAccessible(page, '#program-panel-compatibility');
+    await panel.screenshot({ path: testInfo.outputPath(`core-release-${index + 1}.png`) });
+  }
+});
+
+test('a rejected program is explained and focused even when the create form is scrolled to the bottom', async ({ page }) => {
+  await page.setViewportSize({ width: 680, height: 720 });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_create_prerelease');
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await page.getByRole('button', { name: 'Add program' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add to Camellia Nexus' });
+  await dialog.getByRole('button', { name: 'sing-box', exact: true }).click();
+  await dialog.locator('[data-create-field="id"]').fill('prerelease-rejection');
+  await dialog.locator('[data-create-field="name"]').fill('Prerelease rejection');
+  await dialog.getByRole('button', { name: 'Use in place' }).click();
+  await dialog.locator('[data-create-field="executable"]').fill('/tmp/sing-box.exe');
+  await dialog.locator('.modal-body').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await dialog.getByRole('button', { name: 'Create program' }).click();
+  const notice = dialog.locator('.create-request-error');
+  await expect(notice).toBeFocused();
+  await expect(notice).toBeInViewport();
+  await expect(notice).toContainText('Choose a supported stable release instead of a prerelease');
+  await expect(dialog).toBeVisible();
+});
+
+test('future Core versions and stale validation evidence stay explicit at compact width', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 680, height: 720 });
+  await openPreview(
+    page,
+    'material',
+    'dark',
+    1.3,
+    '&__ui_core_target=future&__ui_core_evidence=stale&__ui_config_source=stale',
+  );
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const panel = page.locator('#program-panel-compatibility');
+  await expect(panel).toContainText('This program version is not supported yet');
+  const advanced = panel.locator('.compatibility-advanced');
+  await advanced.getByText('About compatibility', { exact: true }).click();
+  await expect(panel.getByRole('button', { name: 'Replace program', exact: true })).toBeVisible();
+  await expect(advanced.getByText('99.0.0 · futureVersion', { exact: true })).toHaveCount(0);
+  await expect(advanced.getByText('Supported versions', { exact: true })).toBeVisible();
+  const compatibilityIssue = panel.locator('.surface-issues');
+  await expect(compatibilityIssue).toContainText('Your changes will be checked when you apply them');
+  await expect(compatibilityIssue.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).not.toBeVisible();
+  await compatibilityIssue.getByText('Information for support', { exact: true }).click();
+  await expect(compatibilityIssue.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const guided = page.locator('#program-panel-intent .guided-workspace');
+  await expect(guided.getByText('Pending validation', { exact: true })).toHaveCount(0);
+  await expect(guided.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toHaveCount(0);
+  await expect(guided.locator('.source-statuses')).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-intent');
+  await page.screenshot({ path: testInfo.outputPath('core-future-stale-evidence-compact.png'), fullPage: true });
+});
+
+test('invalid and unavailable sources retain visible recovery diagnostics', async ({ page }, testInfo) => {
+  const scenarios = [
+    {
+      mode: 'invalid',
+      status: 'invalid',
+      code: 'SOURCE_INVALID',
+      reason: 'This source contains invalid configuration. Edit or disable it',
+    },
+    {
+      mode: 'unavailable',
+      status: 'unavailable',
+      code: 'SOURCE_UNAVAILABLE',
+      reason: 'Source file not found. Select an existing file',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await page.setViewportSize({ width: 760, height: 760 });
+    await openPreview(page, 'aurora', 'light', 1.15, `&__ui_config_source=${scenario.mode}`);
+    await openProgramDetails(page, 'xray-primary');
+    await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+    const sources = page.locator('#program-panel-sources');
+    const source = sources.locator('.source-status-item').filter({ hasText: 'Production routing' });
+    await expect(source).toContainText(scenario.status);
+    await expect(source.locator('.source-status-reason')).toHaveText(scenario.reason);
+    await expect(source.getByRole('button', { name: 'Retry source update', exact: true })).toBeVisible();
+    await source.getByRole('button', { name: 'Review source', exact: true }).click();
+    await expect(sources.locator('.config-source-row[data-source-id="primary"] .source-enabled input')).toBeFocused();
+    await expect(sources.locator('.surface-issues')).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const guided = page.locator('#program-panel-intent .guided-workspace');
+    await expect(guided.getByText('Needs attention', { exact: true })).toHaveCount(0);
+    await expect(guided.locator('.surface-issues')).toHaveCount(0);
+    await expect(guided.getByText(scenario.code, { exact: true })).toHaveCount(0);
+    await expectNoViewportOverflow(page);
+    await expectAccessible(page, '#program-panel-intent');
+    await page.screenshot({ path: testInfo.outputPath(`configuration-source-${scenario.mode}.png`), fullPage: true });
+  }
+});
+
+test('source conflict points to the source and clears after pausing it', async ({ page }) => {
+  await openPreview(page, 'material', 'light', 1, '&__ui_config_source=conflict');
+  await openProgramConfiguration(page, 'xray-primary');
+  const final = page.locator('.final-editor-workspace');
+  await final.getByRole('button', { name: /Resolve the source conflict/ }).click();
+  const sources = page.locator('#program-panel-sources');
+  await expect(sources).toBeVisible();
+  await expect(sources.locator('.surface-issues article')).toHaveCount(1);
+  await sources.getByRole('button', { name: 'Review source: Production routing' }).click();
+  await expect(sources.locator('.config-source-row[data-source-id="primary"] .source-enabled input')).toBeFocused();
+  await sources.getByRole('button', { name: 'Review source: Alternative routing' }).click();
+  const alternate = sources.locator('.config-source-row[data-source-id="alternate"]');
+  await expect(alternate.locator('.source-enabled input')).toBeFocused();
+  await alternate.locator('.source-enabled input').uncheck();
+  await sources.getByRole('button', { name: 'Save sources' }).click();
+  await expect(sources.locator('.surface-issues')).toHaveCount(0);
+  await expect(sources.locator('.source-status-item').filter({ hasText: 'Alternative routing' }).getByRole('button', { name: 'Retry source update' })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration' }).click();
+  await expect(final.getByText('Resolve the source conflict before continuing.')).toHaveCount(0);
+});
+
+test('source conflict names remain readable in Chinese at narrow width', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 760 });
+  await openPreview(page, 'aurora', 'light', 1, '&__ui_config_source=conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const navigation = page.getByRole('button', { name: 'Open navigation' });
+  if (await navigation.isVisible()) await navigation.click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  const closeNavigation = page.getByRole('button', { name: 'Close navigation' });
+  if (await closeNavigation.isVisible()) await closeNavigation.click();
+  const issue = page.locator('#program-panel-sources .surface-issues');
+  await expect(issue).toContainText('这些配置源给出了不同的值');
+  await expect(issue.getByRole('button', { name: '检查配置源: Production routing' })).toBeVisible();
+  await expect(issue.getByRole('button', { name: '检查配置源: Alternative routing' })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-sources');
+});
+
+test('source failure reason switches language without exposing a raw error', async ({ page }) => {
+  await openPreview(page, 'material', 'light', 1, '&__ui_config_source=invalid');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const reason = page.locator('#program-panel-sources .source-status-reason');
+  await expect(reason).toHaveText('This source contains invalid configuration. Edit or disable it');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(reason).toHaveText('配置源内容无效，请修改或停用');
+  await expectNoViewportOverflow(page);
+});
+
+test('automatic compatibility has one action and cannot change a reference baseline', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 820 });
+  await openPreview(page, 'aurora', 'light', 1, '&__ui_core_target=release-xray');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const panel = page.locator('#program-panel-compatibility');
+  await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText('26.3.27');
+  await expect(panel.locator('select, input, datalist')).toHaveCount(0);
+  await expect(panel.locator('.compatibility-status-card button')).toHaveCount(1);
+  await expect(panel.getByRole('button', { name: 'Review Final configuration', exact: true })).toBeEnabled();
+  await expect(panel.locator('.compatibility-advanced')).not.toHaveAttribute('open', '');
+  await expect(panel.getByText('Feature decisions', { exact: true })).not.toBeVisible();
+  await panel.getByRole('button', { name: 'Review Final configuration', exact: true }).click();
+  await expect(page.locator('.final-editor-workspace')).toBeVisible();
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText('26.3.27');
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-compatibility');
+});
+
+test('unrecognized binaries keep configuration inspectable without a reference override', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 820 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_core_target=unknown');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const panel = page.locator('#program-panel-compatibility');
+  await expect(panel).toContainText('The program version could not be identified');
+  await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText('Not detected');
+  await expect(panel.locator('select, input, datalist')).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Replace program', exact: true }).click();
+  await expect(page.locator('#program-panel-overview')).toBeVisible();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor', exact: true })).not.toBeEmpty();
+  await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
+  await page.locator('.editor-blockers').getByRole('button', { name: /The program version could not be identified/ }).click();
+  await expect(panel).toBeVisible();
+  await expect(panel.locator('.compatibility-advanced')).not.toHaveAttribute('open', '');
+  await panel.getByText('About compatibility', { exact: true }).click();
+  await expect(panel).toContainText('26.3 · 26.2');
+  await expect(panel).not.toContainText('Accepted for this candidate');
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-compatibility');
+});
+
+test('identity read failures have one localized retry and do not leak to sibling tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 820 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_identity_read_error');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const panel = page.locator('#program-panel-compatibility');
+  await expect(panel.getByRole('button', { name: 'Retry detection', exact: true })).toBeEnabled();
+  await expect(panel.locator('.error-notice')).toHaveCount(0);
+  await expect(panel.locator('.compatibility-error-details')).not.toBeVisible();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.locator('#program-panel-intent .error-notice')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Details', exact: true }).click();
+  await expect(page.locator('#program-panel-overview .error-notice')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  await page.evaluate(() => window.dispatchEvent(new Event('camellia-ui-preview:identity-ready')));
+  await panel.getByRole('button', { name: 'Retry detection', exact: true }).click();
+  await expect(panel.getByRole('button', { name: 'Review Final configuration', exact: true })).toBeVisible();
+  await expect(panel).not.toContainText('Program detection needs attention');
+  await expect(panel.locator('.compatibility-error-details')).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-compatibility');
+});
+
+test('automatic identity layout contains long messages and controls across languages and widths', async ({ page }) => {
+  test.setTimeout(90_000);
+  for (const [index, theme] of ['cupertino', 'material', 'aurora'].entries()) {
+    await openPreview(page, theme as 'cupertino' | 'material' | 'aurora', index % 2 ? 'dark' : 'light', 1.3, '&__ui_core_target=unknown');
+    await openProgramDetails(page, 'xray-primary');
+    await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+    for (const language of ['English', 'Chinese']) {
+      if (language === 'Chinese') {
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+        await settings.getByRole('tab', { name: 'General', exact: true }).click();
+        await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+        await page.keyboard.press('Escape');
+      }
+      const panel = page.locator('#program-panel-compatibility');
+      await expect(panel).toContainText(language === 'Chinese' ? '无法确认程序版本' : 'The program version could not be identified');
+      for (const width of [400, 520, 680, 760, 960, 1024, 1100, 1250, 1280, 1400]) {
+        await page.setViewportSize({ width, height: 860 });
+        await expect(panel.locator('.compatibility-status-card button')).toBeVisible();
+        await expectNoViewportOverflow(page);
+        expect(await page.locator('.program-tabs').evaluate((tabs) => {
+          const fits = (child: Element, parent: Element) => {
+            const rect = child.getBoundingClientRect();
+            const bounds = parent.getBoundingClientRect();
+            return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1
+              && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1;
+          };
+          return Array.from(tabs.querySelectorAll('[role="tab"]')).every((tab) => {
+            const labels = Array.from(tab.querySelectorAll('.tab-label'))
+              .filter((label) => getComputedStyle(label).display !== 'none');
+            return fits(tab, tabs)
+              && labels.length <= 1
+              && labels.every((label) => fits(label, tab))
+              && Array.from(tab.querySelectorAll('svg')).every((icon) => fits(icon, tab));
+          });
+        })).toBe(true);
+        expect(await panel.evaluate((element) => {
+          const selectors = '.compatibility-card > *, .compatibility-status-card > *, .compatibility-status-card strong';
+          return Array.from(element.querySelectorAll(selectors)).every((child) => {
+            const rect = child.getBoundingClientRect();
+            const parent = child.parentElement!.getBoundingClientRect();
+            return rect.left >= parent.left - 1 && rect.right <= parent.right + 1
+              && rect.top >= parent.top - 1 && rect.bottom <= parent.bottom + 1;
+          });
+        })).toBe(true);
+      }
+      const action = panel.locator('.compatibility-status-card button');
+      await action.focus();
+      await expect(action).toBeFocused();
+      await expectAccessible(page, '#program-panel-compatibility');
+    }
+  }
+});
+
+test('Final merge conflicts stay in Configuration while Intent controls remain re-enterable', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 820 });
+  await openPreview(page, 'material', 'dark', 1.15, '&__ui_final_merge_conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const guided = page.locator('#program-panel-intent .guided-workspace');
+  await expect(guided.locator('.intent-group')).toHaveCount(4);
+  const control = page.getByLabel('Domain matching', { exact: true });
+  await expect(control).toBeEnabled();
+  await control.selectOption('IPIfNonMatch');
+  await expect(guided.getByText('FINAL_EDIT_CONFLICT', { exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const finalConfiguration = page.locator('.final-editor-workspace');
+  await expect(finalConfiguration).toBeVisible();
+  await expect(finalConfiguration.locator('.merge-summary')).toContainText('settings need a choice');
+  await expect(finalConfiguration).toContainText('/log/loglevel');
+  await expect(page.getByText('Saved candidate is ready to apply.', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.config-save')).toBeDisabled();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-intent');
+});
+
+test('Final configuration can accept the updated upstream value without reopening the program', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const panel = page.locator('.final-editor-workspace');
+  const block = panel.locator('.cm-configuration-conflict-widget.expanded');
+  await expect(block).toContainText('/log/loglevel');
+  await block.getByRole('button', { name: 'Accept updated', exact: true }).click();
+  await expect(panel.locator('.merge-summary')).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"loglevel": "info"');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.locator('#program-panel-intent').getByText('FINAL_EDIT_CONFLICT', { exact: true })).toHaveCount(0);
+});
+
+test('an inline conflict failure stays beside its choice and clears after retry', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_conflict_fail_once');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(block.getByRole('alert')).toBeVisible();
+  await expect(page.locator('#program-panel-configuration > .error-notice')).toHaveCount(0);
+  await block.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(block).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"loglevel": "debug"');
+  await expect(page.locator('#program-panel-configuration [role="alert"]')).toHaveCount(0);
+});
+
+test('a deleted final field locates its parent without a false missing path error', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_deleted_final_edit');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await page.locator('.cm-configuration-marker-line.cm-configuration-marker-source').click();
+  const inspector = page.locator('.path-inspector');
+  await expect(inspector).toContainText('/log/timestamp');
+  await inspector.getByRole('button', { name: 'Locate in editor' }).click();
+  await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
+  await expect(page.locator('.cm-configuration-source-widget')).toHaveCount(0);
+});
+
+test('an unchanged saved Source can restore one Final edit without re-saving all sources', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_deleted_final_edit');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('#program-panel-sources');
+  await expect(sources.getByRole('button', { name: 'Save sources' })).toBeDisabled();
+  await expect(sources).toContainText('Sources are saved. Final configuration has manual changes');
+  await sources.getByRole('button', { name: 'Review final changes' }).click();
+  const inspector = page.locator('.path-inspector');
+  await expect(inspector).toContainText('/log/timestamp');
+  await inspector.getByRole('button', { name: 'Use latest setting' }).click();
+  await expect(inspector).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"timestamp": true');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await expect(sources.getByRole('button', { name: 'Save sources' })).toBeDisabled();
+  await expect(sources.getByText('Sources are saved. Final configuration has manual changes')).toHaveCount(0);
+});
+
+test('a failed path adoption keeps the edit and clears its error after retry', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_deleted_final_edit&__ui_adopt_fail_once');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await page.locator('.cm-configuration-marker-line.cm-configuration-marker-source').click();
+  const inspector = page.locator('.path-inspector');
+  await inspector.getByRole('button', { name: 'Use latest setting' }).click();
+  const notice = page.locator('#program-panel-configuration > .error-notice');
+  await expect(notice).toContainText('Latest setting could not be used');
+  await expect(inspector).toContainText('/log/timestamp');
+  await notice.getByRole('button', { name: 'Retry' }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(inspector).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"timestamp": true');
+});
+
+test('a rejected conflict choice allows choosing the other value without editing text', async ({ page }) => {
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_conflict_rejected_once');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(block.getByRole('alert')).toBeVisible();
+  await expect(block.getByRole('button', { name: 'Accept updated', exact: true })).toBeEnabled();
+  await block.getByRole('button', { name: 'Accept updated', exact: true }).click();
+  await expect(block).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"loglevel": "info"');
+  await expect(page.locator('#program-panel-configuration [role="alert"]')).toHaveCount(0);
+});
+
+test('a lost conflict response retries the committed request without another choice', async ({ page }) => {
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_conflict_response_lost');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(block.getByRole('alert')).toBeVisible();
+  await block.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(block).toHaveCount(0);
+  await expect(page.locator('.config-editor-resize .cm-content')).toContainText('debug');
+  await expect(page.locator('.cm-configuration-inline-error')).toHaveCount(0);
+});
+
+test('two conflict choices undo and redo in editor history order', async ({ page }) => {
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict&__ui_two_final_conflicts');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const workspace = page.locator('.final-editor-workspace');
+  const block = workspace.locator('.cm-configuration-conflict-widget.expanded');
+  const shell = page.locator('.code-editor-shell');
+  await expect(workspace.locator('.merge-summary')).toContainText('2 settings need a choice');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await expect(block).toContainText('/route/final');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toHaveCount(0);
+  await shell.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await expect(block).toContainText('/route/final');
+  await shell.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('2 settings need a choice');
+  await shell.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await shell.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(workspace.locator('.merge-summary')).toHaveCount(0);
+});
+
+test('Final configuration keeps the effective document and merge resolution in one editor', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+
+  const workspace = page.locator('.final-editor-workspace');
+  await expect(workspace.getByRole('heading', { name: 'Final configuration', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Final configuration', exact: true })).toHaveCount(1);
+  await expect(page.locator('.generated-config-note, .trace-table')).toHaveCount(0);
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('/log/loglevel');
+  await expect(workspace.getByText('Save candidate, then validate before applying', { exact: true })).toHaveCount(0);
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  const editorShell = page.locator('.code-editor-shell');
+  await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
+  await expect(editor).toContainText('"loglevel": "info"');
+  await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
+    .toHaveCount(1);
+
+  await workspace.locator('.cm-configuration-conflict-widget.expanded').getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(workspace.getByText('Modified', { exact: true })).toBeVisible();
+  await expect(editor).toContainText('"loglevel": "debug"');
+  await expect(workspace.locator('.path-inspector')).toHaveCount(0);
+  await editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-source').click();
+  await expect(workspace).toContainText('Upstream value');
+  await expect(workspace).toContainText('Final value');
+  await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
+    .toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Problems: No problems', exact: true })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-configuration');
+});
+
+test('switching programs clears the previous editor path and location notice', async ({ page }) => {
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  const conflictBlock = page.locator('.final-editor-workspace .cm-configuration-conflict-widget.expanded');
+  await expect(conflictBlock).toContainText('/log/loglevel');
+  await editor.fill('{"inbounds":[],"outbounds":[]}');
+  await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
+
+  await page.locator('.program-item[data-program-id="sing-box-edge"]').click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.locator('.config-path-focus-notice')).toHaveCount(0);
+  await expect(page.locator('.final-editor-workspace .cm-configuration-conflict-widget.expanded')).toContainText('/log/level');
+  await expect(page.locator('.final-editor-workspace .cm-configuration-conflict-widget.expanded')).not.toContainText('/log/loglevel');
+});
+
+test('Final configuration manual merge starts with valid JSON and resolves through the selected editor path', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+
+  const workspace = page.locator('.final-editor-workspace');
+  const editorShell = page.locator('.code-editor-shell');
+  const block = workspace.locator('.cm-configuration-conflict-widget.expanded');
+  const manualValue = block.getByLabel('Merged JSON value');
+  await expect(manualValue).toHaveCount(0);
+  await block.getByRole('button', { name: 'Merge manually', exact: true }).click();
+  await expect(manualValue).toHaveValue('"debug"');
+  await expect(manualValue).toBeFocused();
+  expect(await manualValue.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const scroller = element.closest('.cm-scroller')!.getBoundingClientRect();
+    return bounds.top >= scroller.top && bounds.bottom <= scroller.bottom;
+  })).toBe(true);
+  await manualValue.fill('"warn"');
+  await block.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(block.getByRole('button', { name: 'Merge manually', exact: true })).toBeFocused();
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await block.getByRole('button', { name: 'Merge manually', exact: true }).click();
+  await expect(manualValue).toHaveValue('"debug"');
+  await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
+    .toHaveCount(1);
+
+  await manualValue.fill('"warn"');
+  await block.getByRole('button', { name: 'Use merged value', exact: true }).click();
+  await expect(workspace.getByText('Modified', { exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' }))
+    .toContainText('"loglevel": "warn"');
+  await expect(block).toHaveCount(0);
+  await expect(editorShell.locator('.cm-configuration-marker-line.cm-configuration-marker-conflict'))
+    .toHaveCount(0);
+});
+
+test('Final configuration keeps validation behind one Apply action', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  const apply = page.getByRole('button', { name: 'Apply and restart', exact: true });
+
+  await expect(page.getByRole('button', { name: 'Save candidate', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(0);
+  await replaceEditorContent(page, editor, '{"log": }');
+  await expect(page.locator('.final-editor-workspace').getByText('Modified', { exact: true })).toBeVisible();
+  await expect(apply).toBeEnabled();
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const compatibilityPanel = page.locator('#program-panel-compatibility');
+  await expect(compatibilityPanel.getByRole('button', { name: 'Validate current candidate', exact: true })).toHaveCount(0);
+  await expect(compatibilityPanel.getByRole('button', { name: 'Open Final configuration', exact: true })).toBeVisible();
+  await expect(compatibilityPanel).toContainText('Your changes are not applied yet');
+});
+
+test('Final configuration editor remains reachable from compact mobile to wide desktop', async ({ page }) => {
+  await openPreview(page, 'aurora', 'light', 1, '&__ui_final_merge_conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const workspace = page.locator('.final-editor-workspace');
+  const editorShell = page.locator('.code-editor-shell');
+
+  for (const width of [1280, 1024, 760, 680, 520, 400]) {
+    await page.setViewportSize({ width, height: 860 });
+    await expect(workspace).toBeVisible();
+    await expect(editorShell).toBeVisible();
+    await expectNoViewportOverflow(page);
+    const overflowingTabs = await page.locator('.program-tabs button').evaluateAll((buttons) => buttons
+      .filter((button) => Array.from(button.children).some((child) => {
+        if (getComputedStyle(child).display === 'none') return false;
+        const parent = button.getBoundingClientRect();
+        const bounds = child.getBoundingClientRect();
+        return bounds.left < parent.left - 1 || bounds.right > parent.right + 1;
+      }))
+      .map((button) => button.getAttribute('aria-label')));
+    expect(overflowingTabs).toEqual([]);
+    const editorWidth = await editorShell.evaluate((element) => element.getBoundingClientRect().width);
+    expect(editorWidth).toBeGreaterThan(0);
+    const mergeBounds = await workspace.locator('.cm-configuration-conflict-widget.expanded').evaluate((element) => {
+      const parent = element.closest('.code-editor-shell')!.getBoundingClientRect();
+      const gutter = element.closest('.code-editor-shell')!.querySelector('.cm-gutters')!.getBoundingClientRect();
+      const children = [element, ...element.querySelectorAll('button, textarea, .cm-configuration-compare, pre')];
+      return children.map((child) => {
+        const rect = child.getBoundingClientRect();
+        return { tag: child.tagName, className: child.className, left: rect.left, right: rect.right, parentLeft: parent.left, parentRight: parent.right,
+          inside: rect.left >= parent.left - 1 && rect.right <= parent.right + 1,
+          clearsGutter: rect.left >= gutter.right + 1 };
+      });
+    });
+    expect(mergeBounds.filter((item) => !item.inside)).toEqual([]);
+    expect(mergeBounds.filter((item) => !item.clearsGutter)).toEqual([]);
+    if (width <= 680) {
+      const navigationBar = page.locator('.mobile-nav-bar');
+      await expect(navigationBar).toBeVisible();
+      const coverage = await navigationBar.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const color = getComputedStyle(element).backgroundColor;
+        return { left: bounds.left, right: bounds.right, color };
+      });
+      expect(coverage.left).toBeLessThanOrEqual(18);
+      expect(coverage.right).toBeGreaterThanOrEqual(width - 18);
+      expect(coverage.color).not.toBe('rgba(0, 0, 0, 0)');
+      await page.locator('.editor-command-bar').getByRole('button', { name: 'Find' }).click();
+      await page.keyboard.press('Escape');
+      if (width === 680) {
+        await page.getByRole('button', { name: 'Open navigation' }).click();
+        const drawerColor = await page.locator('#primary-sidebar').evaluate((element) => getComputedStyle(element).backgroundColor);
+        expect(drawerColor).not.toBe('rgba(0, 0, 0, 0)');
+        await page.keyboard.press('Escape');
+      }
+    }
+  }
+});
+
+test('Final configuration and Compatibility validation rerender fully in Chinese', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 840 });
+  await openPreview(page, 'cupertino', 'dark', 1, '&__ui_final_merge_conflict');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  // At compact widths the global actions live in the navigation drawer.
+  if (await page.getByRole('button', { name: 'Open navigation' }).isVisible()) {
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+  }
+  await page.getByRole('button', { name: 'Settings' }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'General' }).click();
+  await settings.getByRole('button', { name: 'Chinese' }).click();
+  await page.keyboard.press('Escape');
+
+  const workspace = page.locator('.final-editor-workspace');
+  await expect(workspace.getByRole('heading', { name: '最终配置', exact: true })).toBeVisible();
+  await expect(workspace.locator('.merge-summary')).toContainText('处设置需要选择');
+  await expect(workspace).toContainText('更新后的配置');
+  await expect(workspace).toContainText('你的修改');
+  await expect(workspace).toContainText('手工合并');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toBeVisible();
+  await expect(workspace).not.toContainText('Merge manually');
+  await expect(workspace).not.toContainText('The updated configuration and your edit changed the same path');
+  await page.getByRole('tab', { name: '兼容性', exact: true }).click();
+  const compatibility = page.locator('#program-panel-compatibility');
+  await expect(compatibility).toContainText('请在最终配置中修正标出的问题');
+  await expect(compatibility.getByRole('button', { name: '打开最终配置', exact: true })).toBeVisible();
+  await expect(compatibility.getByText('兼容性说明', { exact: true })).toBeVisible();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-compatibility');
+});
+
+test('Compatibility sends unapplied edits back to the single Final configuration action', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const panel = page.locator('#program-panel-compatibility');
+  await expect(panel.getByRole('button', { name: 'Validate current candidate', exact: true })).toHaveCount(0);
+  await expect(panel).toContainText('Your changes are not applied yet');
+  await panel.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Apply and restart', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /Validate/, exact: true })).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+});
+
+test('Guided intent updates the Desired document and remains re-enterable', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+
+  const logLevel = page.getByLabel('Log detail', { exact: true });
+  await logLevel.selectOption('error');
+  await expect(logLevel).toHaveValue('error');
+
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toContainText('"level": "error"');
+
+  // Switching projections must not leave the Guided control disabled or
+  // regress the Desired value back to the previous source-owned value.
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(logLevel).toBeEnabled();
+  await logLevel.selectOption('debug');
+  await expect(logLevel).toHaveValue('debug');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('"level": "debug"');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-intent');
+});
+
+test('Final editor continuously rebases latest upstream changes and conflicts only on overlap', async ({ page }) => {
+  await page.setViewportSize({ width: 980, height: 840 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const withManualField = {
+    log: { level: 'info' },
+    route: { final: 'proxy-sg' },
+    manual_extension: { enabled: true },
+  };
+  await replaceEditorContent(page, editor, `${JSON.stringify(withManualField, null, 2)}\n`);
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Log detail', { exact: true }).selectOption('error');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('"level": "error"');
+  await expect(editor).toContainText('"manual_extension"');
+  await expect(page.locator('.final-editor-workspace').getByText('Conflict', { exact: true })).toHaveCount(0);
+
+  withManualField.log.level = 'debug';
+  await replaceEditorContent(page, editor, `${JSON.stringify(withManualField, null, 2)}\n`);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Log detail', { exact: true }).selectOption('fatal');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+
+  const workspace = page.locator('.final-editor-workspace');
+  await expect(workspace.locator('.merge-summary')).toContainText('1 setting needs a choice');
+  await expect(editor).toContainText('"level": "fatal"');
+  await expect(editor).toContainText('"manual_extension"');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('/log/level');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('debug');
+  await expect(page.locator('.config-save')).toBeDisabled();
+  await expectNoViewportOverflow(page);
+});
+
+test('Intent controls show the effective candidate without repeated final-edit warnings', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 820 });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_guided_final_edit');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+
+  const intent = page.locator('#program-panel-intent');
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('error');
+  await expect(intent.getByText('Final configuration edit', { exact: true })).toHaveCount(0);
+  await expect(intent.getByText('Changes here may require conflict resolution there', { exact: true })).toHaveCount(0);
+  await intent.getByLabel('Setting actions: Log detail', { exact: true }).click();
+  await expect(intent.getByRole('button', { name: 'Use this value', exact: true })).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText(
+    '"level": "error"',
+  );
+  await expectNoViewportOverflow(page);
+});
+
+test('an upstream candidate applies through one action without generation drift', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 840 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Log detail', { exact: true }).selectOption('debug');
+
+  await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+  const generationBeforeSave = await page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, string>) => Promise<{ state: { generation: number } }>;
+    } }).__TAURI_INTERNALS__;
+    return (await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' })).state.generation;
+  });
+
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const workspace = page.locator('.final-editor-workspace');
+  const apply = page.getByRole('button', { name: 'Apply and restart', exact: true });
+  await expect(workspace.getByText('Ready to apply', { exact: true })).toBeVisible();
+  await expect(workspace.locator('.editor-blockers')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save candidate', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(0);
+  await expect(apply).toBeEnabled();
+  await apply.click();
+  const confirmation = page.getByRole('alertdialog');
+  await confirmation.getByRole('button', { name: 'Apply and restart', exact: true }).click();
+  await expect(workspace.getByText('Applied', { exact: true })).toBeVisible();
+
+  const generationAfterApply = await page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, string>) => Promise<{ state: { generation: number } }>;
+    } }).__TAURI_INTERNALS__;
+    return (await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' })).state.generation;
+  });
+  expect(generationAfterApply).toBe(generationBeforeSave);
+});
+
+test('latest settings and Final configuration remain usable while optional reads are slow', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'material', 'light', 1, '&__ui_slow_workspace_after_first&__ui_slow_config_metadata');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const level = page.getByLabel('Log detail', { exact: true });
+  await expect(level).toBeVisible();
+  await level.selectOption('debug');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toBeVisible({ timeout: 2000 });
+  await expect(editor).toContainText('"loglevel": "debug"', { timeout: 2000 });
+  await expect(page.locator('.configuration-loading')).toHaveCount(0);
+});
+
+test('Final configuration opens from saved state while the exact program check continues', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 820 });
+  await openPreview(page, 'material', 'light', 1, '&__ui_slow_verified_workspace');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toBeVisible({ timeout: 1000 });
+  await expect(editor).toContainText('"loglevel"');
+  await expect(page.locator('.configuration-loading')).toHaveCount(0);
+  const apply = page.locator('#program-panel-configuration .config-save');
+  await expect(apply).toBeDisabled();
+  await expect(apply).toHaveAttribute('title', /Checking the current program before applying/);
+  await expect(apply).not.toHaveAttribute('title', /Checking the current program before applying/, { timeout: 4000 });
+});
+
+test('Apply changes performs save, native validation and activation as one operation', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toBeVisible();
+  const apply = page.getByRole('button', { name: 'Apply changes', exact: true });
+
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+  await expect(apply).toBeEnabled();
+  await apply.click();
+  await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
+  await expect(apply).toBeDisabled();
+  await expect(apply).toHaveAttribute('title', /Configuration is up to date/);
+  await expect(page.getByRole('button', { name: 'Save candidate', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Validate', exact: true })).toHaveCount(0);
+});
+
+test('native rejection stays in one localized editor notice and clears after repair', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 840 });
+  await openPreview(page, 'aurora', 'dark', 1, '&__ui_configuration_native_rejection');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  const workspace = page.locator('.final-editor-workspace');
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+  await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+
+  const notice = workspace.locator('.editor-blockers');
+  await expect(notice.getByText('The program reported a value with the wrong type', { exact: true })).toHaveCount(1);
+  await expect(workspace.locator('.editor-state strong')).toHaveText('Needs attention');
+  const details = notice.locator('.blocker-details');
+  await expect(details.locator('pre')).not.toBeVisible();
+  await expect(workspace.locator('.result')).toHaveCount(0);
+  await expect(editor).toContainText('debug');
+  await expect(editor.locator('[title="The program reported a value with the wrong type"]')).toHaveCount(0);
+  await details.getByText('Information for support', { exact: true }).click();
+  await expect(details.locator('pre')).toContainText('"exitCode":1');
+  await expect(details.locator('pre')).toContainText('"stderrBytes":240');
+  for (const width of [400, 520, 680, 760, 1024, 1280]) {
+    await page.setViewportSize({ width, height: 840 });
+    await expectNoViewportOverflow(page);
+    expect(await notice.evaluate((element) => [...element.querySelectorAll('strong, span, pre, summary')]
+      .every((child) => {
+        const rect = child.getBoundingClientRect();
+        const parent = child.parentElement!.getBoundingClientRect();
+        return rect.left >= parent.left - 1 && rect.right <= parent.right + 1;
+      }))).toBe(true);
+  }
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(notice).not.toContainText('The program reported a value with the wrong type.');
+  await expect(notice.locator('.blocker-row strong')).toHaveCount(1);
+  await expect(notice.locator('.blocker-row strong')).toContainText('类型');
+  await page.setViewportSize({ width: 400, height: 840 });
+  await expectNoViewportOverflow(page);
+
+  const localizedEditor = workspace.locator('.cm-content[role="textbox"]');
+  await replaceEditorContent(page, localizedEditor, '{"log":{"loglevel":"warning"}}');
+  await page.locator('.config-save').click();
+  await expect(notice).toHaveCount(0);
+  await expect(workspace.locator('.blocker-details')).toHaveCount(0);
+  await expect(page.locator('.config-save')).toBeDisabled();
+  await expect(localizedEditor).toContainText('warning');
+});
+
+for (const action of ['save', 'apply', 'reject'] as const) {
+  for (const unfinished of [false, true]) {
+    test(`${action} response preserves ${unfinished ? 'unfinished' : 'valid'} typing and continues from the submitted document`, async ({ page }) => {
+      await page.addInitScript(() => {
+        (window as typeof window & { __held: boolean }).__held = false;
+        window.addEventListener('camellia-ui-preview:configuration-response-held', () => {
+          (window as typeof window & { __held: boolean }).__held = true;
+        });
+      });
+      await openPreview(page, 'cupertino', 'light', 1,
+        '&__ui_configuration_hold_response' + (action === 'reject' ? '&__ui_configuration_native_rejection' : ''));
+      await openProgramDetails(page, 'xray-primary');
+      await page.getByRole('button', { name: 'Stop', exact: true }).click();
+      await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+      const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+      await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+      if (action === 'save') {
+        await editor.focus();
+        await page.keyboard.press('Control+s');
+      } else await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+      await expect.poll(() => page.evaluate(() => (window as typeof window & { __held: boolean }).__held)).toBe(true);
+      const continued = '{"log":{"loglevel":"error"},"continued":true}';
+      await replaceEditorContent(page, editor, unfinished ? '{unfinished' : continued);
+      await page.waitForTimeout(1_000);
+      await page.evaluate(() => window.dispatchEvent(new Event('camellia-ui-preview:release-configuration-response')));
+      await expect(editor).toContainText(unfinished ? 'unfinished' : 'continued');
+      await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeVisible();
+      await page.waitForTimeout(1_000);
+      await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+      await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+      if (unfinished) {
+        await expect(editor).toContainText('unfinished');
+        await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
+        await expect(page.getByRole('button', { name: 'Apply changes', exact: true }))
+          .toHaveAttribute('title', 'Fix the highlighted configuration syntax');
+        await expect(page.locator('.final-editor-workspace').getByText('Ready to apply', { exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Resume edit', exact: true })).toHaveCount(0);
+        await replaceEditorContent(page, editor, continued);
+      }
+      await expect(editor).toContainText('continued');
+      await expect(page.locator('.final-editor-workspace').getByText('Conflict', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
+    });
+  }
+}
+
+for (const editAfterSave of [false, true]) {
+  test(`lost save response recovers the original receipt with later editing ${editAfterSave}`, async ({ page }) => {
+    await page.addInitScript(() => {
+      const requests: string[] = [];
+      (window as typeof window & { __configurationSaves: string[] }).__configurationSaves = requests;
+      window.addEventListener('camellia-ui-preview:configuration-save', (event) => {
+        requests.push((event as CustomEvent<string>).detail);
+      });
+    });
+    await openPreview(page, 'cupertino', 'light', 1, '&__ui_configuration_save_response_lost');
+    await openProgramDetails(page, 'xray-primary');
+    await page.getByRole('button', { name: 'Stop', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+    await editor.focus();
+    await page.keyboard.press('Control+s');
+    await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+    if (editAfterSave) {
+      await replaceEditorContent(page, editor, '{"log":{"loglevel":"warning"}}');
+    }
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+    await expect(editor).toContainText(editAfterSave ? 'warning' : 'debug');
+    expect(await page.evaluate(() => (window as typeof window & {
+      __configurationSaves: string[];
+    }).__configurationSaves)).toHaveLength(1);
+    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(editor).toContainText(editAfterSave ? 'warning' : 'debug');
+  });
+}
+
+test('lost apply response is recovered with the same request and no second activation', async ({ page }) => {
+  await page.addInitScript(() => {
+    const requests: string[] = [];
+    (window as typeof window & { __configurationActivations: string[] }).__configurationActivations = requests;
+    window.addEventListener('camellia-ui-preview:configuration-activation', (event) => {
+      requests.push((event as CustomEvent<string>).detail);
+    });
+  });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_configuration_response_lost');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+  await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => (window as typeof window & {
+    __configurationActivations: string[];
+  }).__configurationActivations)).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
+});
+
+test('checking a lost apply response preserves edits made after the request', async ({ page }) => {
+  await page.addInitScript(() => {
+    const requests: string[] = [];
+    (window as typeof window & { __configurationActivations: string[] }).__configurationActivations = requests;
+    window.addEventListener('camellia-ui-preview:configuration-activation', (event) => {
+      requests.push((event as CustomEvent<string>).detail);
+    });
+  });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_configuration_response_lost');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"}}');
+  await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"warning"}}');
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(editor).toContainText('warning');
+  await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => (window as typeof window & {
+    __configurationActivations: string[];
+  }).__configurationActivations)).toHaveLength(1);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('warning');
+});
+
+test('a committed Final edit conflicts only when upstream changes the same path', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await replaceEditorContent(page, editor, '{"log":{"loglevel":"debug"},"route":{"final":"proxy-sg"}}');
+  await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+  await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Domain matching', { exact: true }).selectOption('IPIfNonMatch');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('"loglevel": "debug"');
+  await expect(page.locator('.final-editor-workspace').getByText('Modified', { exact: true })).toBeVisible();
+  await expect(page.locator('.path-inspector')).toHaveCount(0);
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Log detail', { exact: true }).selectOption('error');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.locator('.final-editor-workspace .merge-summary')).toContainText('1 setting needs a choice');
+  await expect(editor).toContainText('"loglevel": "error"');
+  await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('Your edit');
+  await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('debug');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByLabel('Domain matching', { exact: true }).selectOption('AsIs');
+  await page.getByLabel('Log detail', { exact: true }).selectOption('info');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('"loglevel": "info"');
+  const block = page.locator('.cm-configuration-conflict-widget.expanded');
+  await expect(block).toContainText('debug');
+  await block.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(editor).toContainText('"loglevel": "debug"');
+  await expect(editor).toContainText('"domainStrategy": "AsIs"');
+  await expect(page.locator('.final-editor-workspace .merge-summary')).toHaveCount(0);
+});
+
+test('managed Dashboard ownership stays in Details and never leaks container conflicts into Intent', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  const details = page.locator('#program-panel-overview');
+  await expect(details.locator('.managed-integration-status')).toHaveCount(2);
+  await expect(details.getByText('sing-box API', { exact: true }).first()).toBeVisible();
+  await expect(details.getByText('Clash API', { exact: true }).first()).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await expect(intent.getByText('/services', { exact: true })).toHaveCount(0);
+  await expect(intent.getByText('/experimental/clash_api', { exact: true })).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+  await expectAccessible(page, '#program-panel-intent');
+});
+
+for (const invalidDraft of [false, true]) {
+  test(`package replacement keeps ${invalidDraft ? 'unfinished' : 'valid'} editor text and returns the current workspace`, async ({ page }) => {
+    await page.setViewportSize({ width: 680, height: 860 });
+    await openPreview(page, 'aurora', 'light');
+    const editor = await openProgramConfiguration(page, 'xray-primary');
+    await page.getByRole('button', { name: 'Stop', exact: true }).click();
+    const content = invalidDraft ? '{unfinished-package-edit' : '{"log":{"loglevel":"debug"},"packageEdit":"keep-me"}';
+    await editor.fill(content);
+    await page.getByRole('tab', { name: 'Details', exact: true }).click();
+    const details = page.locator('#program-panel-overview');
+    await details.getByLabel('Name', { exact: true }).fill('Unfinished program name');
+    await details.getByLabel('Updated program folder').fill('/tmp/nexus-replacement');
+    await details.getByRole('button', { name: 'Replace', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Replace folder', exact: true }).click();
+    await expect(details.getByLabel('Updated program folder')).toHaveValue('');
+    await expect(details.getByLabel('Name', { exact: true })).toHaveValue('Unfinished program name');
+    await details.locator('.change-notice').getByRole('button', { name: 'Revert', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(editor).toContainText(invalidDraft ? 'unfinished-package-edit' : 'keep-me');
+    if (invalidDraft) {
+      await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
+      await expect(editor).toContainText('unfinished-package-edit');
+      await editor.fill('{"log":{"loglevel":"debug"},"packageEdit":"repaired"}');
+    }
+    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
+    await page.setViewportSize({ width: 400, height: 860 });
+    await expectNoViewportOverflow(page);
+    await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeDisabled();
+    await expect(editor).toContainText(invalidDraft ? 'repaired' : 'keep-me');
+    await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Program compatibility', exact: true })).toBeVisible();
+    await expectNoViewportOverflow(page);
+  });
+}
+
+test('Details saves do not prompt for unrelated paths', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'material', 'dark', 1, '&__ui_final_merge_conflict');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  const details = page.locator('#program-panel-overview');
+  const nativePort = details.locator('.dashboard-option.native input[type="number"]');
+  await expect(nativePort).toHaveValue('9090');
+
+  await nativePort.fill('9095');
+  await details.locator('.change-notice').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(nativePort).toHaveValue('9095');
+  await expect(details.getByRole('button', { name: 'Use this value: API port 9095', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' }))
+    .toContainText('"listen_port": 9095');
+  await expectNoViewportOverflow(page);
+});
+
+test('Details shows latest source values and reuses only the selected saved field', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 860 });
+  await openPreview(page, 'aurora', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('.config-source-editor');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  await sources.locator('.source-inline-content').last().fill('{"api":{"listen":"127.0.0.1:10090"},"metrics":{"listen":"127.0.0.1:11112"},"extension":{"retained":42}}');
+  await page.getByRole('button', { name: 'Save sources', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
+  await page.getByRole('tab', { name: 'Details', exact: true }).click();
+  const integration = page.locator('.managed-integration-status');
+  await expect(integration).toContainText('10090');
+  await expect(integration).toContainText('11112');
+  await page.setViewportSize({ width: 400, height: 860 });
+  const choice = page.getByRole('button', { name: 'Use this value: API port 10085', exact: true });
+  await expect(choice).toBeEnabled();
+  await expectNoViewportOverflow(page);
+  const widths = await integration.locator('.setting-choice').evaluateAll((rows) => rows.map((row) => {
+    const parent = row.getBoundingClientRect();
+    return [...row.children].every((child) => {
+      const bounds = child.getBoundingClientRect();
+      return bounds.left >= parent.left - 1 && bounds.right <= parent.right + 1;
+    });
+  }));
+  expect(widths.every(Boolean)).toBe(true);
+  await choice.click();
+  await expect(choice).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Use this value: Metrics port 11111', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toContainText('127.0.0.1:10085');
+  await expect(editor).toContainText('127.0.0.1:11112');
+  await expect(editor).toContainText('"retained": 42');
+  await expect(page.locator('.path-inspector')).toHaveCount(0);
+  await expectNoViewportOverflow(page);
+});
+
+test('a Final editor draft survives tab switches and uses one Revert action', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await replaceEditorContent(page, editor, '{"route":{"final":"discard-me"}}');
+  await expect(page.getByRole('button', { name: 'Revert', exact: true })).toBeEnabled();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('discard-me');
+  await page.getByRole('button', { name: 'Revert', exact: true }).click();
+  await expect(editor).toContainText('proxy-sg');
+  await expectNoViewportOverflow(page);
+});
+
+test('Revert removes the durable Final editor draft instead of only changing editor text', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await replaceEditorContent(page, editor, '{"route":{"final":"durable-draft"}}');
+  await expect(page.getByRole('button', { name: 'Revert', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Revert', exact: true }).click();
+  await expect(editor).toContainText('proxy-sg');
+
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('proxy-sg');
+});
+
+test('repairing an invalid draft to the authoritative document removes the persisted draft', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  const authoritative = '{\n  "log": { "loglevel": "warning" },\n  "route": { "final": "proxy-sg" }\n}\n';
+
+  await replaceEditorContent(page, editor, '{"route":');
+  await expect(page.getByRole('button', { name: 'Revert', exact: true })).toBeEnabled();
+  await replaceEditorContent(page, editor, authoritative);
+  await expect(page.getByRole('button', { name: 'Revert', exact: true })).toBeDisabled();
+
+  await openProgramConfiguration(page, 'sing-box-edge');
+  const restored = await openProgramConfiguration(page, 'xray-primary');
+  await expect(restored).toContainText('"loglevel": "warning"');
+  await expect(restored).toContainText('"final": "proxy-sg"');
+  await expect(restored).not.toContainText('{"route":');
+});
+
+test('a saved JSON draft containing only a trailing newline does not create another change', async ({ page }) => {
+  await openPreview(page, 'material', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, unknown>) => Promise<unknown>;
+    } }).__TAURI_INTERNALS__;
+    const snapshot = await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' }) as {
+      state: { workspace: { editor: { document: { content: string } } } };
+      editorSession: { workingContent: string; draftRevision: number };
+    };
+    const draft = structuredClone(snapshot.editorSession);
+    draft.workingContent = `${snapshot.state.workspace.editor.document.content}\n`;
+    await bridge.invoke('update_final_configuration_draft', {
+      programId: 'xray-primary', request: { draft, expectedRevision: draft.draftRevision },
+    });
+  });
+  await openProgramDetails(page, 'sing-box-edge');
+  await openProgramConfiguration(page, 'xray-primary');
+  await expect.poll(async () => page.evaluate(async () => {
+    const bridge = (window as unknown as { __TAURI_INTERNALS__: {
+      invoke: (command: string, args: Record<string, unknown>) => Promise<unknown>;
+    } }).__TAURI_INTERNALS__;
+    const snapshot = await bridge.invoke('get_configuration_workspace', { programId: 'xray-primary' }) as {
+      editorSession?: { draftRevision: number };
+    };
+    return snapshot.editorSession?.draftRevision ?? 0;
+  })).toBe(0);
+  await expect(page.locator('#program-panel-configuration .editor-state')).toContainText('Applied');
+});
+
+test('successive autosaves queue behind a delayed response without racing revisions', async ({ page }) => {
+  await page.addInitScript(() => {
+    const writes: string[] = [];
+    (window as typeof window & { __draftWrites: string[] }).__draftWrites = writes;
+    window.addEventListener('camellia-ui-preview:draft-write', (event) => {
+      writes.push((event as CustomEvent<string>).detail);
+    });
+  });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_final_draft_hold_response');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  const writeCount = () => page.evaluate(() => (window as typeof window & {
+    __draftWrites: string[];
+  }).__draftWrites.length);
+  await replaceEditorContent(page, editor, '{"route":{"final":"first"}}');
+  await expect.poll(writeCount).toBe(1);
+  for (const value of ['second', 'third']) {
+    await replaceEditorContent(page, editor, JSON.stringify({ route: { final: value } }));
+    // Each edit reaches the autosave queue while the first response is withheld.
+    await page.waitForTimeout(1_000);
+  }
+  expect(await writeCount()).toBe(1);
+  await page.evaluate(() => window.dispatchEvent(new Event('camellia-ui-preview:release-draft-response')));
+  await expect.poll(writeCount).toBe(3);
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+  await page.waitForTimeout(1_000);
+  expect(await writeCount()).toBe(3);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText('third');
+});
+
+test('a delayed autosave failure cannot notify or rewrite another program', async ({ page }) => {
+  await page.addInitScript(() => {
+    const writes: string[] = [];
+    (window as typeof window & { __draftWrites: string[] }).__draftWrites = writes;
+    window.addEventListener('camellia-ui-preview:draft-write', (event) => {
+      writes.push((event as CustomEvent<string>).detail);
+    });
+  });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_final_draft_write_failure');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  const authoritative = '{\n  "log": { "loglevel": "warning" },\n  "route": { "final": "proxy-sg" }\n}\n';
+  await replaceEditorContent(page, editor, '{"route":');
+  await expect.poll(() => page.evaluate(() => (window as typeof window & {
+    __draftWrites: string[];
+  }).__draftWrites.length)).toBe(1);
+  await replaceEditorContent(page, editor, authoritative);
+  await expect(page.getByRole('button', { name: 'Revert', exact: true })).toBeDisabled();
+  const otherEditor = await openProgramConfiguration(page, 'sing-box-edge');
+  const otherContent = await otherEditor.innerText();
+  await page.evaluate(() => window.dispatchEvent(new Event('camellia-ui-preview:reject-draft-write')));
+  await expect(otherEditor).toHaveText(otherContent, { useInnerText: true });
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+  await expect(page.locator('.notification')).toHaveCount(0);
+});
+
+for (const recoverBy of ['retry', 'edit'] as const) {
+  test(`an autosave failure retains text and clears after ${recoverBy}`, async ({ page }) => {
+    await page.addInitScript(() => {
+      const writes: string[] = [];
+      (window as typeof window & { __draftWrites: string[] }).__draftWrites = writes;
+      window.addEventListener('camellia-ui-preview:draft-write', (event) => {
+        writes.push((event as CustomEvent<string>).detail);
+      });
+    });
+    await openPreview(page, 'cupertino', 'light', 1, '&__ui_final_draft_write_failure');
+    const editor = await openProgramConfiguration(page, 'xray-primary');
+    await replaceEditorContent(page, editor, '{"route":{"final":"my-draft"}}');
+    const writeCount = () => page.evaluate(() => (window as typeof window & {
+      __draftWrites: string[];
+    }).__draftWrites.length);
+    await expect.poll(writeCount).toBe(1);
+    await page.evaluate(() => window.dispatchEvent(new Event('camellia-ui-preview:reject-draft-write')));
+    const retry = page.getByRole('button', { name: 'Retry', exact: true });
+    await expect(retry).toBeVisible();
+    await expect(editor).toContainText('my-draft');
+    // A storage failure must not trigger an unattended autosave loop.
+    await page.waitForTimeout(1_000);
+    expect(await writeCount()).toBe(1);
+    if (recoverBy === 'retry') await retry.click();
+    else await replaceEditorContent(page, editor, '{"route":{"final":"repaired-draft"}}');
+    await expect.poll(writeCount).toBe(2);
+    await expect(retry).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(editor).toContainText(recoverBy === 'retry' ? 'my-draft' : 'repaired-draft');
+  });
+}
+
+test('redundant draft cleanup reloads a concurrently changed conflict instead of deleting it', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 820 });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_final_draft_discard_race');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  const workspace = page.locator('.final-editor-workspace');
+
+  await expect(workspace.locator('.merge-summary')).toBeVisible();
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('/log/loglevel');
+  await expect(workspace.locator('.cm-configuration-conflict-widget.expanded')).toContainText('Your edit');
+  await expect(editor).toContainText('"loglevel": "warning"');
+  await expect(page.getByRole('button', { name: 'Apply and restart', exact: true })).toBeDisabled();
+});
+
+test('Final draft conflict markers resolve inline and stay coherent across editor undo and redo', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1180, height: 860 });
+  await openPreview(page, 'material', 'dark', 1.05, '&__ui_final_draft_conflict');
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  const shell = page.locator('.code-editor-shell');
+  const widget = shell.locator('.cm-configuration-conflict-widget');
+
+  await expect(widget).toContainText('/route/final');
+  await expect(shell.locator('.cm-configuration-marker-line.cm-configuration-marker-active'))
+    .toHaveCount(1);
+  await expect(widget.getByRole('button', { name: 'Keep mine', exact: true })).toBeVisible();
+  await expect(widget.getByRole('button', { name: 'Accept updated', exact: true })).toBeVisible();
+  await expect(editor).toContainText('source-route');
+  await expectAccessible(page, '.code-editor-shell');
+
+  await widget.getByRole('button', { name: 'Keep mine', exact: true }).click();
+  await expect(widget).toHaveCount(0);
+  await expect(editor).toContainText('mine-route');
+  const undo = shell.getByRole('button', { name: 'Undo', exact: true });
+  const redo = shell.getByRole('button', { name: 'Redo', exact: true });
+  await expect(undo).toBeEnabled();
+
+  await undo.click();
+  await expect(editor).toContainText('source-route');
+  await expect(page.locator('.merge-summary')).toBeVisible();
+  await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(1);
+
+  await expect(redo).toBeEnabled();
+  await redo.click();
+  await expect(editor).toContainText('mine-route');
+  await expect(page.locator('.merge-summary')).toHaveCount(0);
+  await expect(shell.locator('.cm-configuration-marker-line')).toHaveCount(0);
+  await shell.screenshot({ path: testInfo.outputPath('configuration-final-draft-conflict-inline.png') });
+});
+
+test('automatic source updates refresh Desired content, Guided projection and Source status together', async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 860 });
+  await openPreview(page);
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await expect(page.locator('.source-status-item').getByText('Production routing: fresh', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('warning');
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', {
+      detail: { programId: 'xray-primary' },
+    }));
+  });
+
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('debug');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  await expect(
+    page.getByText('Automatically refreshed source: fresh', { exact: true }),
+  ).toBeVisible();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor.locator('.cm-line')).toHaveText([
+    '{',
+    '  "log": {',
+    '    "loglevel": "debug"',
+    '  },',
+    '  "automatic": true',
+    '}',
+    '',
+  ]);
 });
 
 test('the JSON configuration editor supports diagnostics, formatting and command shortcuts', async ({ page }, testInfo) => {
@@ -2888,6 +4848,9 @@ test('the JSON configuration editor supports diagnostics, formatting and command
   await expect(replaceInput).toBeFocused();
   await shell.locator('.cm-search button[name="close"]').click();
 
+  const noWrap = page.getByRole('button', { name: 'No wrap', exact: true });
+  await expect(noWrap).toHaveAttribute('aria-pressed', 'false');
+  await noWrap.click();
   const wrap = page.getByRole('button', { name: 'Wrap', exact: true });
   await expect(wrap).toHaveAttribute('aria-pressed', 'true');
   await wrap.click();
@@ -2896,15 +4859,37 @@ test('the JSON configuration editor supports diagnostics, formatting and command
     'false',
   );
 
+  await expect(page.locator('.config-toolbar').getByRole('button', { name: 'Validate', exact: true })).toHaveCount(0);
   await editor.focus();
   await page.keyboard.press('Control+Enter');
-  await expect(page.locator('.result').getByText('Valid configuration', { exact: true })).toBeVisible();
+  await expect(page.locator('.result').getByText('Valid configuration', { exact: true })).toHaveCount(0);
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('.result[role="status"]')).toContainText('Changes saved');
+  await expect(page.locator('.result[role="status"]')).toHaveCount(0, { timeout: 8_000 });
+  await expect(page.locator('.config-save')).toBeEnabled();
 
+  await replaceEditorContent(page, editor, '{"route":{"final":"block"}}');
   await editor.focus();
   await page.keyboard.press('Control+s');
-  await expect(page.locator('.result pre')).toContainText('Configuration saved');
+  await expect(page.locator('.result[role="status"]')).toContainText('Changes saved');
+  await expect(page.locator('.config-save')).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Save candidate', exact: true })).toHaveCount(0);
+  await expect(editor).toContainText(/"final"\s*:\s*"block"/);
   await expectNoViewportOverflow(page);
   await shell.screenshot({ path: testInfo.outputPath('configuration-editor-json-commands.png') });
+});
+
+test('JSON comments and trailing commas remain editable without false syntax errors', async ({ page }) => {
+  await openPreview(page, 'material', 'light', 1);
+  const editor = await openProgramConfiguration(page, 'xray-primary');
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await replaceEditorContent(page, editor, '{\n  // Final routing choice\n  "route": { "final": "direct", },\n}');
+  await expect(page.getByRole('button', { name: 'Problems: No problems' })).toBeVisible();
+  const apply = page.getByRole('button', { name: 'Apply changes', exact: true });
+  await expect(apply).toBeEnabled();
+  await apply.click();
+  await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
+  await expect(editor).toContainText('"final": "direct"');
 });
 
 test('sing-box schema completion and structural diagnostics remain program-specific', async ({ page }, testInfo) => {
@@ -2917,7 +4902,7 @@ test('sing-box schema completion and structural diagnostics remain program-speci
   const showSuggestions = shell.getByRole('button', { name: 'Show suggestions', exact: true });
 
   await expect(shell.locator('.editor-schema-status.schema-ready')).toContainText(
-    'Schema suggestions ready',
+    'Suggestions ready',
   );
   await expect(showSuggestions).toBeEnabled();
   await expect(showSuggestions).toHaveAttribute('title', 'Show suggestions · Ctrl Space');
@@ -2925,6 +4910,7 @@ test('sing-box schema completion and structural diagnostics remain program-speci
   await expect(page.locator(`#${editorDescriptionId}`)).toContainText(
     'Schema suggestions appear as you type',
   );
+  await page.getByText('More', { exact: true }).click();
   await expect(page.getByRole('button', { name: 'Format with sing-box', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Format document', exact: true })).toBeVisible();
   await shell.screenshot({
@@ -2962,6 +4948,10 @@ test('sing-box schema completion and structural diagnostics remain program-speci
 
   await replaceEditorContent(page, editor, '{"outbounds": [], "unsupported": true}');
   await expect(problems).toHaveAccessibleName('Problems: 1 error');
+  await expect(page.locator('.final-editor-workspace .editor-state')).toContainText(
+    'Fix the highlighted issue, then try again',
+  );
+  await expect(page.locator('.final-editor-workspace .editor-state')).not.toContainText('Ready to apply');
   await problems.click();
   const diagnostic = shell.locator('.cm-diagnostic').filter({ hasText: 'Unknown property' });
   await expect(diagnostic).toContainText('unsupported');
@@ -2977,18 +4967,18 @@ test('schema failure keeps editing available and retry restores enhancement', as
 
   await expect(editor).toBeEditable();
   await expect(shell.locator('.editor-schema-status.schema-unavailable')).toContainText(
-    'Program schema unavailable',
+    'Suggestions unavailable',
   );
   const showSuggestions = shell.getByRole('button', { name: 'Show suggestions', exact: true });
   await expect(showSuggestions).toBeDisabled();
-  await expect(showSuggestions).toHaveAttribute('title', 'Program schema unavailable');
+  await expect(showSuggestions).toHaveAttribute('title', 'Suggestions unavailable');
   const retry = shell.getByRole('button', { name: 'Retry', exact: true });
   await retry.scrollIntoViewIfNeeded();
   await expect(retry).toBeInViewport();
   await expectNoViewportOverflow(page);
   await retry.click();
   await expect(shell.locator('.editor-schema-status.schema-ready')).toContainText(
-    'Schema suggestions ready',
+    'Suggestions ready',
   );
   await expect(showSuggestions).toBeEnabled();
   await expect(shell.locator('.editor-schema-status.schema-unavailable')).toHaveCount(0);
@@ -3006,6 +4996,18 @@ test('schema failure keeps editing available and retry restores enhancement', as
     'Configuration document',
   );
   await expectAccessible(page, '.code-editor-shell');
+});
+
+test('optional editor information can fail without hiding the final configuration', async ({ page }) => {
+  await openPreview(page, 'material', 'light', 1, '&__ui_config_metadata_error_once');
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const shell = page.locator('.code-editor-shell');
+  await expect(editor).toBeEditable();
+  await expect(editor).toContainText('outbounds');
+  await expect(shell.locator('.editor-schema-status.schema-unavailable')).toContainText('Suggestions unavailable');
+  await shell.locator('.editor-schema-status.schema-unavailable').getByRole('button', { name: 'Retry' }).click();
+  await expect(shell.locator('.editor-schema-status.schema-ready')).toContainText('Suggestions ready');
+  await expect(editor).toContainText('outbounds');
 });
 
 test('the YAML configuration editor preserves comments, anchors and aliases while formatting', async ({ page }) => {

@@ -12,15 +12,15 @@ use std::{
 };
 
 use camellia_nexus_core::{
-    ActionDescriptor, ActionResult, CommandPlan, ConfigDocument, CreateProgramRequest, ErrorCode,
-    ExecutableSpec, LogChunk, LogStream, ProgramId, ProgramSpec, ProgramState, ProgramSummary,
-    ProgramType, Result, ValidationResult,
+    ActionDescriptor, ActionResult, CommandPlan, ConfigDocument, ConfigSourceSpec,
+    CreateProgramRequest, ErrorCode, ExecutableSpec, LogChunk, LogStream, ProgramId, ProgramSpec,
+    ProgramState, ProgramSummary, ProgramType, RemoteUpdateSpec, Result,
 };
 use camellia_nexus_licensing::{
     DeviceState, EntitlementState, NumericLimit, ProtectedOperation, RestrictedOperation,
     SafetyOperation, SecretValue,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
@@ -3201,6 +3201,15 @@ impl RuntimeAuthorizationRequirements {
         Self { operations }
     }
 
+    fn for_configuration_activation(spec: &ProgramSpec) -> Self {
+        let mut requirements =
+            Self::for_configuration(ProtectedOperation::EditPremiumConfiguration, spec);
+        requirements
+            .operations
+            .push(ProtectedOperation::RunAdvancedDiagnostics);
+        requirements
+    }
+
     fn single(operation: ProtectedOperation) -> Self {
         Self {
             operations: vec![operation],
@@ -3223,8 +3232,10 @@ pub(crate) async fn authorize_runtime_requirements<'a>(
     state: &'a AppState,
     requirements: &RuntimeAuthorizationRequirements,
 ) -> Result<RuntimeMutationPermit<'a>> {
-    let operation_guard = state.runtime_authorization.mutation_permit().await;
-    requirements.authorize(state)?;
+    let operation_guard = state
+        .runtime_authorization
+        .authorized_mutation_permit(|| requirements.authorize(state))
+        .await?;
     Ok(RuntimeMutationPermit {
         _guard: operation_guard,
     })
@@ -3583,7 +3594,10 @@ pub async fn create_program(
     );
     authorization_requirements.authorize(&state)?;
     let mut credential_transaction = if crate::config_credentials::has_credentials(&request.spec) {
-        state.config_credentials.recover(&state.manager).await?;
+        state
+            .config_credentials
+            .recover(&state.manager, &state.configuration_state)
+            .await?;
         Some(
             state
                 .config_credentials
@@ -3598,21 +3612,27 @@ pub async fn create_program(
         .map(crate::config_credentials::CredentialTransaction::snapshot)
         .cloned()
         .unwrap_or_else(crate::config_credentials::CredentialSnapshot::empty);
-    if request.spec.managed_config.is_some() {
+    let initialize_configuration_state = request.spec.program_type.main_config().is_some();
+    let materialized_observations = if request.spec.managed_config.is_some() {
         let local_base = create_source_base(&request);
-        let require_sources = request.initial_config.is_none();
-        request.initial_config = Some(
-            crate::config_sources::materialize(
-                &request.spec,
-                request.initial_config.take(),
-                require_sources,
-                local_base.as_deref(),
-                &credential_snapshot,
-            )
-            .await?,
-        );
-    }
+        let materialized = crate::config_sources::materialize(
+            &request.spec,
+            local_base.as_deref(),
+            &credential_snapshot,
+        )
+        .await?;
+        request.initial_config = Some(materialized.content);
+        Some(materialized.observations)
+    } else {
+        None
+    };
     let source_count = managed_config_source_count(&request.spec);
+    let dashboard_configured = request.spec.managed_config.as_ref().is_some_and(|managed| {
+        managed.sing_box_dashboard.is_some()
+            || managed.sing_box_clash_dashboard.is_some()
+            || managed.xray_dashboard.is_some()
+            || managed.mihomo_dashboard.is_some()
+    });
     let program_id = request.spec.id.clone();
     let prepared = match state.manager.prepare_create(request).await {
         Ok(prepared) => prepared,
@@ -3633,7 +3653,7 @@ pub async fn create_program(
                 if let Err(discard_error) = state.manager.discard_prepared_create(prepared).await {
                     tracing::warn!(
                         program = %program_id,
-                        %discard_error,
+                        code = ?discard_error.code,
                         "prepared program cleanup requires startup recovery"
                     );
                 }
@@ -3656,7 +3676,7 @@ pub async fn create_program(
                 if let Err(discard_error) = state.manager.discard_prepared_create(prepared).await {
                     tracing::warn!(
                         program = %program_id,
-                        %discard_error,
+                        code = ?discard_error.code,
                         "prepared program cleanup requires startup recovery"
                     );
                 }
@@ -3684,7 +3704,7 @@ pub async fn create_program(
         if let Err(discard_error) = state.manager.discard_prepared_create(prepared).await {
             tracing::warn!(
                 program = %program_id,
-                %discard_error,
+                code = ?discard_error.code,
                 "prepared program cleanup requires startup recovery"
             );
         }
@@ -3705,68 +3725,159 @@ pub async fn create_program(
     if let Some(transaction) = credential_transaction
         && let Err(error) = transaction.commit()
     {
-        tracing::warn!(program = %program_id, %error, "credential commit cleanup requires recovery");
-        state.config_credentials.recover(&state.manager).await?;
+        tracing::warn!(program = %program_id, code = ?error.code, "credential commit cleanup requires recovery");
+        state
+            .config_credentials
+            .recover(&state.manager, &state.configuration_state)
+            .await?;
+    }
+    if initialize_configuration_state
+        && let Err(error) = state
+            .configuration_state
+            .initialize_created(&state.manager, &program_id, materialized_observations)
+            .await
+    {
+        tracing::warn!(program = %program_id, code = ?error.code, "configuration state initialization requires recovery");
+    }
+    if dashboard_configured
+        && let Err(error) = state
+            .configuration_state
+            .sync_managed_dashboard(&state.manager, &program_id)
+            .await
+    {
+        tracing::warn!(program = %program_id, code = ?error.code, "managed Dashboard candidate could not be prepared after creation");
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn update_program(state: State<'_, AppState>, mut spec: ProgramSpec) -> Result<()> {
-    update_program_transaction(&state, &mut spec, false, false)
-        .await
-        .map(|_| ())
+pub async fn update_program(
+    state: State<'_, AppState>,
+    mut spec: ProgramSpec,
+    expected_configuration_generation: Option<u64>,
+    claimed_managed_settings: Vec<String>,
+) -> Result<Option<camellia_nexus_core::ConfigurationWorkspaceSnapshot>> {
+    let program_id = spec.id.clone();
+    let has_configuration = spec.program_type.main_config().is_some();
+    update_program_transaction_with_configuration(
+        &state,
+        &mut spec,
+        false,
+        expected_configuration_generation,
+        &claimed_managed_settings,
+    )
+    .await?;
+    if has_configuration {
+        Ok(Some(
+            state
+                .configuration_state
+                .load_workspace(&state.manager, &program_id)
+                .await?,
+        ))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
 pub async fn update_program_and_restart(
     state: State<'_, AppState>,
     mut spec: ProgramSpec,
-) -> Result<()> {
-    update_program_transaction(&state, &mut spec, false, true)
-        .await
-        .map(|_| ())
+    expected_configuration_generation: Option<u64>,
+    claimed_managed_settings: Vec<String>,
+) -> Result<Option<camellia_nexus_core::ConfigurationWorkspaceSnapshot>> {
+    let program_id = spec.id.clone();
+    let has_configuration = spec.program_type.main_config().is_some();
+    update_program_transaction_with_configuration(
+        &state,
+        &mut spec,
+        true,
+        expected_configuration_generation,
+        &claimed_managed_settings,
+    )
+    .await?;
+    if has_configuration {
+        Ok(Some(
+            state
+                .configuration_state
+                .load_workspace(&state.manager, &program_id)
+                .await?,
+        ))
+    } else {
+        Ok(None)
+    }
 }
 
-#[tauri::command]
-pub async fn update_program_and_refresh_config(
-    state: State<'_, AppState>,
-    mut spec: ProgramSpec,
-) -> Result<crate::config_updates::ConfigUpdateResult> {
-    update_program_transaction(&state, &mut spec, true, false)
-        .await?
-        .ok_or_else(|| {
-            camellia_nexus_core::CamelliaNexusError::internal("configuration refresh did not run")
-        })
-}
-
-async fn update_program_transaction(
+async fn update_program_transaction_with_configuration(
     state: &State<'_, AppState>,
     spec: &mut ProgramSpec,
-    refresh_managed_config: bool,
     restart_after_update: bool,
-) -> Result<Option<crate::config_updates::ConfigUpdateResult>> {
+    expected_configuration_generation: Option<u64>,
+    claimed_managed_settings: &[String],
+) -> Result<()> {
+    let credentials = commit_program_update_with_pending_credentials(
+        state,
+        spec,
+        restart_after_update,
+        expected_configuration_generation,
+        claimed_managed_settings,
+    )
+    .await?;
+    commit_configuration_credentials(state, &spec.id, credentials).await
+}
+
+async fn commit_program_update_with_pending_credentials<'a>(
+    state: &'a State<'_, AppState>,
+    spec: &mut ProgramSpec,
+    restart_after_update: bool,
+    expected_configuration_generation: Option<u64>,
+    claimed_managed_settings: &[String],
+) -> Result<Option<crate::config_credentials::CredentialTransaction<'a>>> {
     spec.validate()?;
-    if refresh_managed_config && spec.managed_config.is_none() {
-        return Err(camellia_nexus_core::CamelliaNexusError::invalid_spec(
-            "Managed configuration is required for an atomic source refresh",
-        ));
-    }
-    if refresh_managed_config && restart_after_update {
-        return Err(camellia_nexus_core::CamelliaNexusError::invalid_spec(
-            "A settings restart and managed configuration refresh must use one commit mode",
-        ));
-    }
     let authorization_requirements = RuntimeAuthorizationRequirements::for_program(
         ProtectedOperation::EditPremiumConfiguration,
         spec,
     );
     authorization_requirements.authorize(state)?;
     let (current, _) = state.manager.get(&spec.id).await?;
+    let dashboard_changed = current.managed_config.as_ref().map(|managed| {
+        (
+            managed.sing_box_dashboard.clone(),
+            managed.sing_box_clash_dashboard.clone(),
+            managed.xray_dashboard.clone(),
+            managed.mihomo_dashboard.clone(),
+        )
+    }) != spec.managed_config.as_ref().map(|managed| {
+        (
+            managed.sing_box_dashboard.clone(),
+            managed.sing_box_clash_dashboard.clone(),
+            managed.xray_dashboard.clone(),
+            managed.mihomo_dashboard.clone(),
+        )
+    });
+    let prepared_managed_update = if dashboard_changed || !claimed_managed_settings.is_empty() {
+        Some(
+            state
+                .configuration_state
+                .prepare_managed_integration_update(
+                    &state.manager,
+                    &spec.id,
+                    spec,
+                    expected_configuration_generation,
+                    claimed_managed_settings,
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
     let mut credential_transaction = if crate::config_credentials::has_credentials(&current)
         || crate::config_credentials::has_credentials(spec)
     {
-        state.config_credentials.recover(&state.manager).await?;
+        state
+            .config_credentials
+            .recover(&state.manager, &state.configuration_state)
+            .await?;
         Some(state.config_credentials.reconcile(spec).await?)
     } else {
         None
@@ -3789,39 +3900,10 @@ async fn update_program_transaction(
             return Err(error);
         }
     };
-    let _refresh_lease = if refresh_managed_config {
-        match state.config_refreshes.try_acquire(&program_id) {
-            Ok(lease) => Some(lease),
-            Err(error) => {
-                if let Some(transaction) = credential_transaction.take() {
-                    transaction.rollback()?;
-                }
-                return Err(error);
-            }
-        }
-    } else {
-        None
-    };
-    let mut prepared_refresh = if refresh_managed_config {
-        match crate::config_updates::prepare_refresh_for_update(state, &prepared_update).await {
-            Ok(prepared) => Some(prepared),
-            Err(error) => {
-                if let Some(transaction) = credential_transaction.take() {
-                    transaction.rollback()?;
-                }
-                return Err(error);
-            }
-        }
-    } else {
-        None
-    };
     let license_operation =
         match authorize_runtime_requirements(state, &authorization_requirements).await {
             Ok(operation) => operation,
             Err(error) => {
-                if let Some(prepared) = prepared_refresh.take() {
-                    crate::config_updates::discard_prepared_refresh(state, prepared).await;
-                }
                 if let Some(transaction) = credential_transaction.take() {
                     transaction.rollback()?;
                 }
@@ -3836,53 +3918,153 @@ async fn update_program_transaction(
         )
     {
         drop(license_operation);
-        if let Some(prepared) = prepared_refresh.take() {
-            crate::config_updates::discard_prepared_refresh(state, prepared).await;
-        }
         if let Some(transaction) = credential_transaction.take() {
             transaction.rollback()?;
         }
         return Err(error);
     }
-    let update_result = if let Some(prepared) = prepared_refresh {
-        crate::config_updates::commit_update_refresh(
-            state,
-            prepared_update,
-            prepared,
-            &license_operation,
-        )
-        .await
-        .map(Some)
-    } else {
+    if let Some(prepared) = &prepared_managed_update {
         state
-            .manager
-            .commit_update(prepared_update, restart_after_update)
-            .await
-            .map(|_| None)
-    };
-    let refresh_result = match update_result {
-        Ok(result) => result,
-        Err(error) => {
+            .configuration_state
+            .begin_managed_integration_update(&program_id, &current, spec, prepared)
+            .await?;
+    }
+    if let Err(error) = state
+        .manager
+        .commit_update(prepared_update, restart_after_update)
+        .await
+    {
+        if prepared_managed_update.is_some()
+            && let Err(recovery) = state
+                .configuration_state
+                .rollback_workspace_update(&program_id)
+                .await
+        {
             if let Some(transaction) = credential_transaction.take() {
-                transaction.rollback()?;
+                transaction.retain_for_recovery();
+            }
+            return Err(configuration_workspace_recovery_failure(&error, &recovery));
+        }
+        if let Some(transaction) = credential_transaction.take() {
+            transaction
+                .rollback()
+                .map_err(|recovery| configuration_workspace_recovery_failure(&error, &recovery))?;
+        }
+        return Err(error);
+    }
+    if let Some(prepared) = &prepared_managed_update {
+        let commit = async {
+            state
+                .configuration_state
+                .commit_managed_integration_update(&state.manager, &program_id, spec, prepared)
+                .await?;
+            complete_configuration_workspace(state, &program_id).await
+        }
+        .await;
+        if let Err(error) = commit {
+            if error.message_key.as_deref()
+                == Some("CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED")
+            {
+                if let Some(transaction) = credential_transaction.take() {
+                    transaction.retain_for_recovery();
+                }
+                return Err(error);
+            }
+            let recovery =
+                restore_configuration_workspace(state, current.clone(), restart_after_update).await;
+            if let Err(recovery) = recovery {
+                if let Some(transaction) = credential_transaction.take() {
+                    transaction.retain_for_recovery();
+                }
+                return Err(configuration_workspace_recovery_failure(&error, &recovery));
+            }
+            if let Some(transaction) = credential_transaction.take() {
+                transaction.rollback().map_err(|recovery| {
+                    configuration_workspace_recovery_failure(&error, &recovery)
+                })?;
             }
             return Err(error);
         }
-    };
-    if let Some(transaction) = credential_transaction
+    }
+    Ok(credential_transaction)
+}
+
+async fn commit_configuration_credentials(
+    state: &State<'_, AppState>,
+    program_id: &ProgramId,
+    credentials: Option<crate::config_credentials::CredentialTransaction<'_>>,
+) -> Result<()> {
+    if let Some(transaction) = credentials
         && let Err(error) = transaction.commit()
     {
-        tracing::warn!(program = %program_id, %error, "credential commit cleanup requires recovery");
-        state.config_credentials.recover(&state.manager).await?;
+        tracing::warn!(program = %program_id, code = ?error.code, "credential commit cleanup requires recovery");
+        state
+            .config_credentials
+            .recover(&state.manager, &state.configuration_state)
+            .await?;
     }
-    Ok(refresh_result)
+    Ok(())
+}
+
+fn configuration_workspace_recovery_failure(
+    error: &camellia_nexus_core::CamelliaNexusError,
+    recovery: &camellia_nexus_core::CamelliaNexusError,
+) -> camellia_nexus_core::CamelliaNexusError {
+    camellia_nexus_core::CamelliaNexusError::new(
+        ErrorCode::Storage,
+        "Configuration workspace needs recovery",
+    )
+    .with_message_key("CONFIGURATION_RECOVERY_REQUIRED")
+    .with_details(format!(
+        "update: {:?}; recovery: {:?}",
+        error.code, recovery.code
+    ))
+}
+
+async fn restore_configuration_workspace(
+    state: &State<'_, AppState>,
+    previous_spec: ProgramSpec,
+    restart: bool,
+) -> Result<()> {
+    let program_id = previous_spec.id.clone();
+    let rollback = state.manager.prepare_update(previous_spec).await?;
+    state.manager.commit_update(rollback, restart).await?;
+    state
+        .configuration_state
+        .rollback_workspace_update(&program_id)
+        .await
+}
+
+async fn complete_configuration_workspace(
+    state: &State<'_, AppState>,
+    program_id: &ProgramId,
+) -> Result<()> {
+    state
+        .configuration_state
+        .mark_workspace_update_committed(&state.manager, program_id)
+        .await?;
+    state
+        .configuration_state
+        .finish_workspace_update(program_id)
+        .await
+        .map_err(|error| {
+            camellia_nexus_core::CamelliaNexusError::new(
+                ErrorCode::Storage,
+                "Configuration update needs to be reconciled",
+            )
+            .with_message_key("CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED")
+            .with_details(format!("Workspace cleanup: {:?}", error.code))
+        })
 }
 
 #[tauri::command]
 pub async fn remove_program(state: State<'_, AppState>, program_id: String) -> Result<()> {
     authorize_safety(&state, SafetyOperation::Remove)?;
     let program_id = id(program_id)?;
-    state.config_credentials.recover(&state.manager).await?;
+    state
+        .config_credentials
+        .recover(&state.manager, &state.configuration_state)
+        .await?;
     let transaction = state
         .config_credentials
         .remove_program(program_id.as_str())
@@ -3892,8 +4074,11 @@ pub async fn remove_program(state: State<'_, AppState>, program_id: String) -> R
         return Err(error);
     }
     if let Err(error) = transaction.commit() {
-        tracing::warn!(program = %program_id, %error, "credential removal cleanup requires recovery");
-        state.config_credentials.recover(&state.manager).await?;
+        tracing::warn!(program = %program_id, code = ?error.code, "credential removal cleanup requires recovery");
+        state
+            .config_credentials
+            .recover(&state.manager, &state.configuration_state)
+            .await?;
     }
     Ok(())
 }
@@ -3923,30 +4108,60 @@ pub async fn replace_package(
     state: State<'_, AppState>,
     program_id: String,
     package_source: std::path::PathBuf,
-) -> Result<()> {
+    expected_state_revision: Option<u64>,
+) -> Result<Option<camellia_nexus_core::ConfigurationWorkspaceSnapshot>> {
     let operation = ProtectedOperation::UseManagedProgramPackages;
     authorize_protected(&state, operation)?;
     let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
     let prepared = state
         .manager
         .prepare_package(&program_id, package_source)
         .await?;
-    // Copying and probing a managed package can be slow. Only the final checked swap holds the
-    // runtime authorization gate, and a denial leaves the active package untouched.
+    let configuration = match state
+        .configuration_state
+        .prepare_package_workspace(
+            &state.manager,
+            &program_id,
+            prepared.next_spec(),
+            expected_state_revision,
+            &lease,
+        )
+        .await
+    {
+        Ok(configuration) => configuration,
+        Err(error) => {
+            let _ = state.manager.discard_prepared_package(prepared).await;
+            return Err(error);
+        }
+    };
+    let has_workspace = configuration.is_some();
+    // Slow copying and probing do not hold the runtime authorization gate.
     let _license_operation = match authorize_runtime_protected(&state, operation).await {
         Ok(permit) => permit,
         Err(error) => {
             if let Err(discard_error) = state.manager.discard_prepared_package(prepared).await {
-                tracing::warn!(
-                    program = %program_id,
-                    %discard_error,
-                    "prepared package cleanup requires startup recovery"
-                );
+                tracing::warn!(program = %program_id, code = ?discard_error.code, "prepared package cleanup requires recovery");
             }
             return Err(error);
         }
     };
-    state.manager.commit_package(prepared).await
+    state
+        .manager
+        .commit_package(prepared, configuration)
+        .await?;
+    if has_workspace {
+        state
+            .configuration_state
+            .load_workspace_with_lease(&state.manager, &program_id, &lease)
+            .await
+            .map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
@@ -3976,69 +4191,398 @@ pub async fn load_configuration_schema(
         .await
 }
 
-#[tauri::command]
-pub async fn validate_config(
-    state: State<'_, AppState>,
-    program_id: String,
-    content: String,
-    base_hash: String,
-) -> Result<ValidationResult> {
-    authorize_protected(&state, ProtectedOperation::RunAdvancedDiagnostics)?;
-    let program_id = id(program_id)?;
-    let (spec, _) = state.manager.get(&program_id).await?;
-    if spec.managed_config.is_some() {
-        authorize_protected(&state, ProtectedOperation::UseManagedConfigSources)?;
-    }
-    let content = crate::config_sources::apply_managed_features(&spec, content)?;
-    let result = state
-        .manager
-        .validate_config(&program_id, content, base_hash)
-        .await?;
-    authorize_protected(&state, ProtectedOperation::RunAdvancedDiagnostics)?;
-    Ok(result)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigurationSourcesCommand {
+    pub sources: Vec<ConfigSourceSpec>,
+    #[serde(default)]
+    pub remote_update: Option<RemoteUpdateSpec>,
+    pub expected_generation: u64,
 }
 
 #[tauri::command]
-pub async fn apply_config(
+pub async fn get_configuration_workspace_preview(
     state: State<'_, AppState>,
     program_id: String,
-    content: String,
-    base_hash: String,
-) -> Result<String> {
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    authorize_safety(&state, SafetyOperation::View)?;
     let program_id = id(program_id)?;
-    let (spec, _) = state.manager.get(&program_id).await?;
-    let authorization_requirements = RuntimeAuthorizationRequirements::for_configuration(
-        ProtectedOperation::EditPremiumConfiguration,
-        &spec,
-    );
-    authorization_requirements.authorize(&state)?;
-    let content = crate::config_sources::apply_managed_features(&spec, content)?;
-    let prepared = state
-        .manager
-        .prepare_config(&program_id, &spec, &spec, content, base_hash)
-        .await?;
-    let _license_operation =
-        match authorize_runtime_requirements(&state, &authorization_requirements).await {
-            Ok(operation) => operation,
-            Err(error) => {
-                let _ = state.manager.discard_prepared_config(prepared).await;
-                return Err(error);
-            }
-        };
     state
-        .manager
-        .apply_prepared_config(&program_id, &spec, prepared, true)
+        .configuration_state
+        .load_workspace_preview(&state.manager, &program_id)
         .await
 }
 
 #[tauri::command]
-pub async fn refresh_config_sources(
+pub async fn get_configuration_workspace(
     state: State<'_, AppState>,
     program_id: String,
-) -> Result<crate::config_updates::ConfigUpdateResult> {
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    authorize_safety(&state, SafetyOperation::View)?;
+    let program_id = id(program_id)?;
+    state
+        .configuration_state
+        .load_workspace(&state.manager, &program_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn update_configuration_intent(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::ConfigurationIntentRequest,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let _operation =
+        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
+    state
+        .configuration_state
+        .update_intent_with_lease(&state.manager, &program_id, request, &lease)
+        .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigurationImportPreviewCommand {
+    pub content: String,
+}
+
+#[tauri::command]
+pub async fn preview_configuration_import(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: ConfigurationImportPreviewCommand,
+) -> Result<camellia_nexus_core::ShareImportPreview> {
+    authorize_safety(&state, SafetyOperation::View)?;
+    let program_id = id(program_id)?;
+    let (spec, _) = state.manager.get(&program_id).await?;
+    let target = spec.core_target_identity().ok_or_else(|| {
+        camellia_nexus_core::CamelliaNexusError::new(
+            camellia_nexus_core::ErrorCode::InvalidState,
+            "Configuration import preview requires a supported Core target",
+        )
+    })?;
+    state
+        .configuration_state
+        .preview_import(&target, request.content.as_bytes())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFinalConfigurationDraftCommand {
+    pub draft: camellia_nexus_core::FinalEditorSession,
+    pub expected_revision: u64,
+}
+
+#[tauri::command]
+pub async fn update_final_configuration_draft(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: UpdateFinalConfigurationDraftCommand,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let _operation =
+        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
+    state
+        .configuration_state
+        .update_final_configuration_draft_with_lease(
+            &state.manager,
+            &program_id,
+            request.draft,
+            request.expected_revision,
+            &lease,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn rebase_final_configuration_draft(
+    state: State<'_, AppState>,
+    program_id: String,
+    expected_revision: u64,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let _operation =
+        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
+    state
+        .configuration_state
+        .rebase_final_configuration_draft_with_lease(
+            &state.manager,
+            &program_id,
+            expected_revision,
+            &lease,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn resolve_configuration_conflict(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::ResolveConfigurationConflictRequest,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let _operation =
+        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
+    state
+        .configuration_state
+        .resolve_configuration_conflict_with_lease(&state.manager, &program_id, request, &lease)
+        .await
+}
+
+#[tauri::command]
+pub async fn adopt_upstream_change(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::AdoptUpstreamChangeRequest,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let _operation =
+        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
+    state
+        .configuration_state
+        .adopt_upstream_change_with_lease(&state.manager, &program_id, request, &lease)
+        .await
+}
+
+#[tauri::command]
+pub async fn discard_final_configuration_draft(
+    state: State<'_, AppState>,
+    program_id: String,
+    expected_revision: u64,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let _operation =
+        authorize_runtime_protected(&state, ProtectedOperation::EditPremiumConfiguration).await?;
+    state
+        .configuration_state
+        .discard_final_configuration_draft_with_lease(
+            &state.manager,
+            &program_id,
+            expected_revision,
+            &lease,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn save_configuration_candidate(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::ConfigurationMutationContext,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let (spec, _) = state.manager.get(&program_id).await?;
+    let requirements = RuntimeAuthorizationRequirements::for_configuration(
+        ProtectedOperation::EditPremiumConfiguration,
+        &spec,
+    );
+    requirements.authorize(&state)?;
+    state
+        .configuration_state
+        .save_workspace_with_lease(&state.manager, &program_id, request, &lease, || {
+            authorize_runtime_requirements(&state, &requirements)
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn activate_configuration_candidate(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::ConfigurationMutationContext,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let (spec, _) = state.manager.get(&program_id).await?;
+    let requirements = RuntimeAuthorizationRequirements::for_configuration_activation(&spec);
+    requirements.authorize(&state)?;
+    state
+        .configuration_state
+        .activate_workspace_with_lease(&state.manager, &program_id, request, true, &lease, || {
+            authorize_runtime_requirements(&state, &requirements)
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn get_configuration_operation(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::ConfigurationMutationContext,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    authorize_safety(&state, SafetyOperation::View)?;
+    state
+        .configuration_state
+        .load_operation(&state.manager, &id(program_id)?, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn refresh_configuration_sources(
+    state: State<'_, AppState>,
+    program_id: String,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
     authorize_protected(&state, ProtectedOperation::UseManagedConfigSources)?;
     let program_id = id(program_id)?;
     crate::config_updates::refresh(&state, &program_id).await
+}
+
+#[tauri::command]
+pub async fn update_configuration_sources(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: ConfigurationSourcesCommand,
+) -> Result<camellia_nexus_core::ConfigurationWorkspaceSnapshot> {
+    authorize_protected(&state, ProtectedOperation::UseManagedConfigSources)?;
+    let program_id = id(program_id)?;
+    let configuration_lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    let current = state
+        .configuration_state
+        .load_editor_snapshot(&state.manager, &program_id, &configuration_lease)
+        .await?
+        .state;
+    if current.generation != request.expected_generation {
+        return Err(camellia_nexus_core::CamelliaNexusError::new(
+            ErrorCode::ConfigConflict,
+            "Configuration changed since the source list was loaded",
+        )
+        .with_message_key("CONFIGURATION_GENERATION_STALE"));
+    }
+    let (mut spec, _) = state.manager.get(&program_id).await?;
+    let previous_spec = spec.clone();
+    let managed = spec.managed_config.as_mut().ok_or_else(|| {
+        camellia_nexus_core::CamelliaNexusError::new(
+            ErrorCode::InvalidState,
+            "Managed configuration is not enabled",
+        )
+    })?;
+    managed.sources = request.sources;
+    managed.remote_update = request.remote_update;
+    state
+        .configuration_state
+        .begin_workspace_update(&program_id, &previous_spec, &spec, current.state_revision)
+        .await?;
+    let credentials =
+        match commit_program_update_with_pending_credentials(&state, &mut spec, false, None, &[])
+            .await
+        {
+            Ok(credentials) => credentials,
+            Err(error) => {
+                restore_configuration_workspace(&state, previous_spec, false)
+                    .await
+                    .map_err(|recovery| {
+                        configuration_workspace_recovery_failure(&error, &recovery)
+                    })?;
+                return Err(error);
+            }
+        };
+    let refreshed = async {
+        let local_base = state.manager.working_directory(&program_id).await?;
+        let snapshot = credentials
+            .as_ref()
+            .map(|transaction| transaction.snapshot().clone())
+            .unwrap_or_else(crate::config_credentials::CredentialSnapshot::empty);
+        let prepared = state
+            .configuration_state
+            .prepare_source_refresh_with_lease(
+                &state.manager,
+                &program_id,
+                Some(&local_base),
+                &snapshot,
+                &configuration_lease,
+                camellia_nexus_core::SourceUpdateKind::UserEdit,
+            )
+            .await?;
+        let _authorization =
+            authorize_runtime_protected(&state, ProtectedOperation::UseManagedConfigSources)
+                .await?;
+        state
+            .configuration_state
+            .commit_source_refresh_with_lease(&state.manager, prepared, &configuration_lease)
+            .await?;
+        complete_configuration_workspace(&state, &program_id).await
+    }
+    .await;
+    settle_configuration_workspace(&state, previous_spec, credentials, refreshed).await?;
+    let snapshot = state
+        .configuration_state
+        .load_editor_snapshot(&state.manager, &program_id, &configuration_lease)
+        .await?;
+    drop(configuration_lease);
+    Ok(snapshot)
+}
+
+async fn settle_configuration_workspace<T>(
+    state: &State<'_, AppState>,
+    previous_spec: ProgramSpec,
+    credentials: Option<crate::config_credentials::CredentialTransaction<'_>>,
+    result: Result<T>,
+) -> Result<T> {
+    match result {
+        Ok(value) => {
+            commit_configuration_credentials(state, &previous_spec.id, credentials).await?;
+            Ok(value)
+        }
+        Err(error) => {
+            if error.message_key.as_deref()
+                == Some("CONFIGURATION_WORKSPACE_COMMIT_RECOVERY_REQUIRED")
+            {
+                if let Some(transaction) = credentials {
+                    transaction.retain_for_recovery();
+                }
+                return Err(error);
+            }
+            if let Err(recovery) =
+                restore_configuration_workspace(state, previous_spec, false).await
+            {
+                if let Some(transaction) = credentials {
+                    transaction.retain_for_recovery();
+                }
+                return Err(configuration_workspace_recovery_failure(&error, &recovery));
+            }
+            if let Some(transaction) = credentials {
+                transaction.rollback().map_err(|recovery| {
+                    configuration_workspace_recovery_failure(&error, &recovery)
+                })?;
+            }
+            Err(error)
+        }
+    }
 }
 
 fn create_source_base(request: &CreateProgramRequest) -> Option<PathBuf> {
@@ -4069,8 +4613,6 @@ pub async fn run_action(
 ) -> Result<ActionResult> {
     authorize_protected(&state, ProtectedOperation::RunAdvancedDiagnostics)?;
     let program_id = id(program_id)?;
-    let (spec, _) = state.manager.get(&program_id).await?;
-    let content = crate::config_sources::apply_managed_features(&spec, content)?;
     let result = state
         .manager
         .run_action(&program_id, action_id, content, base_hash)
@@ -4508,8 +5050,7 @@ async fn load_xray_online_users(
     metrics: Option<&Value>,
 ) -> Result<XrayOnlineUsersSummary> {
     let document = state.manager.load_config(program_id).await?;
-    let root =
-        crate::config_sources::parse_object("Xray configuration", document.content.as_bytes())?;
+    let root = crate::config_sources::parse_object(document.content.as_bytes())?;
     let policy_enabled = xray_online_policy_enabled(&root);
     let (configured_users, loopback_only) = xray_configured_users(&root);
     let workspace = state.manager.workspace(program_id).await?;
@@ -5008,8 +5549,7 @@ async fn configured_xray_balancers(
     program_id: &ProgramId,
 ) -> Result<Vec<ConfiguredXrayBalancer>> {
     let document = state.manager.load_config(program_id).await?;
-    let root =
-        crate::config_sources::parse_object("Xray configuration", document.content.as_bytes())?;
+    let root = crate::config_sources::parse_object(document.content.as_bytes())?;
     Ok(parse_configured_xray_balancers(&root))
 }
 
@@ -5185,12 +5725,12 @@ async fn run_xray_api(
     plan.max_output_bytes = 1024 * 1024;
     let output = tool_runner.run(plan).await?;
     if !output.success {
-        let details = output.stderr.trim().to_owned();
+        let report = camellia_nexus_core::NativeDiagnosticReport::from_output(&output);
         return Err(camellia_nexus_core::CamelliaNexusError::new(
             camellia_nexus_core::ErrorCode::InvalidState,
             "Xray rejected the API operation",
         )
-        .with_details(details));
+        .with_details(serde_json::to_string(&report)?));
     }
     Ok(output.stdout.into_bytes())
 }
@@ -5199,6 +5739,38 @@ async fn run_xray_api(
 mod xray_dashboard_tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn rejected_api_operation_does_not_return_native_values() {
+        struct RejectedOutput;
+        #[async_trait::async_trait]
+        impl camellia_nexus_core::ToolRunner for RejectedOutput {
+            async fn run(&self, plan: CommandPlan) -> Result<camellia_nexus_core::CommandOutput> {
+                assert_eq!(plan.timeout, std::time::Duration::from_secs(5));
+                assert_eq!(plan.max_output_bytes, 1024 * 1024);
+                Ok(camellia_nexus_core::CommandOutput {
+                    code: Some(1),
+                    success: false,
+                    stdout: "fixture-secret".into(),
+                    stderr:
+                        "permission denied: https://private-user:fixture-secret@private.example"
+                            .into(),
+                })
+            }
+        }
+        let runner: camellia_nexus_core::DynToolRunner = Arc::new(RejectedOutput);
+        let error = run_xray_api(&runner, Path::new("xray"), Path::new("."), &[])
+            .await
+            .unwrap_err();
+        let encoded = serde_json::to_string(&error).unwrap();
+        for private_value in ["fixture-secret", "private-user", "private.example"] {
+            assert!(!encoded.contains(private_value));
+        }
+        let report: camellia_nexus_core::NativeDiagnosticReport =
+            serde_json::from_str(error.details.as_deref().unwrap()).unwrap();
+        assert_eq!(report.message_key, "CORE_NATIVE_RESOURCE_UNAVAILABLE");
+        assert_eq!(report.exit_code, Some(1));
+    }
 
     #[test]
     fn available_outbounds_require_a_healthy_observation() {

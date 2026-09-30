@@ -21,6 +21,7 @@ const phaseSpecs = {
   'full-recovery-billing': './tests/native/04-full-recovery-billing.e2e.mjs',
   'full-terminal-denial': './tests/native/05-full-terminal-denial.e2e.mjs',
   'full-restoration': './tests/native/06-full-restoration.e2e.mjs',
+  'configuration-preview': './tests/native/16-configuration-preview.e2e.mjs',
   'team-owner-activation': './tests/native/10-team-owner-activation.e2e.mjs',
   'team-member-join': './tests/native/11-team-member-join.e2e.mjs',
   'team-owner-workspace': './tests/native/12-team-owner-workspace.e2e.mjs',
