@@ -86,6 +86,36 @@ async function openProgramDetails(page: Page, programId: string) {
   return panel;
 }
 
+async function chooseIntentChapter(page: Page, ...labels: string[]) {
+  const panel = page.locator('#program-panel-intent');
+  const selector = panel.getByLabel('Configuration chapter', { exact: true });
+  await expect(selector.locator('option').first()).toBeAttached();
+  const options = await selector.locator('option').allTextContents();
+  const label = labels.find((label) => options.includes(label));
+  expect(label, 'a native chapter must exist in the current catalog').toBeTruthy();
+  const navigation = panel.getByRole('navigation', { name: 'Configuration chapters', exact: true });
+  if (await navigation.isVisible()) await navigation.getByRole('button', { name: label!, exact: true }).click();
+  else await selector.selectOption({ label: label! });
+  await expect(panel.locator('.native-chapter').getByRole('heading', { level: 3, name: label!, exact: true })).toBeVisible();
+}
+
+async function openNativeSetting(page: Page, name: string) {
+  const panel = page.locator('#program-panel-intent');
+  const options = panel.locator('.native-options');
+  await options.locator('summary').click();
+  await expect(options.locator('.child-choice select, .native-children button').first()).toBeVisible();
+  const selector = options.getByRole('combobox', { name: 'Choose a setting', exact: true });
+  if (await selector.isVisible()) {
+    const label = (await selector.locator('option').allTextContents()).find((label) => label === name || label.startsWith(name + ' · '));
+    expect(label, 'the registered native field must be selectable').toBeTruthy();
+    await selector.selectOption({ label: label! });
+    await options.getByRole('button', { name: 'Open setting', exact: true }).click();
+  } else {
+    await options.getByRole('button', { name: new RegExp('^' + name + '(?:\\s|$)') }).click();
+  }
+  await expect(panel.locator('.native-chapter').getByRole('heading', { level: 3, name, exact: true })).toBeVisible();
+}
+
 test('program configuration stages use sibling workspaces without overflow', async ({ page }) => {
   await page.setViewportSize({ width: 680, height: 720 });
   await openPreview(page, 'cupertino', 'light');
@@ -136,18 +166,19 @@ test('program configuration stages use sibling workspaces without overflow', asy
   await expect(page.getByRole('tab', { name: 'Configuration', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
-test('Intent sections align across the panel without staggered card whitespace', async ({ page }) => {
+test('Intent follows native chapters with one contained content section', async ({ page }) => {
   await openPreview(page, 'cupertino', 'light');
   await openProgramDetails(page, 'sing-box-edge');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  const grid = page.locator('#program-panel-intent .intent-sections');
+  const grid = page.locator('#program-panel-intent .native-layout');
   await expect(grid).toBeVisible();
+  await expect(grid.locator('.native-chapter')).toHaveCount(1);
 
   for (const width of [1280, 1024, 760, 680, 520, 400]) {
     await page.setViewportSize({ width, height: 820 });
     await expectNoViewportOverflow(page);
     const layout = await grid.evaluate((element) => {
-      const cards = [...element.querySelectorAll<HTMLElement>(':scope > .intent-group')]
+      const cards = [...element.querySelectorAll<HTMLElement>('.native-chapter')]
         .map((card) => card.getBoundingClientRect());
       const rows = new Set(cards.map((card) => Math.round(card.top)));
       const bounds = element.getBoundingClientRect();
@@ -167,31 +198,292 @@ test('Intent sections align across the panel without staggered card whitespace',
     expect(layout.cardOverflow).toBeLessThanOrEqual(1);
     expect(layout.columns).toBe(1);
     expect(layout.rows).toBe(layout.count);
+    expect(layout.count).toBe(1);
   }
+  await chooseIntentChapter(page, 'DNS');
+  await expect(page.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeVisible();
+  await chooseIntentChapter(page, 'Logging');
+  await expect(page.getByLabel('Log detail', { exact: true })).toBeVisible();
 });
 
-test('Intent folding preserves unfinished input and cancellation never writes configuration', async ({ page }, testInfo) => {
+test('native fixtures load only when Intent is opened and are reused when revisiting it', async ({ page }) => {
+  const catalogs: string[] = [];
+  page.on('request', (request) => { if (request.url().includes('/testing/intentCatalogs.json')) catalogs.push(request.url()); });
+  await openPreview(page);
+  expect(catalogs).toHaveLength(0);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('info');
+  expect(catalogs).toHaveLength(1);
+  expect(new URL(catalogs[0]).search).toBe('');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(page.getByLabel('Log detail', { exact: true })).toHaveValue('info');
+  expect(catalogs).toHaveLength(1);
+});
+
+test('Intent cold loading omits empty controls and a failed catalog read can retry without writing', async ({ page }) => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0;
+  await page.route('**/src/testing/intentCatalogs.json', async (route) => {
+    reads += 1;
+    if (reads === 1) {
+      await held;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    } else await route.continue();
+  });
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.evaluate(() => {
+    document.body.dataset.catalogWrites = '0';
+    window.addEventListener('camellia-ui-preview:intent-commit', () => { document.body.dataset.catalogWrites = String(Number(document.body.dataset.catalogWrites) + 1); });
+  });
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await expect(intent.getByRole('status')).toContainText('Loading settings');
+  await expect(intent.getByLabel('Configuration chapter', { exact: true })).toHaveCount(0);
+  await expect(intent.getByRole('navigation', { name: 'Configuration chapters', exact: true })).toHaveCount(0);
+  release();
+  await expect(intent.getByRole('alert')).toBeVisible();
+  await intent.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(intent.getByLabel('Log detail', { exact: true })).toHaveValue('info');
+  await expect(intent.getByRole('alert')).toHaveCount(0);
+  expect(reads).toBe(2);
+  expect(await page.locator('body').getAttribute('data-catalog-writes')).toBe('0');
+});
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  test(`a deleted common setting can follow its Source again for ${programId}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, programId);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    const level = intent.getByLabel('Log detail', { exact: true });
+    await expect(level).toBeVisible();
+    const original = await level.inputValue();
+    expect(original).not.toBe('__unset');
+    await intent.getByRole('button', { name: 'Setting actions: Log detail', exact: true }).click();
+    await intent.getByRole('button', { name: 'Remove field', exact: true }).click();
+    await expect(level).toHaveValue('__unset');
+    await intent.getByRole('button', { name: 'Setting actions: Log detail', exact: true }).click();
+    await intent.getByRole('button', { name: 'Follow source', exact: true }).click();
+    await expect(level).toHaveValue(original);
+    await level.selectOption('debug');
+    await expect(level).toHaveValue('debug');
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('debug');
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+test('default route and DNS use existing typed targets and revert to their Source', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('.config-source-editor');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  await sources.locator('.source-inline-content').last().fill(JSON.stringify({
+    outbounds: [{ type: 'direct', tag: 'direct' }, { type: 'direct', tag: 'other' }],
+    dns: { servers: [{ type: 'local', tag: 'system' }], final: 'system' }, route: { final: 'direct' },
+  }));
+  await page.getByRole('button', { name: 'Save sources', exact: true }).click();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  await chooseIntentChapter(page, 'Routing');
+  const target = intent.getByLabel('Default connection', { exact: true });
+  await expect(target).toHaveValue('direct');
+  expect(await target.locator('option:not([disabled])').allTextContents()).toEqual(['direct', 'other']);
+  await target.selectOption('other');
+  await expect(target).toHaveValue('other');
+  await intent.getByRole('button', { name: 'Setting actions: Default connection', exact: true }).click();
+  await intent.getByRole('button', { name: 'Follow source', exact: true }).click();
+  await expect(target).toHaveValue('direct');
+  await chooseIntentChapter(page, 'DNS');
+  const dns = intent.getByLabel('Default DNS server', { exact: true });
+  await expect(dns).toHaveValue('system');
+  expect(await dns.locator('option:not([disabled])').allTextContents()).toEqual(['system']);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"final": "direct"');
+  await expect(page.locator('.merge-summary')).toHaveCount(0);
+});
+
+test('Intent undo and redo preserve later unrelated settings without applying the candidate', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  const level = intent.getByLabel('Log detail', { exact: true });
+  await level.selectOption('debug');
+  await expect(level).toHaveValue('debug');
+  const timestamp = intent.getByLabel('Show log time', { exact: true });
+  if (await timestamp.getAttribute('type') === 'checkbox') await timestamp.check();
+  else await timestamp.selectOption('true');
+  await intent.getByText('Recent changes', { exact: true }).click();
+  const records = intent.locator('.history-list > div');
+  await expect(records).toHaveCount(2);
+  await expect(records.nth(0).getByText('Show log time', { exact: true })).toBeVisible();
+  await expect(records.nth(1).getByText('Log detail', { exact: true })).toBeVisible();
+  await records.nth(1).getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(level).toHaveValue('info');
+  await expect(timestamp).toBeChecked();
+  await intent.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(level).toHaveValue('debug');
+  await expect(timestamp).toBeChecked();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toContainText('"level": "debug"');
+  await expect(editor).toContainText('"timestamp": true');
+  await expect(page.locator('.final-editor-workspace').getByText('Ready to apply', { exact: true })).toBeVisible();
+});
+
+for (const [choice, expected] of [['Keep current settings', 'error'], ['Restore this change', 'warn']] as const) {
+  test(`Intent overlapping undo previews local differences and can ${choice}`, async ({ page }) => {
+    await openPreview(page);
+    const panel = await openProgramDetails(page, 'sing-box-edge');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    const level = intent.getByLabel('Log detail', { exact: true });
+    await level.selectOption('warn');
+    await expect(level).toHaveValue('warn');
+    await level.selectOption('debug');
+    await expect(level).toHaveValue('debug');
+    await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+    const sources = page.locator('#program-panel-sources');
+    await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+    await sources.locator('.source-inline-content').last().fill('{"log":{"level":"error","timestamp":true}}');
+    await sources.getByRole('button', { name: 'Save sources', exact: true }).click();
+    await expect(sources.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await expect(level).toHaveValue('error');
+    await intent.getByRole('button', { name: 'Undo last change', exact: true }).click();
+    const review = intent.getByRole('region', { name: 'Choose what to restore', exact: true });
+    await expect(review).toContainText('"error"');
+    await expect(review).toContainText('"warn"');
+    await review.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(review).toHaveCount(0);
+    await expect(level).toHaveValue('error');
+    await intent.getByRole('button', { name: 'Undo last change', exact: true }).click();
+    await review.getByLabel(choice, { exact: false }).check();
+    await review.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(review).toHaveCount(0);
+    await expect(level).toHaveValue(expected);
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await expect(editor).toContainText(`"level": "${expected}"`);
+    await expect(editor).toContainText('"timestamp": true');
+    await expect(panel).not.toBeVisible();
+  });
+}
+
+test('Intent undo refreshes changed comparisons before accepting an earlier choice', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  const level = intent.getByLabel('Log detail', { exact: true });
+  await level.selectOption('warn');
+  await expect(level).toHaveValue('warn');
+  await level.selectOption('debug');
+  await expect(level).toHaveValue('debug');
+  await page.getByRole('tab', { name: 'Sources', exact: true }).click();
+  const sources = page.locator('#program-panel-sources');
+  await sources.getByRole('button', { name: 'Inline content', exact: true }).click();
+  await sources.locator('.source-inline-content').last().fill('{"log":{"level":"error","timestamp":true}}');
+  await sources.getByRole('button', { name: 'Save sources', exact: true }).click();
+  await expect(sources.getByRole('button', { name: 'Save sources', exact: true })).toBeDisabled();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await expect(level).toHaveValue('error');
+  await intent.getByRole('button', { name: 'Undo last change', exact: true }).click();
+  const review = intent.getByRole('region', { name: 'Choose what to restore', exact: true });
+  const restore = review.getByLabel('Restore this change', { exact: false });
+  await restore.check();
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: {
+    programId: 'sing-box-edge', content: '{"log":{"level":"fatal","timestamp":true}}',
+  } })));
+  await expect(level).toHaveValue('fatal');
+  await review.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(review).toContainText('"fatal"');
+  await expect(restore).not.toBeChecked();
+  await expect(review.getByRole('button', { name: 'Done', exact: true })).toBeDisabled();
+  await expect(level).toHaveValue('fatal');
+  await restore.check();
+  await review.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(review).toHaveCount(0);
+  await expect(level).toHaveValue('warn');
+});
+
+test('Intent protection refusal leaves editing and application available for a corrected retry', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_intent_protection_failure');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  const intent = page.locator('#program-panel-intent');
+  const level = intent.getByLabel('Log detail', { exact: true });
+  const apply = intent.getByRole('button', { name: /Apply changes|Apply and restart/ });
+  const applicationInitiallyDisabled = await apply.isDisabled();
+  await level.selectOption('debug');
+  await expect(intent.getByRole('alert')).toContainText('This change could not be saved safely. Try again');
+  await expect(intent.getByText('Update needs confirmation', { exact: true })).toHaveCount(0);
+  await expect(level).toBeEnabled();
+  await expect(level).toHaveValue('info');
+  await expect.poll(() => apply.isDisabled()).toBe(applicationInitiallyDisabled);
+  await level.selectOption('warn');
+  await expect(level).toHaveValue('warn');
+  await expect(apply).toBeEnabled();
+  await expect(intent.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"level": "warn"');
+});
+
+test('Intent cached chapters reuse reads and stale context responses cannot change selection', async ({ page }) => {
+  await page.addInitScript(() => {
+    const reads: unknown[] = [];
+    Object.assign(window, { __intentReads: reads });
+    window.addEventListener('camellia-ui-preview:intent-context', (event) => reads.push((event as CustomEvent).detail));
+  });
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_slow_intent_context');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'DNS');
+  await expect(page.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeEnabled();
+  await chooseIntentChapter(page, 'Logging');
+  await expect(page.getByLabel('Log detail', { exact: true })).toBeEnabled();
+  const count = await page.evaluate(() => (window as unknown as { __intentReads: unknown[] }).__intentReads.length);
+  await chooseIntentChapter(page, 'DNS');
+  await expect(page.locator('#program-panel-intent .context-loading')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeEnabled();
+  await chooseIntentChapter(page, 'Logging');
+  await expect(page.getByLabel('Log detail', { exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => (window as unknown as { __intentReads: unknown[] }).__intentReads.length)).toBe(count);
+  const select = page.getByLabel('Configuration chapter', { exact: true });
+  const routing = await select.locator('option').filter({ hasText: /^Routing$/ }).getAttribute('value');
+  const logging = await select.locator('option').filter({ hasText: /^Logging$/ }).getAttribute('value');
+  await select.selectOption(routing!);
+  await select.selectOption(logging!);
+  await expect(page.locator('#program-panel-intent h3')).toHaveText('Logging');
+  await expect(page.getByLabel('Log detail', { exact: true })).toBeEnabled();
+  await expect.poll(() => page.locator('#program-panel-intent h3').textContent()).toBe('Logging');
+});
+
+test('Intent navigation preserves unfinished input and cancellation never writes configuration', async ({ page }, testInfo) => {
   await openPreview(page);
   const editor = await openProgramConfiguration(page, 'sing-box-edge');
   const initial = await editor.textContent();
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const intent = page.locator('#program-panel-intent');
-  const local = intent.getByRole('region', { name: 'Local access', exact: true });
-  const heading = local.getByRole('button', { name: 'Local access', exact: true });
+  await chooseIntentChapter(page, 'Incoming connections');
+  const local = intent.getByRole('region', { name: 'Local proxy', exact: true });
   const add = local.getByRole('button', { name: 'Add Local proxy', exact: true });
   await add.click();
   const form = local.locator('.object-form');
   await form.getByLabel('Port', { exact: true }).fill('18765');
-  await heading.click();
-  await expect(heading).toHaveAttribute('aria-expanded', 'false');
-  await expect(form).toBeHidden();
-  await heading.focus();
-  await page.keyboard.press('Enter');
+  await expect(intent.getByLabel('Configuration chapter', { exact: true })).toBeDisabled();
   await expect(form).toBeVisible();
   await expect(form.getByLabel('Port', { exact: true })).toHaveValue('18765');
-  await expect(intent.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeDisabled();
   await form.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(add).toBeFocused();
+  await expect(intent.getByLabel('Configuration chapter', { exact: true })).toBeEnabled();
+  await chooseIntentChapter(page, 'DNS');
   await expect(intent.getByRole('button', { name: 'Add DNS servers', exact: true })).toBeEnabled();
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toHaveText(initial ?? '');
@@ -208,6 +500,7 @@ test('Intent applies only completed entries and resets the editing gate on navig
   await intent.getByLabel('Log detail', { exact: true }).selectOption('error');
   const apply = intent.getByRole('button', { name: 'Apply and restart', exact: true });
   await expect(apply).toBeEnabled();
+  await chooseIntentChapter(page, 'Incoming connections');
   const add = intent.getByRole('button', { name: 'Add Local proxy', exact: true });
   await add.click();
   const form = intent.locator('.object-form');
@@ -229,7 +522,507 @@ test('Intent applies only completed entries and resets the editing gate on navig
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await expect(form).toHaveCount(0);
   await expect(apply).toBeEnabled();
+  await chooseIntentChapter(page, 'Incoming connections');
 });
+
+for (const removed of [false, true]) {
+  test(`Intent keeps unfinished object input when background refresh ${removed ? 'removes the entry' : 'changes the entry'}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, 'sing-box-edge');
+    const content = (port?: number) => JSON.stringify({ log: { level: 'info' }, inbounds: port === undefined ? [] : [{ type: 'http', tag: 'source-entry', listen: '127.0.0.1', listen_port: port }], outbounds: [{ type: 'direct', tag: 'direct' }] });
+    async function refresh(next: string) {
+      await page.evaluate((content) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content } })), next);
+    }
+    await refresh(content(18080));
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await chooseIntentChapter(page, 'HTTP proxy', 'Incoming connections');
+    const intent = page.locator('#program-panel-intent');
+    await expect(intent.locator('.object-row')).toContainText('18080');
+    await intent.locator('.object-row').getByRole('button', { name: 'Edit', exact: true }).click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('Port', { exact: true }).fill('18081');
+    await refresh(content(removed ? undefined : 18099));
+    await expect(form.getByLabel('Port', { exact: true })).toHaveValue('18081');
+    await expect(form.getByRole('button', { name: 'Done', exact: true })).toBeDisabled();
+    await form.getByText('Entry actions', { exact: true }).click();
+    await expect(form.getByRole('button', { name: 'Remove', exact: true })).toBeDisabled();
+    if (removed) {
+      await expect(form).toContainText('This entry is no longer available here. Your input is kept');
+      await expect(form.getByRole('button', { name: 'Open Final configuration', exact: true })).toBeEnabled();
+      await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+    } else {
+      await expect(form).toContainText('This entry changed while you were editing. Your input is kept');
+      await form.getByRole('button', { name: 'Review latest values', exact: true }).click();
+      await expect(form.getByLabel('Port', { exact: true })).toHaveValue('18081');
+      await form.getByRole('button', { name: 'Done', exact: true }).click();
+      await expect(form).toHaveCount(0);
+    }
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await expect(editor).not.toContainText('18080');
+    if (removed) await expect(editor).not.toContainText('18081');
+    else await expect(editor).toContainText('18081');
+  });
+}
+
+test('a Final-only native object offers Final editing instead of synthesizing partial upstream settings', async ({ page }) => {
+  await openPreview(page);
+  const editor = await openProgramConfiguration(page, 'sing-box-edge');
+  const content = { log: { level: 'info' }, inbounds: [{ type: 'http', tag: 'editor-only', listen: '127.0.0.1', listen_port: 18888 }], outbounds: [{ type: 'direct', tag: 'direct' }] };
+  await editor.fill(JSON.stringify(content, null, 2));
+  await editor.press('ControlOrMeta+s');
+  await expect(page.getByRole('button', { name: /Apply changes|Apply and restart/ })).toBeEnabled();
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'HTTP proxy', 'Incoming connections');
+  const intent = page.locator('#program-panel-intent');
+  await expect(intent.locator('.object-row')).toContainText('18888');
+  await expect(intent.locator('.object-row').getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+  await intent.locator('.object-row').getByRole('button', { name: 'Edit in Final configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"listen_port": 18888');
+  await expect(page.locator('.merge-summary')).toHaveCount(0);
+});
+
+test('a required native setting is reviewed and cancelled locally or committed with its dependency', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light', 1, '&__ui_linux_capabilities');
+  await openProgramDetails(page, 'mihomo-alpha');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: {
+    programId: 'mihomo-alpha', content: JSON.stringify({ 'log-level': 'info', tun: { enable: true, 'auto-redirect': false, mtu: 1500 } }),
+  } })));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Virtual network adapter');
+  const intent = page.locator('#program-panel-intent');
+  await intent.locator('.native-options > summary').click();
+  await expect(intent.locator('.native-options .child-choice select, .native-options .native-children button').first()).toBeVisible();
+  const settings = intent.getByLabel('Choose a setting', { exact: true });
+  if (await settings.isVisible()) {
+    await settings.selectOption({ label: 'Automatic traffic redirection' });
+    await intent.getByRole('button', { name: 'Open setting', exact: true }).click();
+  } else await intent.getByRole('button', { name: 'Automatic traffic redirection', exact: true }).click();
+  const value = intent.getByRole('combobox', { name: 'Automatic traffic redirection', exact: true });
+  await value.selectOption('true');
+  const impact = intent.getByRole('region', { name: 'Related changes', exact: true });
+  await expect(impact).toContainText('Automatic routing');
+  await expect(value).toHaveValue('false');
+  await expect(intent.getByRole('button', { name: 'Apply and restart', exact: true })).toBeDisabled();
+  await impact.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(impact).toHaveCount(0);
+  await value.selectOption('true');
+  await impact.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(impact).toHaveCount(0);
+  await expect(value).toHaveValue('true');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+  await expect(editor).toContainText(/auto-redirect"?\s*:\s*true/);
+  await expect(editor).toContainText(/auto-route"?\s*:\s*true/);
+  await expect(editor).toContainText(/mtu"?\s*:\s*1500/);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await intent.getByRole('button', { name: 'Undo last change', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(editor).toContainText(/auto-redirect"?\s*:\s*false/);
+  await expect(editor).not.toContainText(/auto-route"?\s*:\s*true/);
+  await expect(editor).toContainText(/mtu"?\s*:\s*1500/);
+});
+
+for (const removed of [false, true]) {
+  test(`native field input remains bound to its chosen identity after ${removed ? 'removal' : 'reordering'}`, async ({ page }) => {
+    await openPreview(page);
+    await openProgramDetails(page, 'sing-box-edge');
+    const first = { type: 'http', tag: 'first', listen: '127.0.0.1', listen_port: 18080 };
+    const second = { type: 'http', tag: 'second', listen: '127.0.0.1', listen_port: 18090 };
+    async function refresh(inbounds: object[]) {
+      await page.evaluate((content) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content } })), JSON.stringify({ log: { level: 'info' }, inbounds, outbounds: [{ type: 'direct', tag: 'direct' }] }));
+    }
+    await refresh([first, second]);
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await chooseIntentChapter(page, 'Incoming connections');
+    await openNativeSetting(page, 'http');
+    await openNativeSetting(page, 'listen_port');
+    const intent = page.locator('#program-panel-intent');
+    const field = intent.locator('.native-field');
+    const entries = field.getByRole('combobox', { name: 'Choose an entry', exact: true });
+    await expect(entries).toHaveValue('');
+    await expect(field.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+    await entries.selectOption('/inbounds[tag=first]/listen_port');
+    await field.getByRole('button', { name: 'Edit', exact: true }).click();
+    await field.getByRole('spinbutton', { name: 'Value', exact: true }).fill('18081');
+    await refresh(removed ? [second] : [second, first]);
+    await expect(field.getByRole('spinbutton', { name: 'Value', exact: true })).toHaveValue('18081');
+    if (removed) {
+      await expect(field).toContainText('This entry is no longer available here. Your input is kept');
+      await expect(field.getByRole('button', { name: 'Done', exact: true })).toHaveCount(0);
+      await expect(field.getByRole('button', { name: 'Open Final configuration', exact: true })).toBeEnabled();
+      await field.getByRole('button', { name: 'Cancel', exact: true }).click();
+    } else {
+      await expect(field.getByRole('button', { name: 'Done', exact: true })).toBeEnabled();
+      await field.getByRole('button', { name: 'Done', exact: true }).click();
+      await expect(field.getByRole('spinbutton', { name: 'Value', exact: true })).toHaveCount(0);
+    }
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const document = JSON.parse(await page.getByRole('textbox', { name: 'Configuration editor' }).innerText());
+    expect(document.inbounds.find((item: { tag: string }) => item.tag === 'second').listen_port).toBe(18090);
+    if (removed) expect(document.inbounds.find((item: { tag: string }) => item.tag === 'first')).toBeUndefined();
+    else expect(document.inbounds.find((item: { tag: string }) => item.tag === 'first').listen_port).toBe(18081);
+  });
+}
+
+test('a removed native field stays selectable and can follow its source again', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content: JSON.stringify({ inbounds: [{ type: 'http', tag: 'local', listen_port: 18080 }], outbounds: [{ type: 'direct', tag: 'direct' }] }) } })));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Incoming connections');
+  await openNativeSetting(page, 'http');
+  await openNativeSetting(page, 'listen_port');
+  const field = page.locator('#program-panel-intent .native-field');
+  await field.getByText('Setting actions', { exact: true }).click();
+  await field.getByRole('button', { name: 'Remove field', exact: true }).click();
+  await expect(field).toContainText('Use program default');
+  await expect(field.getByRole('button', { name: 'Follow source', exact: true })).toBeEnabled();
+  await field.getByRole('button', { name: 'Follow source', exact: true }).click();
+  await expect(field).toContainText('18080');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('18080');
+  await expect(page.locator('.merge-summary')).toHaveCount(0);
+});
+
+test('reviewed native enums use their allowed values rather than a free text edit', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'xray-primary');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'xray-primary', content: JSON.stringify({ outbounds: [{ protocol: 'freedom', tag: 'direct', settings: {}, mux: { enabled: true, xudpProxyUDP443: 'reject' } }] }) } })));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Outgoing connections');
+  await openNativeSetting(page, 'mux');
+  await openNativeSetting(page, 'xudpProxyUDP443');
+  const field = page.locator('#program-panel-intent .native-field');
+  const value = field.getByRole('combobox', { name: 'xudpProxyUDP443', exact: true });
+  await expect(value).toHaveValue('"reject"');
+  await expect(value.locator('option:not([disabled])')).toHaveText(['Use program default', 'reject', 'allow', 'skip']);
+  await expect(field.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+  await value.selectOption('"allow"');
+  await expect(value).toHaveValue('"allow"');
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"xudpProxyUDP443": "allow"');
+});
+
+test('native reference choices follow the candidate and preserve target names and sibling settings', async ({ page }) => {
+  await openPreview(page, 'material', 'dark');
+  await openProgramDetails(page, 'xray-primary');
+  const content = JSON.stringify({ inbounds: [{ protocol: 'socks', tag: 'not-an-outbound' }], outbounds: [{ protocol: 'freedom', tag: 'first', proxySettings: { tag: 'local', transportLayer: true } }, { protocol: 'freedom', tag: 'local' }, { protocol: 'freedom', tag: 'other' }] });
+  await page.evaluate((content) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'xray-primary', content } })), content);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Outgoing connections');
+  await openNativeSetting(page, 'proxySettings');
+  await openNativeSetting(page, 'tag');
+  const field = page.locator('#program-panel-intent .native-field');
+  const target = field.getByRole('combobox', { name: 'tag', exact: true });
+  await expect(target).toHaveValue('"local"');
+  await expect(target.locator('option:not([disabled])')).toHaveText(['first', 'local', 'other']);
+  await target.selectOption('"other"');
+  await expect(target).toHaveValue('"other"');
+  await expect(field.getByRole('alert')).toHaveCount(0);
+  await page.setViewportSize({ width: 400, height: 900 });
+  await expectNoViewportOverflow(page);
+  expect(await field.evaluate((element) => [...element.querySelectorAll('button, select')].every((child) => {
+    const bounds = element.getBoundingClientRect(); const box = child.getBoundingClientRect();
+    return box.width === 0 || box.left >= bounds.left - 1 && box.right <= bounds.right + 1;
+  }))).toBe(true);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const document = JSON.parse(await page.getByRole('textbox', { name: 'Configuration editor' }).innerText());
+  expect(document.outbounds[0].proxySettings).toEqual({ tag: 'other', transportLayer: true });
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await page.getByRole('button', { name: 'Undo last change', exact: true }).click();
+  await chooseIntentChapter(page, 'Outgoing connections');
+  await openNativeSetting(page, 'proxySettings');
+  await openNativeSetting(page, 'tag');
+  await expect(target).toHaveValue('"local"');
+  await expectAccessible(page, '#program-panel-intent');
+});
+
+test('ambiguous native references show one recoverable issue and omit duplicate choices', async ({ page }) => {
+  await openPreview(page, 'aurora', 'light');
+  await openProgramDetails(page, 'xray-primary');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'xray-primary', content: JSON.stringify({ outbounds: [{ protocol: 'freedom', tag: 'first', proxySettings: { tag: 'local' } }, { protocol: 'freedom', tag: 'local' }, { protocol: 'freedom', tag: 'local' }] }) } })));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Outgoing connections');
+  await openNativeSetting(page, 'proxySettings');
+  await openNativeSetting(page, 'tag');
+  const field = page.locator('#program-panel-intent .native-field');
+  const target = field.getByRole('combobox', { name: 'tag', exact: true });
+  await expect(field.locator('.field-issue')).toHaveText('Several entries have this name. Give them distinct names before selecting a target');
+  await expect(target.locator('option:not([disabled])')).toHaveText(['first']);
+  await target.selectOption('"first"');
+  await expect(field.locator('.field-issue')).toHaveCount(0);
+  await expect(field.getByRole('alert')).toHaveCount(0);
+});
+
+test('referenced DNS removal chooses replacements once, cancels without writing, and undoes the whole change', async ({ page }) => {
+  await openPreview(page, 'aurora', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  const content = JSON.stringify({ dns: { servers: [{ type: 'udp', tag: 'first', server: '1.1.1.1' }, { type: 'udp', tag: 'second', server: '9.9.9.9' }], final: 'first' }, outbounds: [{ type: 'direct', tag: 'direct', domain_resolver: { server: 'first', strategy: 'prefer_ipv4' } }] });
+  await page.evaluate((content) => {
+    window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content } }));
+    document.body.dataset.intentCommits = '0';
+    window.addEventListener('camellia-ui-preview:intent-commit', () => document.body.dataset.intentCommits = String(Number(document.body.dataset.intentCommits) + 1));
+  }, content);
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'DNS');
+  const intent = page.locator('#program-panel-intent');
+  const row = intent.locator('.object-row').filter({ has: page.getByText('first', { exact: true }) });
+  await row.getByRole('button', { name: 'Edit', exact: true }).click();
+  const form = intent.locator('.object-form');
+  await form.getByText('Entry actions', { exact: true }).click();
+  await form.getByRole('button', { name: 'Remove', exact: true }).click();
+  const impact = form.locator('.impact-note');
+  await expect(impact.getByRole('combobox')).toHaveCount(2);
+  await expect(impact.getByRole('button', { name: 'Replace and remove', exact: true })).toBeDisabled();
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await page.locator('body').getAttribute('data-intent-commits')).toBe('0');
+  await row.getByRole('button', { name: 'Edit', exact: true }).click();
+  await form.getByText('Entry actions', { exact: true }).click();
+  await form.getByRole('button', { name: 'Remove', exact: true }).click();
+  for (const width of [1280, 1024, 760, 680, 520, 400]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expectNoViewportOverflow(page);
+    expect(await impact.evaluate((element) => [...element.querySelectorAll('button, select, label')].every((child) => {
+      const parent = element.getBoundingClientRect(); const box = child.getBoundingClientRect();
+      return box.width === 0 || box.left >= parent.left - 1 && box.right <= parent.right + 1;
+    }))).toBe(true);
+  }
+  await expect(impact.getByRole('combobox', { name: 'Replacement for Default DNS server', exact: true })).toBeVisible();
+  await expect(impact.getByRole('combobox', { name: 'Replacement for DNS used for address lookup', exact: true })).toBeVisible();
+  for (const select of await impact.getByRole('combobox').all()) await select.selectOption('second');
+  await expectAccessible(page, '#program-panel-intent');
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(impact.getByRole('combobox', { name: '替代目标： 默认 DNS 服务', exact: true })).toHaveValue('second');
+  await expectNoViewportOverflow(page); await expectAccessible(page, '#program-panel-intent');
+  await impact.getByRole('button', { name: '替换引用并移除', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  expect(await page.locator('body').getAttribute('data-intent-commits')).toBe('1');
+  await expect(intent.getByLabel('默认 DNS 服务', { exact: true })).toHaveValue('second');
+  await page.getByRole('tab', { name: '配置', exact: true }).click();
+  let document = JSON.parse(await page.getByRole('textbox', { name: '配置编辑器' }).innerText());
+  expect(document.dns.servers.map((entry: { tag: string }) => entry.tag)).toEqual(['second']);
+  expect(document.outbounds[0].domain_resolver).toEqual({ server: 'second', strategy: 'prefer_ipv4' });
+  await page.getByRole('tab', { name: '意图', exact: true }).click();
+  await intent.getByRole('button', { name: '撤销上次更改', exact: true }).click();
+  await page.getByRole('tab', { name: '配置', exact: true }).click();
+  document = JSON.parse(await page.getByRole('textbox', { name: '配置编辑器' }).innerText());
+  expect(document.dns.servers.map((entry: { tag: string }) => entry.tag)).toEqual(['first', 'second']);
+  expect(document.dns.final).toBe('first');
+  expect(document.outbounds[0].domain_resolver).toEqual({ server: 'first', strategy: 'prefer_ipv4' });
+});
+
+test('replacement choices refresh after a related update and retain unaffected choices', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  const document = { dns: { servers: [{ type: 'local', tag: 'first' }, { type: 'local', tag: 'second' }], final: 'first' }, outbounds: [{ type: 'direct', tag: 'direct', domain_resolver: { server: 'first', strategy: 'prefer_ipv4' } }] };
+  await page.evaluate((content) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content } })), JSON.stringify(document));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'DNS');
+  const intent = page.locator('#program-panel-intent');
+  await intent.locator('.object-row').filter({ has: page.getByText('first', { exact: true }) }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const form = intent.locator('.object-form');
+  await form.getByText('Entry actions', { exact: true }).click();
+  await form.getByRole('button', { name: 'Remove', exact: true }).click();
+  const impact = form.locator('.impact-note');
+  for (const select of await impact.getByRole('combobox').all()) await select.selectOption('second');
+  document.outbounds[0].domain_resolver.strategy = 'prefer_ipv6';
+  await page.evaluate((content) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content } })), JSON.stringify(document));
+  await impact.getByRole('button', { name: 'Replace and remove', exact: true }).click();
+  await expect(form.getByRole('alert')).toContainText('The related settings changed');
+  await expect(form.getByRole('alert').getByRole('button', { name: 'Open Final configuration', exact: true })).toHaveCount(0);
+  await expect(impact.getByRole('combobox', { name: 'Replacement for Default DNS server', exact: true })).toHaveValue('second');
+  await expect(impact.getByRole('combobox', { name: 'Replacement for DNS used for address lookup', exact: true })).toHaveValue('');
+  await expect(impact.getByRole('button', { name: 'Replace and remove', exact: true })).toBeDisabled();
+  await impact.getByRole('combobox', { name: 'Replacement for DNS used for address lookup', exact: true }).selectOption('second');
+  await impact.getByRole('button', { name: 'Replace and remove', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const final = JSON.parse(await page.getByRole('textbox', { name: 'Configuration editor' }).innerText());
+  expect(final.dns.servers.map((server: { tag: string }) => server.tag)).toEqual(['second']);
+  expect(final.outbounds[0].domain_resolver).toEqual({ server: 'second', strategy: 'prefer_ipv6' });
+});
+
+test('DNS resolver object forms keep their options when editing and undo restores the complete change', async ({ page }) => {
+  await openPreview(page);
+  await openProgramDetails(page, 'sing-box-edge');
+  const original = { dns: { servers: [
+    { type: 'local', tag: 'first' }, { type: 'local', tag: 'second' },
+    { type: 'https', tag: 'remote', server: 'resolver.example.invalid', path: '/dns-query', domain_resolver: { server: 'first', strategy: 'prefer_ipv4', timeout: '2s', disable_cache: true } },
+  ] } };
+  await page.evaluate((content) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content } })), JSON.stringify(original));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'DNS');
+  const intent = page.locator('#program-panel-intent');
+  await intent.locator('.object-row').filter({ has: page.getByText('remote', { exact: true }) }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const form = intent.locator('.object-form');
+  await expect(form.getByLabel('Resolve the server through', { exact: true })).toHaveValue('first');
+  await form.getByLabel('Resolve the server through', { exact: true }).selectOption('second');
+  await form.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  const edited = JSON.parse(await page.getByRole('textbox', { name: 'Configuration editor' }).innerText());
+  expect(edited.dns.servers[2].domain_resolver).toEqual({ ...original.dns.servers[2].domain_resolver, server: 'second' });
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await intent.getByRole('button', { name: 'Undo last change', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+  expect(JSON.parse(await page.getByRole('textbox', { name: 'Configuration editor' }).innerText()).dns).toEqual(original.dns);
+});
+
+test('following a created DNS entry explains its active reference and offers a recovery action', async ({ page }) => {
+  await openPreview(page, 'cupertino', 'light');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content: '{"dns":{"servers":[]}}' } })));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'DNS');
+  const intent = page.locator('#program-panel-intent');
+  await intent.getByRole('button', { name: 'Add DNS servers', exact: true }).click();
+  const form = intent.locator('.object-form');
+  await form.getByLabel('DNS connection', { exact: true }).selectOption('udp');
+  await form.getByLabel('Server address', { exact: true }).fill('1.1.1.1');
+  await form.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  const defaultDns = intent.getByLabel('Default DNS server', { exact: true });
+  const target = await defaultDns.locator('option:not([disabled])').last().getAttribute('value');
+  expect(target).toBeTruthy();
+  await defaultDns.selectOption(target!);
+  await expect(defaultDns).toHaveValue(target!);
+  await intent.locator('.object-row').getByRole('button', { name: 'Edit', exact: true }).click();
+  await form.getByText('Entry actions', { exact: true }).click();
+  await form.getByRole('button', { name: 'Follow source', exact: true }).click();
+  await expect(form.getByRole('alert')).toContainText('This entry is still used by another setting');
+  await form.getByRole('alert').getByRole('button', { name: 'Open Final configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('1.1.1.1');
+});
+
+test('referenced removal without another target gives a reachable recovery action instead of deleting settings', async ({ page }) => {
+  await openPreview(page, 'material', 'dark');
+  await openProgramDetails(page, 'sing-box-edge');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'sing-box-edge', content: JSON.stringify({ dns: { servers: [{ type: 'local', tag: 'first' }], final: 'first' } }) } })));
+  await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'DNS');
+  const intent = page.locator('#program-panel-intent');
+  await intent.locator('.object-row').filter({ has: page.getByText('first', { exact: true }) }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const form = intent.locator('.object-form');
+  await form.getByText('Entry actions', { exact: true }).click();
+  await form.getByRole('button', { name: 'Remove', exact: true }).click();
+  const impact = form.locator('.impact-note');
+  await expect(impact.getByRole('combobox')).toBeDisabled();
+  await expect(impact.getByRole('button', { name: 'Replace and remove', exact: true })).toBeDisabled();
+  await expect(impact.getByText('Add another suitable entry, or edit these settings in Final configuration', { exact: false })).toBeVisible();
+  await impact.getByRole('button', { name: 'Open Final configuration', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('"final": "first"');
+});
+
+for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
+  test(`protected native values keep, replace, remove and follow without revealing credentials for ${programId}`, async ({ page }) => {
+    const isXray = programId === 'xray-primary';
+    const isMihomo = programId === 'mihomo-alpha';
+    await openPreview(page, isXray ? 'material' : isMihomo ? 'aurora' : 'cupertino', isMihomo ? 'dark' : 'light');
+    await openProgramDetails(page, programId);
+    const entry = isMihomo
+      ? { type: 'ss', name: 'private', server: '127.0.0.1', port: 443, cipher: 'aes-128-gcm', password: 'fixture-original', extension: { kept: true } }
+      : isXray ? { protocol: 'trojan', tag: 'private', settings: { address: '127.0.0.1', port: 443, password: 'fixture-original', extension: { kept: true } } }
+        : { type: 'shadowsocks', tag: 'private', server: '127.0.0.1', server_port: 443, method: 'aes-128-gcm', password: 'fixture-original', extension: { kept: true } };
+    await page.evaluate(({ programId, content }) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId, content } })), { programId, content: JSON.stringify({ [isMihomo ? 'proxies' : 'outbounds']: [entry] }) });
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await chooseIntentChapter(page, 'Outgoing connections');
+    await openNativeSetting(page, isXray ? 'trojan' : isMihomo ? 'ss' : 'shadowsocks');
+    await openNativeSetting(page, 'Password');
+    const intent = page.locator('#program-panel-intent');
+    const field = intent.locator('.native-field');
+    await expect(field).toContainText('Already set');
+    await expect(intent).not.toContainText('fixture-original');
+    await field.getByRole('button', { name: 'Replace value', exact: true }).click();
+    const input = field.getByRole('textbox', { name: 'Replacement value', exact: true });
+    await expect(input).toHaveValue('');
+    await input.fill('fixture-cancelled');
+    await field.getByRole('button', { name: 'Keep existing', exact: true }).click();
+    await expect(input).toHaveCount(0);
+    await expect(intent.getByRole('button', { name: 'Undo last change', exact: true })).toHaveCount(0);
+    await field.getByRole('button', { name: 'Replace value', exact: true }).click();
+    await field.getByRole('button', { name: 'Replace value', exact: true }).click();
+    await expect(field).toContainText('Enter a replacement value, or keep the existing one');
+    await input.fill('fixture-replacement\nwith-second-line');
+    await expect(input).toHaveCSS('-webkit-text-security', 'disc');
+    await field.getByRole('button', { name: 'Show replacement', exact: true }).click();
+    await expect(input).toHaveCSS('-webkit-text-security', 'none');
+    await field.getByRole('button', { name: 'Hide replacement', exact: true }).click();
+    await field.getByRole('button', { name: 'Replace value', exact: true }).click();
+    await expect(input).toHaveCount(0);
+    await expect(intent).not.toContainText('fixture-replacement');
+    await expect(field.getByRole('alert')).toHaveCount(0);
+    await page.setViewportSize({ width: 400, height: 900 });
+    expect(await field.evaluate((element) => [...element.querySelectorAll('button, textarea')].every((child) => {
+      const outer = element.getBoundingClientRect(); const box = child.getBoundingClientRect();
+      return box.width === 0 || box.left >= outer.left - 1 && box.right <= outer.right + 1;
+    }))).toBe(true);
+    await field.getByRole('button', { name: 'Remove field', exact: true }).click();
+    await expect(field).toContainText('Not set');
+    await expect(field.getByRole('button', { name: 'Follow source', exact: true })).toBeEnabled();
+    await field.getByRole('button', { name: 'Follow source', exact: true }).click();
+    await expect(field).toContainText('Already set');
+    await expect(intent).not.toContainText('fixture-original');
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = await page.getByRole('textbox', { name: 'Configuration editor' }).innerText();
+    const restored = isMihomo ? (await import('yaml')).parse(editor) : JSON.parse(editor);
+    const restoredEntry = restored[isMihomo ? 'proxies' : 'outbounds'][0];
+    expect(isXray ? restoredEntry.settings.password : restoredEntry.password).toBe('fixture-original');
+    expect(isXray ? restoredEntry.settings.extension : restoredEntry.extension).toEqual({ kept: true });
+    await expect(page.locator('.merge-summary')).toHaveCount(0);
+  });
+}
+
+for (const [revisit, pending] of [[false, false], [true, false], [false, true]]) {
+  test(`Intent ${pending ? 'pending create result' : 'lost create response'} retries one operation${revisit ? ' after revisiting the program' : ' and closes the original form'}`, async ({ page }) => {
+    if (pending) await page.clock.install();
+    await page.addInitScript(() => {
+      const commits: unknown[] = [];
+      Object.assign(window, { __intentCommits: commits });
+      window.addEventListener('camellia-ui-preview:intent-commit', (event) => commits.push((event as CustomEvent).detail));
+    });
+    await openPreview(page, 'cupertino', 'light', 1, pending ? '&__ui_intent_result_pending' : '&__ui_intent_response_lost');
+    await openProgramDetails(page, 'sing-box-edge');
+    await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    const intent = page.locator('#program-panel-intent');
+    await chooseIntentChapter(page, 'HTTP proxy', 'Incoming connections');
+    const add = intent.getByRole('button', { name: 'Add Local proxy', exact: true });
+    await add.click();
+    const form = intent.locator('.object-form');
+    await form.getByLabel('Proxy type').selectOption('http');
+    await form.getByLabel('Port', { exact: true }).fill('18080');
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(intent.getByText('Update needs confirmation', { exact: true })).toBeVisible();
+    if (pending) {
+      await page.clock.fastForward(13_000);
+      await expect(intent.getByText('Update needs confirmation', { exact: true })).toBeVisible();
+    }
+    await expect(form.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
+    await expect(intent.getByRole('button', { name: /Apply changes|Apply and restart/ })).toBeDisabled();
+    if (revisit) {
+      await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await openProgramDetails(page, 'xray-primary');
+      await openProgramDetails(page, 'sing-box-edge');
+      await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+      await expect(intent.getByText('Update needs confirmation', { exact: true })).toBeVisible();
+    }
+    await intent.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(intent.getByText('Update needs confirmation', { exact: true })).toHaveCount(0);
+    await expect(form).toHaveCount(0);
+    await chooseIntentChapter(page, 'HTTP proxy', 'Incoming connections');
+    await expect(add).toBeEnabled();
+    await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Configuration editor' });
+    await expect(editor).toContainText('18080');
+    expect((await editor.innerText()).match(/18080/g)).toHaveLength(1);
+    expect(await page.evaluate(() => (window as unknown as { __intentCommits: unknown[] }).__intentCommits.length)).toBe(1);
+  });
+}
 
 for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
   test(`Intent creates a local proxy atomically and preserves cancellation for ${programId}`, async ({ page }) => {
@@ -237,6 +1030,7 @@ for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
     await openProgramDetails(page, programId);
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
     const intent = page.locator('#program-panel-intent');
+    await chooseIntentChapter(page, 'HTTP proxy', 'Incoming connections');
     const add = intent.getByRole('button', { name: 'Add Local proxy', exact: true });
     await add.click();
     const form = intent.locator('.object-form');
@@ -267,6 +1061,7 @@ for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
     await openProgramDetails(page, programId);
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
     const intent = page.locator('#program-panel-intent');
+    await chooseIntentChapter(page, 'DNS');
     await intent.getByRole('button', { name: 'Add DNS servers', exact: true }).click();
     const form = intent.locator('.object-form');
     await form.getByLabel('DNS connection').selectOption('udp');
@@ -276,6 +1071,7 @@ for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
     await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
     await expect(page.getByRole('textbox', { name: 'Configuration editor' })).toContainText('192.0.2.50');
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+    await chooseIntentChapter(page, 'DNS');
     const dns = intent.getByRole('region', { name: 'DNS', exact: true });
     await dns.locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
     await form.getByLabel('Server address').fill('192.0.2.51');
@@ -295,6 +1091,7 @@ for (const [theme, mode] of [['cupertino', 'light'], ['cupertino', 'dark'], ['ma
     await openProgramDetails(page, 'sing-box-edge');
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
     const intent = page.locator('#program-panel-intent');
+    await chooseIntentChapter(page, 'Incoming connections');
     await intent.getByRole('button', { name: 'Add Local proxy', exact: true }).click();
     const form = intent.locator('.object-form');
     await form.getByLabel('Port', { exact: true }).fill('18080');
@@ -305,7 +1102,7 @@ for (const [theme, mode] of [['cupertino', 'light'], ['cupertino', 'dark'], ['ma
       await page.setViewportSize({ width, height: 820 });
       await expectNoViewportOverflow(page);
       const outside = await form.evaluate((element) => {
-        const parent = element.closest('.intent-group')!.getBoundingClientRect();
+        const parent = element.closest('.native-chapter')!.getBoundingClientRect();
         return [...element.querySelectorAll<HTMLElement>('input, select, button, label')].filter((child) => {
           const bounds = child.getBoundingClientRect();
           return bounds.width > 0 && (bounds.left < parent.left - 1 || bounds.right > parent.right + 1);
@@ -323,7 +1120,7 @@ for (const [theme, mode] of [['cupertino', 'light'], ['cupertino', 'dark'], ['ma
     await expect(form.getByLabel('允许谁连接')).toHaveValue('lan');
     await expect(form.getByLabel('允许谁连接').locator('option:checked')).toHaveText('局域网设备');
     await expect(form.getByLabel('代理类型').locator('option:checked')).toHaveText('HTTP 和 SOCKS');
-    await expect(intent.getByLabel('日志详细程度').locator('option:checked')).toHaveText('常规日志');
+    await expect(intent.getByLabel('配置章节', { exact: true })).toBeDisabled();
     await expect(form.getByLabel('密码', { exact: true })).toHaveAttribute('type', 'password');
     await expect(form.getByRole('button', { name: '添加', exact: true })).toBeVisible();
     await expect(form.getByRole('button', { name: '取消', exact: true })).toBeVisible();
@@ -342,6 +1139,7 @@ test('Intent DNS guidance requires only the fields relevant to the selected conn
   await openProgramDetails(page, 'sing-box-edge');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const intent = page.locator('#program-panel-intent');
+  await chooseIntentChapter(page, 'DNS');
   await intent.getByRole('button', { name: 'Add DNS servers', exact: true }).click();
   const form = intent.locator('.object-form');
   const protocol = form.getByLabel('DNS connection', { exact: true });
@@ -382,6 +1180,7 @@ for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
     }
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
     const intent = page.locator('#program-panel-intent');
+    await chooseIntentChapter(page, 'Routing', 'Routing rules');
     await intent.getByRole('button', { name: 'Add Traffic rule', exact: true }).click();
     const form = intent.locator('.object-form');
     await form.getByLabel('Match', { exact: true }).selectOption('subdomain');
@@ -405,7 +1204,8 @@ for (const programId of ['sing-box-edge', 'xray-primary', 'mihomo-alpha']) {
     const editor = page.getByRole('textbox', { name: 'Configuration editor' });
     await expect(editor).toContainText('guided.example');
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-    await intent.getByRole('region', { name: 'Traffic and connections', exact: true }).locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
+    await chooseIntentChapter(page, 'Routing', 'Routing rules');
+    await intent.getByRole('region', { name: 'Traffic rule', exact: true }).locator('.object-row').last().getByRole('button', { name: 'Edit', exact: true }).click();
     await expect(form.getByLabel('Domain or IP network', { exact: true })).toHaveValue('guided.example');
     await form.getByLabel('Domain or IP network', { exact: true }).fill('revised.example');
     await form.getByRole('button', { name: 'Done', exact: true }).click();
@@ -421,6 +1221,7 @@ test('Intent virtual adapter guidance edits only configuration and keeps advance
   await openProgramDetails(page, 'sing-box-edge');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const intent = page.locator('#program-panel-intent');
+  await chooseIntentChapter(page, 'Incoming connections');
   await intent.getByRole('button', { name: 'Add Virtual network adapter', exact: true }).click();
   const form = intent.locator('.object-form');
   await form.getByLabel('Virtual network addresses', { exact: true }).fill('172.19.0.1/30');
@@ -2990,9 +3791,10 @@ test('Intent keeps large rule collections compact and selects the exact entry', 
   await expect(save).toBeDisabled();
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   const intent = page.locator('#program-panel-intent');
+  await chooseIntentChapter(page, 'Routing rules');
   const picker = intent.getByRole('combobox', { name: 'Choose an entry: Traffic rule', exact: true });
   await expect(picker.locator('option')).toHaveCount(101);
-  const connections = intent.getByRole('region', { name: 'Traffic and connections', exact: true });
+  const connections = intent.getByRole('region', { name: 'Traffic rule', exact: true });
   await expect(connections).toHaveCount(1);
   await expect(connections.locator('.object-row')).toHaveCount(0);
   await picker.selectOption({ label: 'rule-99.example' });
@@ -3368,7 +4170,7 @@ test('future Core versions and stale validation evidence stay explicit at compac
   await expect(compatibilityIssue.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  const guided = page.locator('#program-panel-intent .guided-workspace');
+  const guided = page.locator('#program-panel-intent .native-intent-workspace');
   await expect(guided.getByText('Pending validation', { exact: true })).toHaveCount(0);
   await expect(guided.getByText('CORE_VALIDATION_EVIDENCE_STALE', { exact: true })).toHaveCount(0);
   await expect(guided.locator('.source-statuses')).toHaveCount(0);
@@ -3407,7 +4209,7 @@ test('invalid and unavailable sources retain visible recovery diagnostics', asyn
     await expect(sources.locator('.config-source-row[data-source-id="primary"] .source-enabled input')).toBeFocused();
     await expect(sources.locator('.surface-issues')).toHaveCount(0);
     await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-    const guided = page.locator('#program-panel-intent .guided-workspace');
+    const guided = page.locator('#program-panel-intent .native-intent-workspace');
     await expect(guided.getByText('Needs attention', { exact: true })).toHaveCount(0);
     await expect(guided.locator('.surface-issues')).toHaveCount(0);
     await expect(guided.getByText(scenario.code, { exact: true })).toHaveCount(0);
@@ -3606,8 +4408,9 @@ test('Final merge conflicts stay in Configuration while Intent controls remain r
   await openPreview(page, 'material', 'dark', 1.15, '&__ui_final_merge_conflict');
   await openProgramDetails(page, 'xray-primary');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
-  const guided = page.locator('#program-panel-intent .guided-workspace');
-  await expect(guided.locator('.intent-group')).toHaveCount(4);
+  const guided = page.locator('#program-panel-intent .native-intent-workspace');
+  await chooseIntentChapter(page, 'Routing');
+  await expect(guided.locator('.native-chapter')).toHaveCount(1);
   const control = page.getByLabel('Domain matching', { exact: true });
   await expect(control).toBeEnabled();
   await control.selectOption('IPIfNonMatch');
@@ -4332,6 +5135,7 @@ test('a committed Final edit conflicts only when upstream changes the same path'
   await expect(page.locator('.final-editor-workspace').getByText('Applied', { exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Routing');
   await page.getByLabel('Domain matching', { exact: true }).selectOption('IPIfNonMatch');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toContainText('"loglevel": "debug"');
@@ -4339,6 +5143,7 @@ test('a committed Final edit conflicts only when upstream changes the same path'
   await expect(page.locator('.path-inspector')).toHaveCount(0);
 
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Logging');
   await page.getByLabel('Log detail', { exact: true }).selectOption('error');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(page.locator('.final-editor-workspace .merge-summary')).toContainText('1 setting needs a choice');
@@ -4346,7 +5151,9 @@ test('a committed Final edit conflicts only when upstream changes the same path'
   await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('Your edit');
   await expect(page.locator('.cm-configuration-conflict-widget.expanded')).toContainText('debug');
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
+  await chooseIntentChapter(page, 'Routing');
   await page.getByLabel('Domain matching', { exact: true }).selectOption('AsIs');
+  await chooseIntentChapter(page, 'Logging');
   await page.getByLabel('Log detail', { exact: true }).selectOption('info');
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   await expect(editor).toContainText('"loglevel": "info"');

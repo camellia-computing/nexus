@@ -177,6 +177,29 @@ impl FileStore {
         self.root.join("programs")
     }
 
+    #[cfg(feature = "desktop")]
+    pub(crate) fn data_root(&self) -> PathBuf {
+        self.root.as_ref().clone()
+    }
+
+    #[cfg(feature = "desktop")]
+    pub(crate) async fn can_prune_intent_history(&self, id: &ProgramId) -> Result<bool> {
+        let root = self.program_root(id);
+        blocking(move || {
+            Ok(![
+                CONFIGURATION_APPLY_MARKER,
+                CONFIGURATION_WORKSPACE_TRANSACTION_MARKER,
+                CONFIGURATION_WORKSPACE_STATE_BACKUP,
+                PROGRAM_PACKAGE_TRANSACTION_MARKER,
+                PROGRAM_PACKAGE_STATE_BACKUP,
+                PROGRAM_PACKAGE_NEXT_STATE,
+            ]
+            .iter()
+            .any(|name| root.join(name).exists()))
+        })
+        .await
+    }
+
     #[cfg(all(test, feature = "desktop", unix))]
     pub(crate) fn fail_next_configuration_write(&self) {
         self.fail_configuration_write

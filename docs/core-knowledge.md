@@ -15,6 +15,37 @@ module-only alias tags do not define baselines. Every retained patch is assessed
 
 Intent resolves its scalar registry and native object adapters against the same capability profile used by configuration assessment. Field existence does not bypass reviewed platform/build rules. Parser-dependent enum behavior is catalog data: reviewed parser alternatives select the appropriate constraint without release thresholds in application code. Log parsing for sing-box and Mihomo is included in source extraction; Mihomo's choices are debug/info/warning/error/silent, and case handling follows each patch's parser. Unknown parser behavior requires review before regeneration.
 
+### Native Intent contracts
+
+`IntentCatalog` enumerates each maintained patch's native wire-input tree using the same alias,
+embedding, tag, custom-decoder and build selection as configuration assessment. Declaration order
+determines presentation, not execution. Every enumerated node has an explicit disposition: guided,
+Details-managed, inapplicable, or Final-editor-required. Reviewed semantic relations retain exact
+function commits and behavior hashes; unconfirmed relations cannot authorize automatic rewrites.
+
+`get_configuration_intent_context` reads either root chapters or one selected node. It returns
+ordered children, applicable rules and revision-bound values. Object/list contents are summarized;
+protected values, URI credentials and credential-bearing containers are not returned. Context
+indexes share one candidate parse and assessment, cached by candidate and capability hashes.
+
+`preview_configuration_intent` computes a private candidate and sanitized effects without writing.
+`update_configuration_intent` requires that plan and capability binding, recomputes them under the
+configuration lease, and atomically commits the candidate, rebased editor session and operation
+receipt. Impact equivalence excludes unrelated contributions, so one safe retry can accept a newer
+revision without reclaiming unrelated paths. Overlapping changes require a new review.
+
+### 原生意图契约
+
+`IntentCatalog` 复用配置检查的别名、嵌入结构、标签、自定义解码器和构建选择，逐补丁列出原生输入树。
+声明顺序只决定展示，不代表执行顺序。每个节点明确归类为可引导、Details 托管、不适用或需要最终编辑器。
+经审查的语义关系绑定精确函数提交及行为摘要；未确认关系不能授权自动改写。
+
+`get_configuration_intent_context` 只读根章节或选中节点，返回有序子节点、适用关系及绑定 revision 的值。
+对象和列表仅返回摘要；凭据、带认证的 URI 和凭据容器不返回内容。上下文按候选与能力摘要共享一次解析
+和检查。`preview_configuration_intent` 在私有副本上计算候选及脱敏影响，不写状态。提交接口核对计划和
+能力绑定，在配置 lease 内重算，并共同提交候选、重合并草稿和回执。无关贡献不改变影响等价性，允许
+一次安全重试；重叠变化须重新查看，不能借重试覆盖最新操作。
+
 意图标量注册表与原生对象适配器使用配置检查的同一能力档案。字段存在不能绕过平台或构建规则；枚举随解析器变化的行为保存在知识库数据中，通过经审查的解析器证据选择，不在业务代码中加入版本阈值。源码提取覆盖 sing-box 与 Mihomo 的日志解析。Mihomo 的日志选项为 debug/info/warning/error/silent，大小写行为遵循对应补丁解析器；未审查的行为不能重新生成目录。
 
 The offline knowledge artifact pins release tags, commits, source files, and symbols. Go AST
@@ -55,6 +86,46 @@ one producer identity for a mixed extraction result.
 
 函数转接入口与函数体一同保留目标表达式、导入身份和构建条件。即使函数体摘要未变，导入来源变化
 也进入行为审查报告。提取过程中若生成工具发生变化，本次生成失败，不发布混合来源的目录。
+
+Reviewed configuration references specify a target namespace, native value form, built-in targets,
+empty-value semantics, and whether the parser allows an unmatched selector. Equal names in DNS,
+incoming connections, and outgoing connections are not interchangeable. Recursive rules follow their
+reviewed child collection. Target lookup, duplicate-name diagnostics, Intent choices, and deletion
+checks share one bounded index; context reads reuse it with the parsed candidate. Scalar/object
+resolver forms preserve native required-field checks. Choosing a target never replaces adjacent
+options. Undo rechecks newly introduced references against the effective candidate before removing
+an object, and native validation remains the final gate.
+
+Referenced removal compiles explicit replacement choices from this index, bound to the profile,
+reference value and selected object. Choice lists exclude removed, ambiguous and protected identities.
+Multiple reference changes inside an identityless ordered list share one semantic edit, retaining its
+order and other fields. The object, reference edits, rebased draft, protected history and operation
+receipt commit together. A changed reference requires renewed choice; Follow Source cannot withdraw
+an object while creating a new unresolved reference. Expansion is bounded to 1,024 choices, 32,768
+target visits and 4 MiB of projected values and target labels.
+
+经审查的配置引用分别声明目标命名空间、原生值形式、内置目标、空值语义，以及解析器是否允许
+未匹配的选择条件。DNS、入口和出口的同名对象不能相互替代；递归规则只遍历已审查的子集合。
+目标查找、重复名称诊断、意图选项与删除检查共用一个有界索引，上下文读取随候选解析结果复用。
+解析服务的字符串／对象形式保留原生必填检查；更换目标不替换相邻选项。撤销删除前根据有效候选
+检查后来新增的引用，原生检查仍是应用前的最终门禁。
+
+移除被引用对象时，由同一索引生成明确的替代目标选择，绑定能力档案、引用值和选中对象。
+已移除、歧义或含敏感信息的身份不进入选项。无身份有序列表中的多处引用合并为一个语义修改，
+保留顺序和其他字段。对象、引用修改、重基草稿、受保护历史及回执共同提交；引用变化后须重新
+选择，恢复跟随不能引入新的悬空引用。展开限制为 1,024 项选择、32,768 次目标访问及 4 MiB
+投影值和目标标签。
+
+Function-local input declarations retain their function scope. Mihomo `group` tags are extracted
+alongside JSON, YAML and `proxy` tags. A field moved into a shared declaration remains a reviewed
+binding only when exactly one explicitly listed declaration contains its reviewed shape; ambiguous
+or changed shapes require source review. Selector matching, static target references and dynamic
+runtime dependencies are distinct semantics, not inferred from a field named `tag` or `server`.
+
+函数内声明的输入结构保留函数作用域；Mihomo 的 `group` 标签与 JSON、YAML、`proxy` 标签一起提取。
+字段移入共享结构后，必须恰有一个明确列入审查的声明包含对应字段和形状，才能绑定规则；有歧义或
+形状变化时必须重新审查。选择条件、静态目标引用和动态运行依赖保持独立，不从 `tag` 或 `server`
+之类的字段名推测含义。
 
 `core-knowledge-changes.json` separates structural changes from function behavior requiring review.
 File movement within a package and comment/layout changes do not become removed capabilities.

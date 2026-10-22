@@ -2,6 +2,7 @@ pub mod config_service;
 pub mod configuration;
 pub mod configuration_assessment;
 mod configuration_field_evidence;
+mod configuration_references;
 pub mod controller;
 mod core_build_constraints;
 pub mod core_compatibility;

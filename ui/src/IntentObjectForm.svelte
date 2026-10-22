@@ -1,16 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from './i18n';
-  import { dnsServerNeedsResolver, intentOptionMessage } from './intentPresentation';
+  import { dnsServerNeedsResolver, intentOptionMessage, intentEffectLabel } from './intentPresentation';
   import Icon from './lib/components/Icon.svelte';
-  import type { ConfigurationIntentAction, IntentObjectDescriptor, IntentObjectProjection, IntentObjectField, IntentTarget, ProgramKind } from './types';
+  import { configurationErrorInfo } from './errors';
+  import type { IntentObjectOperation, IntentObjectDescriptor, IntentObjectProjection, IntentObjectField, IntentTarget, IntentSubmission, ProgramKind } from './types';
   export let descriptor: IntentObjectDescriptor;
   export let object: IntentObjectProjection | undefined = undefined;
+  export let latestObject: IntentObjectProjection | undefined = undefined;
   export let targets: IntentTarget[] = [];
   export let program: ProgramKind;
   export let disabled = false;
-  export let submit: (change: ConfigurationIntentAction) => Promise<boolean>;
+  export let submit: IntentSubmission<IntentObjectOperation>;
+  export let preview: (change: IntentObjectOperation) => Promise<import('./types').IntentChangePlan>;
   export let close: () => void;
+  export let openFinal: () => void;
   let values: Record<string, unknown> = object ? structuredClone(object.values) : {
     ...(descriptor.protocols.length ? { protocol: descriptor.protocols[0] } : {}),
     ...(descriptor.kind === 'listener' ? { access: 'local' } : {}),
@@ -18,7 +22,13 @@
   let more = false;
   let pending = false;
   let inputError = '';
+  let finalRecovery = false;
+  let impact: { change: IntentObjectOperation; plan: import('./types').IntentChangePlan } | null = null;
+  let replacementSelections: Record<string, string> = {};
+  $: missingReplacement = !!impact?.plan.referenceChoices.some((choice) => !replacementSelections[choice.choiceId]);
   let formElement: HTMLFormElement;
+  $: changedEntry = object && latestObject && object.contentHash !== latestObject.contentHash;
+  $: unavailableEntry = !!object && (!latestObject || latestObject.removed || !latestObject.editable);
   onMount(() => formElement.querySelector<HTMLElement>('input:not([disabled]), select:not([disabled]), textarea:not([disabled])')?.focus());
   function visible(field: IntentObjectField, current: Record<string, unknown>, expanded: boolean) {
     if ((field.key === 'username' || field.key === 'password') && current.access !== 'lan' && !expanded) return false;
@@ -43,22 +53,68 @@
   $: authFields = descriptor.fields.filter((field) => ['username', 'password'].includes(field.key) && visible(field, values, more));
   $: needsBootstrap = program === 'singBox' && dnsServerNeedsResolver(values.server) && basicFields.some((field) => field.key === 'bootstrap');
   $: missingReference = basicFields.find((field) => field.control === 'select' && (field.required || (field.key === 'bootstrap' && needsBootstrap)) && ['target', 'bootstrap'].includes(field.key) && !options(field).length);
+  function rejectPlan(plan: import('./types').IntentChangePlan) {
+    inputError = configurationErrorInfo({ code: 'CONFIG_INVALID', messageKey: plan.blockers[0]?.messageKey }, 'guided-change').message;
+    finalRecovery = plan.blockers[0]?.recoveryAction === 'openFinalConfiguration';
+  }
   async function commit() {
-    if (disabled || pending || missingReference) return;
-    inputError = '';
+    if (disabled || pending || missingReference || changedEntry || unavailableEntry) return;
+    inputError = ''; finalRecovery = false;
     const patch = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== '' && value !== undefined && (!object || JSON.stringify(object.values[key]) !== JSON.stringify(value))));
     if (Object.values(patch).some((value) => typeof value === 'number' && !Number.isFinite(value))) { inputError = 'Enter a valid number.'; return; }
     if (object && !Object.keys(patch).length) { close(); return; }
     pending = true;
-    try { if (await submit(object ? { action: 'updateObject', objectId: object.objectId, expectedHash: object.contentHash, values: patch } : { action: 'createObject', objectKind: descriptor.kind, values: patch })) close(); }
+    const change: IntentObjectOperation = object ? { kind: 'update', objectId: object.objectId, expectedHash: object.contentHash, values: patch } : { kind: 'create', objectKind: descriptor.kind, values: patch };
+    try {
+      const plan = await preview(change);
+      if (!plan.canCommit) { rejectPlan(plan); return; }
+      if (plan.effects.some((effect) => effect.role === 'related')) { impact = { change, plan }; return; }
+      await submit(change, plan, close);
+    } catch (error) { inputError = configurationErrorInfo(error, 'guided-change').message; }
     finally { pending = false; }
   }
-  async function objectAction(action: 'removeObject' | 'followObject') {
-    if (!object || disabled || pending) return;
-    inputError = '';
+  async function objectAction(kind: 'remove' | 'follow') {
+    if (!object || disabled || pending || changedEntry || unavailableEntry) return;
+    inputError = ''; finalRecovery = false;
     pending = true;
-    try { if (await submit({ action, objectId: object.objectId, expectedHash: object.contentHash })) close(); }
+    try {
+      const change: IntentObjectOperation = kind === 'remove'
+        ? { kind, objectId: object.objectId, expectedHash: object.contentHash, replacements: {} }
+        : { kind, objectId: object.objectId, expectedHash: object.contentHash };
+      const plan = await preview(change);
+      if (plan.referenceChoices.length) { replacementSelections = {}; impact = { change, plan }; return; }
+      if (!plan.canCommit) { rejectPlan(plan); return; }
+      await submit(change, plan, close);
+    } catch (error) { inputError = configurationErrorInfo(error, 'guided-change').message; }
     finally { pending = false; }
+  }
+  async function confirmImpact() {
+    if (!impact || disabled || pending || changedEntry || unavailableEntry || missingReplacement) return;
+    pending = true;
+    inputError = ''; finalRecovery = false;
+    try {
+      const change = impact.change.kind === 'remove' ? { ...impact.change, replacements: replacementSelections } : impact.change;
+      const plan = change.kind === 'remove' ? await preview(change) : impact.plan;
+      if (!plan.canCommit) {
+        if (change.kind === 'remove' && !plan.referenceChoices.length) {
+          const refreshed = { ...change, replacements: {} };
+          const current = await preview(refreshed);
+          replacementSelections = Object.fromEntries(current.referenceChoices.flatMap((choice) => choice.targets.some((target) => target.id === replacementSelections[choice.choiceId]) ? [[choice.choiceId, replacementSelections[choice.choiceId]]] : []));
+          impact = { change: refreshed, plan: current };
+        } else impact = { change, plan };
+        rejectPlan(plan);
+        return;
+      }
+      await submit(change, plan, close);
+    } catch (error) { inputError = configurationErrorInfo(error, 'guided-change').message; }
+    finally { pending = false; }
+  }
+  function reviewLatest() {
+    if (!object || !latestObject || pending) return;
+    const patch = Object.fromEntries(Object.entries(values).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(object?.values[key])));
+    object = latestObject;
+    values = { ...structuredClone(latestObject.values), ...patch };
+    impact = null; inputError = ''; finalRecovery = false;
   }
 </script>
 
@@ -79,6 +135,7 @@
 
 <form class="object-form" bind:this={formElement} aria-busy={pending} on:submit|preventDefault={() => void commit()}>
   <header class="form-heading"><Icon name={object ? 'settings' : 'add'} size={17} /><h5>{$t(object ? 'Edit' : 'Add')} {$t(descriptor.label)}</h5></header>
+  <fieldset class="form-inputs" disabled={!!impact || pending}>
   <div class="field-grid">
   {#each basicFields as field (field.key)}
     {@render fieldControl(field)}
@@ -90,15 +147,33 @@
     </fieldset>
   {/if}
   {#if more && extraFields.length}<div class="extra-fields"><div class="field-grid">{#each extraFields as field (field.key)}{@render fieldControl(field)}{/each}</div></div>{/if}
+  </fieldset>
+  {#if impact}<div class="impact-note">
+    {#if impact.plan.referenceChoices.length}
+      <p>{$t('Choose what these settings should use before removing this entry.')}</p>
+      {#each impact.plan.referenceChoices as choice (choice.choiceId)}
+        <label class="reference-choice"><span>{$t(intentEffectLabel(choice.label))}</span>
+          <select aria-label={$t('Replacement for') + ' ' + $t(intentEffectLabel(choice.label))} disabled={disabled || pending || !choice.targets.length} value={replacementSelections[choice.choiceId] ?? ''} on:change={(event) => replacementSelections = { ...replacementSelections, [choice.choiceId]: event.currentTarget.value }}>
+            <option value="">{$t('Select a value')}</option>{#each choice.targets as target (target.id)}<option value={target.id}>{target.label}</option>{/each}
+          </select>
+        </label>
+        {#if !choice.targets.length}<p>{$t('Add another suitable entry, or edit these settings in Final configuration.')} <button type="button" on:click={openFinal}>{$t('Open Final configuration')}</button></p>{/if}
+      {/each}
+      <details><summary>{$t('Affected settings')}</summary>{#each impact.plan.referenceChoices as choice}<p>{choice.semanticPath}</p>{/each}</details>
+    {:else}<p>{$t(impact.change.kind === 'remove' ? 'Review the related settings before making this change.' : 'This also changes access for other local proxies.')}</p>{/if}
+    <div class="form-primary-actions"><button type="button" disabled={pending} on:click={() => { impact = null; inputError = ''; finalRecovery = false; }}>{$t('Back')}</button><button class="primary" type="button" disabled={disabled || pending || !!changedEntry || unavailableEntry || missingReplacement} on:click={() => void confirmImpact()}>{$t(impact.change.kind === 'remove' ? 'Replace and remove' : 'Confirm change')}</button></div>
+  </div>{/if}
   {#if program === 'mihomo' && descriptor.kind === 'listener'}<p class="form-note"><Icon name="info" size={15} /><span>{$t('Network access and passwords apply to all local proxies.')}</span></p>{/if}
   {#if missingReference}<p class="form-note"><Icon name="info" size={15} /><span>{$t(missingReference.key === 'bootstrap' ? 'Add a DNS server to choose it here.' : 'Add a connection in Sources or Final configuration first.')}</span></p>{/if}
-  {#if inputError}<p class="form-error" role="alert"><Icon name="alert" size={15} /><span>{$t(inputError)}</span></p>{/if}
+  {#if inputError}<div class="form-error" role="alert"><Icon name="alert" size={15} /><span>{$t(inputError)}{#if finalRecovery}<button type="button" disabled={pending} on:click={openFinal}>{$t('Open Final configuration')}</button>{/if}</span></div>{/if}
+  {#if unavailableEntry}<p class="form-note" role="status"><Icon name="info" size={15} /><span>{$t('This entry is no longer available here. Your input is kept.')} <button type="button" disabled={pending} on:click={openFinal}>{$t('Open Final configuration')}</button></span></p>
+  {:else if changedEntry}<p class="form-note" role="status"><Icon name="info" size={15} /><span>{$t('This entry changed while you were editing. Your input is kept.')} <button type="button" disabled={pending} on:click={reviewLatest}>{$t('Review latest values')}</button></span></p>{/if}
   <div class="form-actions">
     <div class="form-secondary-actions">
       {#if extraFields.length || descriptor.fields.some((field) => ['username', 'password'].includes(field.key) && values.access !== 'lan')}<button class="text-action" type="button" aria-expanded={more} on:click={() => more = !more}><Icon name="settings" size={14} />{$t(more ? 'Fewer options' : 'More options')}</button>{/if}
-      {#if object}<details class="entry-actions"><summary>{$t('Entry actions')}</summary><div><button class="remove-action" type="button" disabled={disabled || pending} on:click={() => void objectAction('removeObject')}><Icon name="trash" size={14} />{$t('Remove')}</button>{#if object.canFollow}<button type="button" disabled={disabled || pending} on:click={() => void objectAction('followObject')}><Icon name="undo" size={14} />{$t('Follow source')}</button>{/if}</div></details>{/if}
+      {#if object}<details class="entry-actions"><summary>{$t('Entry actions')}</summary><div><button class="remove-action" type="button" disabled={disabled || pending || !!impact || !!changedEntry || unavailableEntry} on:click={() => void objectAction('remove')}><Icon name="trash" size={14} />{$t('Remove')}</button>{#if object.canFollow}<button type="button" disabled={disabled || pending || !!impact || !!changedEntry || unavailableEntry} on:click={() => void objectAction('follow')}><Icon name="undo" size={14} />{$t('Follow source')}</button>{/if}</div></details>{/if}
     </div>
-    <div class="form-primary-actions"><button type="button" disabled={pending} on:click={close}>{$t('Cancel')}</button><button class="primary" type="submit" disabled={disabled || pending || !!missingReference}>{$t(object ? 'Done' : 'Add')}</button></div>
+    <div class="form-primary-actions"><button type="button" disabled={pending} on:click={close}>{$t('Cancel')}</button>{#if !impact}<button class="primary" type="submit" disabled={disabled || pending || !!missingReference || !!changedEntry || unavailableEntry}>{$t(object ? 'Done' : 'Add')}</button>{/if}</div>
   </div>
 </form>
 
@@ -107,6 +182,10 @@
   .form-heading { display: flex; align-items: center; gap: 7px; color: var(--ui-text-link); min-width: 0; }
   h5 { margin: 0; font-size: .85rem; font-weight: var(--ui-weight-semibold); overflow-wrap: anywhere; }
   .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
+  .form-inputs { display: grid; gap: 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
+  .impact-note { display: grid; gap: 10px; padding: 12px; border-radius: var(--ui-radius-sm); background: var(--ui-brand-soft); }
+  .reference-choice { grid-template-columns: minmax(0, 1fr) minmax(140px, 1fr); align-items: center; }
+  @container (max-width: 600px) { .reference-choice { grid-template-columns: minmax(0, 1fr); } }
   label { display: grid; gap: 6px; min-width: 0; align-content: start; font-size: .8rem; font-weight: var(--ui-weight-medium); overflow-wrap: anywhere; }
   label.wide { grid-column: 1 / -1; }
   label.toggle-field { grid-template-columns: minmax(0, 1fr) auto; align-items: center; align-content: center; }
@@ -120,7 +199,9 @@
   .extra-fields { padding-top: 12px; border-top: 1px solid var(--ui-divider); }
   p { margin: 0; font-size: .78rem; color: var(--ui-text-secondary); line-height: 1.45; overflow-wrap: anywhere; }
   .form-note, .form-error { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
-  .form-error { color: var(--ui-danger); }
+  .form-error { color: var(--ui-danger); font-size: .78rem; line-height: 1.45; }
+  .form-error > span { display: grid; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+  .form-error button { justify-self: start; }
   .form-actions { display: flex; min-width: 0; gap: 12px; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--ui-divider); }
   .form-secondary-actions, .form-primary-actions { display: flex; min-width: 0; gap: 6px; flex-wrap: wrap; }
   .form-primary-actions { margin-left: auto; }

@@ -127,7 +127,7 @@ impl CoreCapabilityProfile {
         ))?))
     }
 
-    pub fn assess(&self, document: &Value) -> Result<ConfigurationAssessment> {
+    pub(crate) fn reviewed_descriptor(&self) -> Result<&'static ProgramKnowledgeDescriptor> {
         let knowledge = embedded_core_knowledge()?;
         if self.knowledge_hash != knowledge.content_hash
             || self.implementation_hash != crate::CORE_IMPLEMENTATION_REVISION
@@ -143,20 +143,47 @@ impl CoreCapabilityProfile {
         {
             return Err(stale_profile());
         }
-        let reported_tags = descriptor.reported_build_tags_for(&self.baseline_tag);
-        let rules: Vec<_> = descriptor
+        if descriptor
             .semantic_rules
             .iter()
             .filter(|variant| variant.releases.contains(&self.baseline_tag))
-            .map(|variant| &variant.rule)
-            .collect();
-        if rules.iter().map(|rule| &rule.id).ne(self.rule_ids.iter()) {
+            .map(|variant| &variant.rule.id)
+            .ne(self.rule_ids.iter())
+        {
             return Err(stale_profile());
         }
+        Ok(descriptor)
+    }
+
+    pub fn assess(&self, document: &Value) -> Result<ConfigurationAssessment> {
+        let references =
+            crate::configuration_references::ConfigurationReferenceIndex::new(self, document)?;
+        self.assess_with_references(document, &references)
+    }
+
+    pub(crate) fn assess_with_references(
+        &self,
+        document: &Value,
+        references: &crate::configuration_references::ConfigurationReferenceIndex,
+    ) -> Result<ConfigurationAssessment> {
+        let descriptor = self.reviewed_descriptor()?;
+        let reported_tags = descriptor.reported_build_tags_for(&self.baseline_tag);
+        let rules = descriptor
+            .semantic_rules
+            .iter()
+            .filter(|variant| variant.releases.contains(&self.baseline_tag))
+            .map(|variant| &variant.rule);
         let mut issues = Vec::new();
         let mut visits = 0usize;
         self.assess_decoder_builds(descriptor, document, &mut issues, &mut visits)?;
         for rule in rules {
+            if matches!(&rule.constraint, KnowledgeValueConstraint::Reference { .. }) {
+                let evidence = rule.evidence.first().ok_or_else(stale_profile)?;
+                for (path, code) in references.issues(&rule.id) {
+                    push_issue(&mut issues, code, path.clone(), rule.id.clone(), evidence)?;
+                }
+                continue;
+            }
             let mut selected = Vec::new();
             select_paths(
                 document,
@@ -253,10 +280,14 @@ impl CoreCapabilityProfile {
                         value: required,
                     } => (value == when_value && sibling_value(sibling) != Some(required))
                         .then_some("CONFIGURATION_SETTING_REQUIRED"),
+                    KnowledgeValueConstraint::Reference { .. } => {
+                        references.validation_code(rule, value, case_insensitive)
+                    }
                 };
                 if let Some(code) = code {
                     push_issue(&mut issues, code, path, rule.id.clone(), evidence)?;
                     if code != "CORE_BUILD_CAPABILITY_UNCONFIRMED"
+                        && !matches!(&rule.constraint, KnowledgeValueConstraint::Reference { .. })
                         && let Some(issue) = issues.last_mut()
                     {
                         issue.message_key = rule.message_key.clone();

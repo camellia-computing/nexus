@@ -71,8 +71,8 @@ class SourceReviewTests(unittest.TestCase):
         inventory = {"declarations": [obj, custom], "functions": [
             {"id": "codec#Decode", "bodyHash": "a", "buildConstraint": "(!alternate)", "imports": {"json": "example.test/json"}, "source": source},
             {"id": "codec#Decode", "bodyHash": "a", "buildConstraint": "(alternate)", "imports": {"json": "encoding/json"}, "source": source}]}
-        recipe = {"program": "fixture", "declaration": custom["id"], "objectDeclaration": obj["id"], "encoding": "json", "scalarForms": ["boolean", "null"], "keyComparison": "asciiCaseInsensitive",
-                  "objectFields": [{key: f[key] for key in ("name", "type", "embedded", "tags")} for f in obj["fields"]], "layoutEvidence": [],
+        recipe = {"program": "fixture", "declaration": custom["id"], "method": "UnmarshalJSON", "objectDeclaration": obj["id"], "encoding": "json", "scalarForms": ["boolean", "null"], "keyComparison": "asciiCaseInsensitive",
+                  "objectFieldVariants": [[{key: f[key] for key in ("name", "type", "embedded", "tags")} for f in obj["fields"]]], "layoutEvidence": [],
                   "evidence": [{"function": "codec#Decode", "branches": [
                       {"supported": True, "bodyHashes": ["a"], "buildConstraints": ["(!alternate)"], "imports": {"json": "example.test/json"}},
                       {"supported": False, "bodyHashes": ["a"], "buildConstraints": ["(alternate)"], "imports": {"json": "encoding/json"}}]}]}
@@ -91,6 +91,29 @@ class SourceReviewTests(unittest.TestCase):
             elif mutation == 6: invalid["functions"] = []
             else: invalid["declarations"].append(deepcopy(invalid["declarations"][0]))
             with self.assertRaises(ValueError, msg=f"mutation {mutation}"):
+                reviewed_value_decoders("fixture", invalid, [recipe], [])
+
+    def test_context_decoder_exposes_only_reviewed_object_field_variants(self):
+        obj = self.declaration()
+        obj.update(shape={"kind": "structure"}, methods=["UnmarshalJSONContext"])
+        source = {"modulePath": "example.test/module", "path": "codec/decode.go", "symbol": "Input.UnmarshalJSONContext"}
+        inventory = {"declarations": [obj], "functions": [
+            {"id": "codec#Decode", "bodyHash": "a", "buildConstraint": "(!without_contextjson)", "imports": {}, "source": source},
+            {"id": "codec#Decode", "bodyHash": "b", "buildConstraint": "(without_contextjson)", "imports": {}, "source": source}]}
+        recipe = {"program": "fixture", "declaration": obj["id"], "method": "UnmarshalJSONContext", "objectDeclaration": obj["id"],
+                  "encoding": "json", "scalarForms": [], "keyComparison": "asciiCaseInsensitive",
+                  "objectFieldVariants": [[{key: field[key] for key in ("name", "type", "embedded", "tags")} for field in obj["fields"]]],
+                  "layoutEvidence": [], "evidence": [{"function": "codec#Decode", "bodyHashes": ["a"], "unsupportedBodyHashes": ["b"], "buildConstraints": ["(!without_contextjson)"]}]}
+        result = reviewed_value_decoders("fixture", inventory, [recipe], [])
+        self.assertEqual(result[0]["method"], "UnmarshalJSONContext")
+        self.assertEqual(result[0]["buildConstraint"], "(!without_contextjson)")
+        for mutation in range(4):
+            invalid = deepcopy(inventory)
+            if mutation == 0: invalid["declarations"][0]["methods"] = ["UnmarshalJSON"]
+            elif mutation == 1: invalid["declarations"][0]["fields"].append(deepcopy(obj["fields"][0]))
+            elif mutation == 2: invalid["functions"][0]["bodyHash"] = "changed"
+            else: invalid["functions"][1]["buildConstraint"] = ""
+            with self.assertRaises(ValueError):
                 reviewed_value_decoders("fixture", invalid, [recipe], [])
 
     def test_flat_decoder_review_binds_fields_imports_behavior_and_build_branch(self):
@@ -285,6 +308,28 @@ class SourceReviewTests(unittest.TestCase):
             reviewed_rules("fixture", invalid, [rule])
         inventory["declarations"][0]["fields"] = []
         self.assertEqual(reviewed_rules("fixture", inventory, [rule]), [])
+
+    def test_relation_field_moves_bind_only_reviewed_declarations_and_shapes(self):
+        original = self.declaration()
+        moved = self.declaration(identifier="option#SharedOptions")
+        shape = {key: value for key, value in original["fields"][0].items() if key not in {"name", "source"}}
+        fn = {"id": "option#Parse", "bodyHash": "reviewed", "buildConstraint": "", "source": {"path": "option/options.go", "symbol": "Parse"}}
+        rule = {"id": "relation", "program": "fixture", "declarationCandidates": [original["id"], moved["id"]], "field": "Timeout", "fieldShapes": [shape],
+                "evidence": [{"function": fn["id"], "path": fn["source"]["path"], "bodyHashes": [fn["bodyHash"]], "buildConstraints": [""]}]}
+        for declaration in [original, moved]:
+            result = reviewed_rules("fixture", {"declarations": [declaration], "functions": [fn]}, [rule])[0]
+            self.assertEqual(result["declaration"], declaration["id"])
+            self.assertNotIn("declarationCandidates", result)
+        for declarations in [[original, moved], [self.declaration(identifier="option#Unreviewed")]]:
+            with self.assertRaises(ValueError):
+                reviewed_rules("fixture", {"declarations": declarations, "functions": [fn]}, [rule])
+        invalid = deepcopy(moved)
+        invalid["fields"][0]["type"] = "string"
+        with self.assertRaises(ValueError):
+            reviewed_rules("fixture", {"declarations": [invalid], "functions": [fn]}, [rule])
+        self.assertEqual(reviewed_rules("fixture", {"declarations": [], "functions": [fn]}, [{**rule, "allowAbsentDeclaration": True}]), [])
+        with self.assertRaises(ValueError):
+            reviewed_rules("fixture", {"declarations": [], "functions": [fn]}, [rule])
 
     def test_semantic_parser_variants_require_matching_reviewed_behavior(self):
         shape = {key: value for key, value in self.declaration()["fields"][0].items() if key not in {"name", "source"}}

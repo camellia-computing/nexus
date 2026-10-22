@@ -44,13 +44,19 @@ Core 能力知识以官方最新稳定发布为锚点，只维护两个稳定系
 
 配置编辑器将通用 JSON/YAML 语法、JSON Schema 和程序专属语义分层处理。具备结构生成能力的 sing-box 构建可从当前精确二进制按需生成 Schema，用于结构诊断、补全和引用检查；缓存随二进制或能力档案变化失效。客户端不会跟随外部引用或下载任意 `$schema` 地址。结构不可用时保留语法编辑，不将其视为配置已受支持；应用流程自动执行静态与原生检查。
 
+意图中的敏感字符串只显示是否已设置，支持保留现有值、替换、明确移除以及恢复跟随来源。替换区不回填原值，支持多行内容且默认隐藏；空输入不表示删除。变更可撤销，回退材料先受保护，再与候选和操作回执共同提交。
+
+意图中的目标选择按当前最终配置和已审查的引用类型更新，入口、出口与 DNS 的同名对象不会混用。重复名称不列为可选目标。移除仍被使用的条目时，在当前表单为关联设置改选目标，一次完成替换和移除；没有可用替代项时保留原配置，并提供最终配置入口。一次撤销恢复条目及本次关联修改，保留后来无关更改。恢复跟随和撤销也检查当前引用，不留下悬空设置；改选目标保留相邻选项和规则顺序。
+
+sing-box 的 DNS 引导支持解析目标的字符串和对象写法。更换目标保留对象中的解析策略、超时和缓存设置；后续来源更新这些选项时仍正常同步。引导修改形成解析循环时，保留原配置并提示改选目标。
+
 Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listeners` 由后置源原位替换，`rules` 等有序列表按界面中的源顺序连接，因此界面顺序同时决定规则优先级。
 
 同一 external executable 只能关联一个 Program Profile。managed Profile 使用独立副本，可在目标程序支持并行运行时创建多个实例。
 
 ### 架构
 
-意图页根据当前程序的精确稳定补丁、平台与构建能力提供常用设置。日志、本地代理、DNS、基础流量规则与适用的虚拟网卡设置使用等宽纵向分组、统一对齐的控件与主题色图标；分组与高级选项可按需折叠，展开或切换语言不更改配置。新建代理仅允许本机访问，选择局域网访问时必须设置认证。添加或修改只管理选中的字段，保留其他内容；取消不写配置并恢复焦点。DNS 与轻量规则引用已有目标，不创建远端节点。缺少目标时显示下一步；已有兜底规则遮蔽新规则或条目无法安全区分时，直接提供最终配置入口。复杂规则、无稳定身份的条目和无法安全表达的配置继续在最终配置中编辑。当前条目完成或取消后，使用标题区唯一的“应用更改”，不会启动已停止的程序。
+意图页按当前程序的原生配置章节组织，结合精确稳定补丁、平台与构建能力提供常用字段、对象和高级选项。章节导航在窄屏变为选择器；只展开当前章节，查看、展开或切换语言不更改配置。新建代理默认仅供本机使用，局域网访问要求认证；共享访问设置的影响在当前表单说明，一次完成。编辑只提交实际改动并保留其他内容；取消不写配置并恢复焦点。DNS 与规则选择已有目标；缺少引用、兜底遮蔽或无法安全表达的结构提供最终配置入口。最近更改可撤销或重做，记录跨重启保留，后来无关的修改不会被回放旧文档覆盖；存在重叠时先选择保留当前设置或恢复。敏感回退材料使用平台受保护存储，不显示在历史中。完成或取消当前编辑后，使用唯一的“应用更改”；候选编辑与撤销不会启动已停止的程序。
 
 冲突在最终配置编辑器内逐项对比“最新设置”和“我的修改”，并可直接选择或手工合并。删除的字段定位到最近存在的父级，错误选择可用编辑器撤销／重做恢复；重试沿用原请求，避免重复修改。
 
@@ -155,7 +161,7 @@ Camellia Nexus 是需要 Camellia Computing 明确授权的专有软件。源代
 
 ## English
 
-Intent offers common settings for the exact maintained patch, platform, and observed build. Full-width sections with aligned controls and theme-colored icons cover logging, local proxies, DNS, basic traffic rules, and applicable virtual adapters. Sections and advanced options can fold without changing configuration; changing language also writes nothing. A new proxy is local-only; network access requires authentication. Changes touch selected fields and retain unrelated content; Cancel writes nothing and restores focus. DNS and traffic rules use existing targets rather than creating remote nodes. Missing targets show a next step. A preceding catch-all rule or indistinguishable entries offer a direct route to Final configuration. Complex rules, entries without stable identities, and configurations that cannot be expressed safely remain editable there. Finish or cancel the open entry before using the single Apply changes action in the heading; stopped programs stay stopped.
+Intent follows each program's native configuration chapters for its exact maintained patch, platform, and observed build. Common fields, objects, and advanced options open progressively; narrow windows use a chapter selector. Viewing, expanding, or changing language writes nothing. New proxies are local-only, and network access requires authentication. Shared-setting effects appear in the same form and commit together. Edits touch changed fields and retain unrelated content; Cancel writes nothing and restores focus. DNS and rules choose existing targets; missing references, catch-all shadowing, and structures that cannot be expressed safely offer a direct route to Final configuration. Recent changes support durable undo and redo without replaying an old document over later unrelated edits. Overlapping changes offer a choice between keeping current settings and restoring the change. Sensitive reverse material uses platform-protected storage and never appears in history. Finish or cancel the open edit before using the single Apply changes action; candidate edits and undo never start a stopped program.
 
 Camellia Nexus is a Windows-first desktop lifecycle manager for local background binaries, with Linux and macOS support. It manages executable paths, arguments, working directories, environment variables, runtime state, logs, configuration and licensing state for generic commands, sing-box, Xray, Mihomo and future specialized program types.
 
@@ -198,6 +204,12 @@ Configuration checks combine the program's reported platform, activation conditi
 Managed package replacement commits program files, settings, candidate configuration and editor draft together. A pre-commit failure restores the previous state; incomplete recovery blocks program use and retains recovery material. Replacement does not apply the candidate automatically; it must be checked against the current program.
 
 The editor separates JSON/YAML syntax, JSON Schema, and program-specific semantics. A sing-box build with schema generation can provide its own structure for diagnostics, completion, and reference checks. Cached results are invalidated by binary or capability-profile changes. The client never follows external references or downloads arbitrary `$schema` URLs. Unavailable schemas leave syntax editing accessible without implying configuration support. Apply performs static and native checks automatically.
+
+Intent target choices follow the current Final configuration and reviewed reference types. Equal names in incoming connections, outgoing connections, and DNS are not interchangeable. Duplicate names are not offered as targets. To remove an entry still in use, choose replacement targets in the same form and commit the replacements and removal together. Without a suitable replacement, the configuration stays unchanged and Final configuration remains accessible. One undo restores the entry and its linked changes while retaining later unrelated edits. Follow Source and undo check current references instead of leaving dangling settings; target changes preserve adjacent options and rule order.
+
+sing-box DNS guidance accepts both string and object resolver forms. Changing the target retains the object's address preference, timeout, and cache options; later Source changes to those options still synchronize. If a guided edit creates a resolver cycle, the original configuration stays intact and the user can choose another target.
+
+Sensitive native strings in Intent show only whether a value is configured. Keep the existing value, replace it, remove it explicitly, or follow its Source again. Replacement fields never preload the original value, support multiline content, and hide new input by default; empty input does not mean deletion. Changes are reversible, and protected reverse material commits together with the candidate and operation receipt.
 
 For Mihomo, mappings merge recursively; later sources replace same-name `proxies`, `proxy-groups`, and `listeners` in place, while ordered lists such as `rules` are concatenated in UI source order, so that order also defines rule priority.
 

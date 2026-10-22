@@ -1,4 +1,6 @@
 pub(crate) mod logging;
+#[cfg(all(windows, feature = "desktop"))]
+pub(crate) mod protected_data;
 
 use std::{fs, path::Path};
 
@@ -50,7 +52,11 @@ pub(crate) fn validate_launch_paths(plan: &LaunchPlan) -> Result<()> {
     Ok(())
 }
 
-fn validate_internal_path(workspace: &Path, path: &Path, require_leaf: bool) -> Result<()> {
+pub(crate) fn validate_internal_path(
+    workspace: &Path,
+    path: &Path,
+    require_leaf: bool,
+) -> Result<()> {
     let relative = path
         .strip_prefix(workspace)
         .map_err(|_| invalid_launch_path("Program resource path is outside its workspace"))?;
@@ -81,12 +87,12 @@ fn invalid_launch_path(message: &str) -> CamelliaNexusError {
 }
 
 #[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+pub(crate) fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
 #[cfg(windows)]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+pub(crate) fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
     metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0

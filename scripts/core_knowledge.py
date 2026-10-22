@@ -21,7 +21,7 @@ REPORT = ROOT / "docs/core-knowledge-coverage.json"
 CHANGES = ROOT / "docs/core-knowledge-changes.json"
 RULES = ROOT / "scripts/core-knowledge-rules.json"
 PROGRAMS = (
-    {"program":"singBox","repository":"SagerNet/sing-box","familyPolicy":"majorMinor","prefixes":["option/","include/","constant/","protocol/","log/"],"roots":["option#Options"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
+    {"program":"singBox","repository":"SagerNet/sing-box","familyPolicy":"majorMinor","prefixes":["option/","include/","constant/","protocol/","log/","adapter/inbound/manager.go","adapter/outbound/manager.go","dns/transport_manager.go","route/rule/rule_item_inbound.go","route/rule/rule_action.go","common/listener/listener_tcp.go"],"roots":["option#Options"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
     {"program":"mihomo","repository":"MetaCubeX/mihomo","familyPolicy":"majorMinor","prefixes":["config/","adapter/","listener/","constant/","rules/","log/","common/structure/","main.go"],"roots":["config#RawConfig"],"outboundCollection":"proxies","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"ss","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
     {"program":"xray","repository":"XTLS/Xray-core","familyPolicy":"releaseMonth","prefixes":["infra/conf/","transport/internet/sockopt"],"roots":["infra/conf#Config"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria","proxy.outbound.tuicV5":"tuic"}},
 )
@@ -331,10 +331,16 @@ def reviewed_rules(program: str, inventory: dict, rules: list[dict]) -> list[dic
     for rule in rules:
         if rule["program"] != program:
             continue
-        declarations = [entry for entry in inventory["declarations"] if entry["id"] == rule["declaration"]]
+        candidates = rule.get("declarationCandidates", [rule.get("declaration")])
+        declarations = [entry for entry in inventory["declarations"] if entry["id"] in candidates]
+        if "declarationCandidates" in rule:
+            declarations = [entry for entry in declarations if any(field["name"] == rule["field"] for field in entry["fields"])]
+            if not declarations and rule.get("allowAbsentDeclaration", False):
+                continue
         if len(declarations) != 1:
             raise ValueError(f"semantic rule evidence is missing or ambiguous: {rule['id']}")
         declaration = declarations[0]
+        rule = {**rule, "declaration": declaration["id"]}
         fields = [field for field in declaration["fields"] if field["name"] == rule["field"]]
         if not fields:
             continue
@@ -366,7 +372,7 @@ def reviewed_rules(program: str, inventory: dict, rules: list[dict]) -> list[dic
             evidence.append({"source": fn["source"], "bodyHash": fn["bodyHash"]})
         if not evidence:
             raise ValueError(f"semantic rule lacks reviewed behavior: {rule['id']}")
-        result.append({**{key: value for key, value in rule.items() if key not in {"program", "evidence", "evidenceVariants"}},
+        result.append({**{key: value for key, value in rule.items() if key not in {"program", "evidence", "evidenceVariants", "declarationCandidates", "allowAbsentDeclaration"}},
                        "fieldHash": digest(field_shape),
                        "evidence": evidence})
         result[-1].pop("fieldShapes")
@@ -434,11 +440,12 @@ def reviewed_value_decoders(program: str, inventory: dict, recipes: list[dict], 
         declaration = unique_declaration(recipe["declaration"])
         object_declaration = unique_declaration(recipe["objectDeclaration"])
         if (not declaration or not object_declaration or declaration["buildConstraint"]
-                or object_declaration["buildConstraint"] or object_declaration["methods"]
-                or "UnmarshalJSON" not in declaration["methods"]
+                or object_declaration["buildConstraint"]
+                or (object_declaration["id"] != declaration["id"] and object_declaration["methods"])
+                or recipe["method"] not in declaration["methods"]
                 or object_declaration["shape"] != {"kind": "structure"}
                 or [{key: field[key] for key in ("name", "type", "embedded", "tags")}
-                    for field in object_declaration["fields"]] != recipe["objectFields"]):
+                    for field in object_declaration["fields"]] not in recipe["objectFieldVariants"]):
             raise ValueError("custom decoder declarations require source review")
         shared = {entry["function"]: entry for layout in layouts if layout["program"] == program for entry in layout["evidence"]}
         rules = [*recipe["evidence"], *[shared[name] for name in recipe["layoutEvidence"]]]
@@ -446,6 +453,10 @@ def reviewed_value_decoders(program: str, inventory: dict, recipes: list[dict], 
             candidates = [fn for fn in inventory["functions"] if fn["id"] == rule["function"]]
             supported = []
             branches = rule.get("branches", [{**rule, "supported": True}])
+            if "unsupportedBodyHashes" in rule:
+                branches = [*branches, {"supported": False,
+                    "bodyHashes": rule["unsupportedBodyHashes"],
+                    "buildConstraints": ["(without_contextjson)"]}]
             seen = set()
             for fn in candidates:
                 matching = [branch for branch in branches
@@ -462,7 +473,7 @@ def reviewed_value_decoders(program: str, inventory: dict, recipes: list[dict], 
                 raise ValueError(f"custom decoder behavior is missing or ambiguous: {rule['function']}")
             if supported[0]["buildConstraint"]:
                 conditions.add(supported[0]["buildConstraint"])
-        result.append({**{key: recipe[key] for key in ("declaration", "objectDeclaration", "encoding", "scalarForms", "keyComparison")},
+        result.append({**{key: recipe[key] for key in ("declaration", "method", "objectDeclaration", "encoding", "scalarForms", "keyComparison")},
                        "buildConstraint": " && ".join(sorted(conditions)), "evidence": evidence})
     return result
 

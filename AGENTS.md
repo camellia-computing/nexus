@@ -6,10 +6,20 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
 
 ## Product and authority model
 
-- Resolve Intent controls from the current capability profile. Scalar and native object edits share
-  one operation-bound transaction and return a complete workspace snapshot. Never expose arbitrary
-  writable paths or replay an unchanged form. Local listeners default to loopback; creating or
-  switching to network access requires authentication. Keep credentials out of object projections.
+- Resolve Intent from an ordered native-input catalog and the current capability profile. Classify
+  every input node as guided, Details-managed, inapplicable, or requiring Final configuration. Source
+  declaration order is presentation order, not dependency order. Reuse the native decoder traversal
+  for JSON, YAML, and proxy tags; do not maintain a second field-name parser.
+- Intent context and change previews are read-only. Commit registered-node plans under the same
+  operation-bound transaction as candidate, rebased draft, and receipt. Recompute the plan at commit;
+  never accept arbitrary writable paths, guess references, or replay an unchanged form. Linked
+  changes require reviewed relations and explicit choices when more than one valid outcome exists.
+- Intent undo/redo persists bounded path-local differences and contribution ownership, not complete
+  workspace snapshots. Undo retains later unrelated edits and previews overlapping edits. Protect
+  sensitive reverse material before committing; protection failure must reject the operation. Recent
+  changes are limited to 64 completed records and 64 MiB per program, excluding pending recovery.
+  Local listeners default to loopback; creating or switching to network access requires authentication.
+  Secrets never enter context, previews, notifications, diagnostics, or history projections.
 - Preserve unrelated object fields and Source list entries. Native identities and value-bound list
   edits have explicit references; duplicate references cannot select an arbitrary entry. Complex
   or unsafe shapes remain editable in Final configuration. No page-open, expansion, or language

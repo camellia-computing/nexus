@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use camellia_nexus_core::FinalConflictResolution;
 use camellia_nexus_core::{
     CamelliaNexusError, CandidateValidationStatus, ConfigurationCandidate, ConfigurationConflict,
@@ -25,6 +25,7 @@ const NATIVE_VALIDATOR_CONTRACT_REVISION: &str = camellia_nexus_core::CORE_IMPLE
 
 pub(crate) struct ConfigurationCoordinator {
     store: Arc<FileStore>,
+    history_vault: crate::intent_history_vault::IntentHistoryVault,
     locks: Arc<RwLock<HashMap<ProgramId, Arc<Mutex<()>>>>>,
 }
 
@@ -48,6 +49,7 @@ pub(crate) struct PreparedSourceRefresh {
 impl ConfigurationCoordinator {
     pub(crate) fn new(store: Arc<FileStore>) -> Self {
         Self {
+            history_vault: crate::intent_history_vault::IntentHistoryVault::new(store.data_root()),
             store,
             locks: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -349,20 +351,204 @@ impl ConfigurationCoordinator {
             probe,
             &metadata.fingerprint,
         )?;
+        if request.capability_profile_hash != profile.profile_hash {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Program capabilities changed",
+            )
+            .with_message_key("INTENT_PLAN_STALE"));
+        }
+        let history = self
+            .intent_history_payload(id, &state, &request.change)
+            .await?;
+        let mut prepared = state.prepare_intent_change_with_history(
+            &profile,
+            &request.preview_request(),
+            history.as_ref(),
+            now_unix_ms(),
+        )?;
+        if prepared.plan.plan_hash != request.plan_hash {
+            return Err(CamelliaNexusError::new(
+                ErrorCode::ConfigConflict,
+                "Review the updated change",
+            )
+            .with_message_key("INTENT_PLAN_STALE"));
+        }
+        if let Some(blocker) = prepared.plan.blockers.first() {
+            return Err(
+                CamelliaNexusError::new(ErrorCode::ConfigInvalid, "Review this setting")
+                    .with_message_key(&blocker.message_key),
+            );
+        }
         let revision = state.state_revision;
         state.begin_operation(context.clone())?;
-        state.update_intent(&profile, &request.change, now_unix_ms())?;
+        if history.is_none()
+            && let Some(payload) =
+                camellia_nexus_core::IntentHistoryPayload::between(&state, &prepared.state)?
+        {
+            let label = match request.change {
+                camellia_nexus_core::ConfigurationIntentAction::ObjectNode {
+                    operation: camellia_nexus_core::IntentObjectOperation::Create { .. },
+                    ..
+                } => "Added configuration entry",
+                camellia_nexus_core::ConfigurationIntentAction::ObjectNode {
+                    operation: camellia_nexus_core::IntentObjectOperation::Remove { .. },
+                    ..
+                } => "Removed configuration entry",
+                camellia_nexus_core::ConfigurationIntentAction::FollowNode { .. }
+                | camellia_nexus_core::ConfigurationIntentAction::ObjectNode {
+                    operation: camellia_nexus_core::IntentObjectOperation::Follow { .. },
+                    ..
+                } => "Restored source settings",
+                _ => "Changed configuration settings",
+            };
+            let record = match self
+                .history_vault
+                .stage(
+                    id,
+                    &context.operation_id,
+                    label.into(),
+                    state.intent_change_subject(&profile, &request.change)?,
+                    now_unix_ms(),
+                    payload,
+                )
+                .await
+            {
+                Ok(record) => record,
+                Err(error) => {
+                    self.cleanup_intent_history(id).await;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = prepared.state.intent_history.append(record) {
+                self.cleanup_intent_history(id).await;
+                return Err(error);
+            }
+        }
+        // The prepared change is private until both its receipt and workspace can commit.
+        let receipts = state.operation_receipts;
+        state = prepared.state;
+        state.operation_receipts = receipts;
         state.finish_operation(
             &context.operation_id,
             ConfigurationOperationStatus::Updated,
             state.generation,
             None,
         );
-        self.persist_candidate(manager, id, state, revision).await?;
+        let persisted = self.persist_candidate(manager, id, state, revision).await;
+        self.cleanup_intent_history(id).await;
+        persisted?;
         self.operation_workspace(manager, id, &context, lease).await
     }
 
-    #[cfg(test)]
+    pub(crate) async fn preview_intent_with_lease(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        request: camellia_nexus_core::IntentPreviewRequest,
+        _lease: &ConfigurationLease,
+    ) -> Result<camellia_nexus_core::IntentChangePlan> {
+        let (spec, state) = self.load_current(manager, id).await?;
+        let history = self
+            .intent_history_payload(id, &state, &request.change)
+            .await?;
+        Ok(state
+            .prepare_intent_change_with_history(
+                &intent_profile(&spec)?,
+                &request,
+                history.as_ref(),
+                0,
+            )?
+            .plan)
+    }
+
+    async fn intent_history_payload(
+        &self,
+        id: &ProgramId,
+        state: &ConfigurationState,
+        change: &camellia_nexus_core::ConfigurationIntentAction,
+    ) -> Result<Option<camellia_nexus_core::IntentHistoryPayload>> {
+        match change {
+            camellia_nexus_core::ConfigurationIntentAction::Undo { record_id, .. }
+            | camellia_nexus_core::ConfigurationIntentAction::Redo { record_id, .. } => Ok(Some(
+                self.history_vault
+                    .load(id, state.intent_history.record(record_id)?)
+                    .await?,
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    async fn cleanup_intent_history(&self, id: &ProgramId) {
+        if !matches!(self.store.can_prune_intent_history(id).await, Ok(true)) {
+            return;
+        }
+        let Ok(state) = self.store.load_configuration_state(id).await else {
+            return;
+        };
+        let retained = state
+            .into_iter()
+            .flat_map(|state| {
+                state
+                    .intent_history
+                    .records
+                    .into_iter()
+                    .map(|record| record.payload_ref)
+            })
+            .collect();
+        if let Err(error) = self.history_vault.prune(id, retained).await {
+            tracing::warn!(program_id=%id, code=?error.code, "protected Intent history cleanup deferred");
+        }
+    }
+
+    pub(crate) async fn intent_context_with_lease(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        node_id: Option<&str>,
+        _lease: &ConfigurationLease,
+    ) -> Result<camellia_nexus_core::IntentContext> {
+        let (spec, state) = self.load_current(manager, id).await?;
+        camellia_nexus_core::configuration_intent_context(&intent_profile(&spec)?, &state, node_id)
+    }
+
+    #[cfg(all(test, unix))]
+    async fn intent_setting_change_with_lease(
+        &self,
+        manager: &ProgramManager,
+        id: &ProgramId,
+        setting_id: &str,
+        value: Option<serde_json::Value>,
+        _lease: &ConfigurationLease,
+    ) -> Result<camellia_nexus_core::ConfigurationIntentAction> {
+        let (spec, state) = self.load_current(manager, id).await?;
+        let profile = intent_profile(&spec)?;
+        let catalog = camellia_nexus_core::configuration_intent_catalog(&profile)?;
+        let node = catalog
+            .nodes
+            .iter()
+            .find(|node| node.setting_id.as_deref() == Some(setting_id))
+            .unwrap();
+        let context = camellia_nexus_core::configuration_intent_context(
+            &profile,
+            &state,
+            Some(&node.node_id),
+        )?;
+        let reference_id = context.values[0].reference_id.clone();
+        Ok(match value {
+            Some(value) => camellia_nexus_core::ConfigurationIntentAction::EditNode {
+                node_id: node.node_id.clone(),
+                reference_id,
+                value: camellia_nexus_core::SemanticValue::Present(value),
+            },
+            None => camellia_nexus_core::ConfigurationIntentAction::FollowNode {
+                node_id: node.node_id.clone(),
+                reference_id,
+            },
+        })
+    }
+
+    #[cfg(all(test, unix))]
     async fn set_guided_with_lease(
         &self,
         manager: &ProgramManager,
@@ -377,6 +563,28 @@ impl ConfigurationCoordinator {
             &self.load_current(manager, id).await?.1,
             expected_generation,
         )?;
+        let change = self
+            .intent_setting_change_with_lease(manager, id, &setting_id, value, lease)
+            .await?;
+        let plan = self
+            .preview_intent_with_lease(
+                manager,
+                id,
+                camellia_nexus_core::IntentPreviewRequest {
+                    expected_state_revision: snapshot.state.state_revision,
+                    editor_session_id: snapshot
+                        .editor_session
+                        .as_ref()
+                        .map(|draft| draft.session_id.clone()),
+                    expected_draft_revision: snapshot
+                        .editor_session
+                        .as_ref()
+                        .map(|draft| draft.draft_revision),
+                    change: change.clone(),
+                },
+                lease,
+            )
+            .await?;
         let request = camellia_nexus_core::ConfigurationIntentRequest {
             operation_id: uuid::Uuid::new_v4().to_string(),
             expected_state_revision: snapshot.state.state_revision,
@@ -388,12 +596,9 @@ impl ConfigurationCoordinator {
                 .editor_session
                 .as_ref()
                 .map(|draft| draft.draft_revision),
-            change: match value {
-                Some(value) => {
-                    camellia_nexus_core::ConfigurationIntentAction::Set { setting_id, value }
-                }
-                None => camellia_nexus_core::ConfigurationIntentAction::Follow { setting_id },
-            },
+            change,
+            plan_hash: plan.plan_hash,
+            capability_profile_hash: plan.capability_profile_hash,
         };
         self.update_intent_with_lease(manager, id, request, lease)
             .await
@@ -1974,6 +2179,22 @@ fn view_for_spec(spec: &ProgramSpec, state: &ConfigurationState) -> Result<Confi
     Ok(view)
 }
 
+fn intent_profile(spec: &ProgramSpec) -> Result<camellia_nexus_core::CoreCapabilityProfile> {
+    let metadata = spec
+        .executable
+        .metadata()
+        .ok_or_else(|| CamelliaNexusError::invalid_spec("Program identity is required"))?;
+    let probe = metadata
+        .probe
+        .as_ref()
+        .ok_or_else(|| CamelliaNexusError::invalid_spec("Program build observation is required"))?;
+    camellia_nexus_core::CoreCapabilityProfile::resolve(
+        spec.program_type.kind(),
+        probe,
+        &metadata.fingerprint,
+    )
+}
+
 fn project_configuration_assessment(
     view: &mut ConfigurationStateView,
     assessment: &camellia_nexus_core::ConfigurationAssessment,
@@ -2138,7 +2359,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn intent_receipts_and_storage_failure_preserve_the_authoritative_workspace() {
-        use camellia_nexus_core::{ConfigurationIntentAction, ConfigurationIntentRequest};
+        use camellia_nexus_core::ConfigurationIntentRequest;
         let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
         let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
         let snapshot = coordinator
@@ -2159,10 +2380,27 @@ mod tests {
                 .editor_session
                 .as_ref()
                 .map(|draft| draft.draft_revision),
-            change: ConfigurationIntentAction::Set {
-                setting_id: "logging.level".into(),
-                value: Value::from("debug"),
-            },
+            change: coordinator
+                .intent_setting_change_with_lease(
+                    &manager,
+                    &id,
+                    "logging.level",
+                    Some(Value::from("debug")),
+                    &lease,
+                )
+                .await
+                .unwrap(),
+            plan_hash: String::new(),
+            capability_profile_hash: String::new(),
+        };
+        let preview = coordinator
+            .preview_intent_with_lease(&manager, &id, request.preview_request(), &lease)
+            .await
+            .unwrap();
+        let request = ConfigurationIntentRequest {
+            plan_hash: preview.plan_hash,
+            capability_profile_hash: preview.capability_profile_hash,
+            ..request
         };
         store.fail_next_configuration_write();
         assert_eq!(
@@ -2209,10 +2447,16 @@ mod tests {
             persisted
         );
         let mismatched = ConfigurationIntentRequest {
-            change: ConfigurationIntentAction::Set {
-                setting_id: "logging.level".into(),
-                value: Value::from("info"),
-            },
+            change: coordinator
+                .intent_setting_change_with_lease(
+                    &manager,
+                    &id,
+                    "logging.level",
+                    Some(Value::from("info")),
+                    &lease,
+                )
+                .await
+                .unwrap(),
             ..request
         };
         assert_eq!(
@@ -2228,6 +2472,1089 @@ mod tests {
             store.load_configuration_state(&id).await.unwrap().unwrap(),
             persisted
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn intent_object_creation_plan_commits_once_and_restores_across_reload() {
+        use camellia_nexus_core::{
+            ConfigurationIntentAction, ConfigurationIntentRequest, IntentObjectKind,
+            IntentObjectOperation, IntentPreviewRequest,
+        };
+        let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+        let before = coordinator
+            .load_editor_snapshot(&manager, &id, &lease)
+            .await
+            .unwrap();
+        let spec = manager.get(&id).await.unwrap().0;
+        let profile = intent_profile(&spec).unwrap();
+        let catalog = camellia_nexus_core::configuration_intent_catalog(&profile).unwrap();
+        let node = catalog
+            .nodes
+            .iter()
+            .find(|node| node.pattern == ["inbounds"] && node.type_selections.is_empty())
+            .unwrap();
+        let preview_request = IntentPreviewRequest {
+            expected_state_revision: before.state.state_revision,
+            editor_session_id: before
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.session_id.clone()),
+            expected_draft_revision: before
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.draft_revision),
+            change: ConfigurationIntentAction::ObjectNode {
+                node_id: node.node_id.clone(),
+                operation: IntentObjectOperation::Create {
+                    object_kind: IntentObjectKind::Listener,
+                    values: BTreeMap::from([
+                        ("protocol".into(), Value::from("http")),
+                        ("access".into(), Value::from("local")),
+                        ("port".into(), Value::from(18080)),
+                    ]),
+                },
+            },
+        };
+        let plan = coordinator
+            .preview_intent_with_lease(&manager, &id, preview_request.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(plan.can_commit, "{:?}", plan.blockers);
+        assert_eq!(
+            plan,
+            coordinator
+                .preview_intent_with_lease(&manager, &id, preview_request.clone(), &lease)
+                .await
+                .unwrap()
+        );
+        let request = ConfigurationIntentRequest {
+            operation_id: Uuid::new_v4().to_string(),
+            expected_state_revision: preview_request.expected_state_revision,
+            editor_session_id: preview_request.editor_session_id,
+            expected_draft_revision: preview_request.expected_draft_revision,
+            change: preview_request.change,
+            plan_hash: plan.plan_hash,
+            capability_profile_hash: plan.capability_profile_hash,
+        };
+        store.fail_next_configuration_write();
+        assert!(
+            coordinator
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            coordinator
+                .load_editor_snapshot(&manager, &id, &lease)
+                .await
+                .unwrap()
+                .state,
+            before.state
+        );
+        let created = coordinator
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        let document: Value = serde_json::from_str(&created.state.desired.content).unwrap();
+        assert_eq!(document["inbounds"].as_array().unwrap().len(), 1);
+        assert_eq!(document["inbounds"][0]["listen"], "127.0.0.1");
+        assert_eq!(document["inbounds"][0]["port"], 18080);
+        assert_eq!(created.state.intent_history.len(), 1);
+        assert_eq!(created.state.intent_history[0].subject_key, "inbounds");
+        assert_eq!(
+            created.state.intent_history[0].label_key,
+            "Added configuration entry"
+        );
+        assert_eq!(
+            created.state.applied_revision,
+            before.state.applied_revision
+        );
+        assert_eq!(
+            created.state.last_known_good_revision,
+            before.state.last_known_good_revision
+        );
+        drop(lease);
+        let mut reopened = ConfigurationCoordinator::new(store.clone());
+        reopened.history_vault = coordinator.history_vault.clone();
+        let lease = reopened.acquire_lease(&manager, &id).await.unwrap();
+        let repeated = reopened
+            .update_intent_with_lease(&manager, &id, request, &lease)
+            .await
+            .unwrap();
+        assert_eq!(repeated.state, created.state);
+        assert_eq!(repeated.operation_result, created.operation_result);
+        assert_eq!(manager.get(&id).await.unwrap().0, spec);
+        let restore_preview = IntentPreviewRequest {
+            expected_state_revision: repeated.state.state_revision,
+            editor_session_id: repeated
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.session_id.clone()),
+            expected_draft_revision: repeated
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.draft_revision),
+            change: ConfigurationIntentAction::Undo {
+                record_id: repeated.state.intent_history[0].record_id.clone(),
+                choices: Default::default(),
+            },
+        };
+        let restore_plan = reopened
+            .preview_intent_with_lease(&manager, &id, restore_preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(restore_plan.can_commit);
+        let restored = reopened
+            .update_intent_with_lease(
+                &manager,
+                &id,
+                ConfigurationIntentRequest {
+                    operation_id: Uuid::new_v4().to_string(),
+                    expected_state_revision: restore_preview.expected_state_revision,
+                    editor_session_id: restore_preview.editor_session_id,
+                    expected_draft_revision: restore_preview.expected_draft_revision,
+                    change: restore_preview.change,
+                    plan_hash: restore_plan.plan_hash,
+                    capability_profile_hash: restore_plan.capability_profile_hash,
+                },
+                &lease,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&restored.state.desired.content).unwrap(),
+            serde_json::from_str::<Value>(&before.state.desired.content).unwrap()
+        );
+        assert!(restored.state.intent_history[0].can_redo);
+        assert_eq!(
+            restored.state.applied_revision,
+            before.state.applied_revision
+        );
+        assert_eq!(
+            restored.state.last_known_good_revision,
+            before.state.last_known_good_revision
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn intent_context_and_preview_do_not_persist_configuration_or_draft_changes() {
+        let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+        coordinator
+            .load_editor_snapshot(&manager, &id, &lease)
+            .await
+            .unwrap();
+        let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let context = coordinator
+            .intent_context_with_lease(&manager, &id, None, &lease)
+            .await
+            .unwrap();
+        let log = context
+            .children
+            .iter()
+            .find(|node| node.native_name == "log")
+            .unwrap();
+        let log_context = coordinator
+            .intent_context_with_lease(&manager, &id, Some(&log.node_id), &lease)
+            .await
+            .unwrap();
+        assert_eq!(log_context.state_revision, before.state_revision);
+        assert!(
+            log_context
+                .children
+                .iter()
+                .any(|node| node.native_name == "loglevel")
+        );
+        let request = camellia_nexus_core::IntentPreviewRequest {
+            expected_state_revision: before.state_revision,
+            editor_session_id: before
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.session_id.clone()),
+            expected_draft_revision: before
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.draft_revision),
+            change: coordinator
+                .intent_setting_change_with_lease(
+                    &manager,
+                    &id,
+                    "logging.level",
+                    Some(Value::from("debug")),
+                    &lease,
+                )
+                .await
+                .unwrap(),
+        };
+        let preview = coordinator
+            .preview_intent_with_lease(&manager, &id, request, &lease)
+            .await
+            .unwrap();
+        assert!(preview.can_commit);
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            before
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linked_native_intent_is_atomic_idempotent_and_undoable_after_reload() {
+        use camellia_nexus_core::{
+            ConfigurationIntentAction, ConfigurationIntentRequest, IntentEffectRole,
+            IntentPreviewRequest, SemanticValue,
+        };
+        for kind in [ProgramKind::SingBox, ProgramKind::Mihomo] {
+            let (_directory, store, manager, coordinator, id) = workspace_fixture_for_program(
+                Arc::new(crate::NativeProcessDriver::default()),
+                kind,
+            )
+            .await;
+            let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+            let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+            let profile = intent_profile(&manager.get(&id).await.unwrap().0).unwrap();
+            let catalog = camellia_nexus_core::configuration_intent_catalog(&profile).unwrap();
+            let field = if kind == ProgramKind::SingBox {
+                "auto_redirect"
+            } else {
+                "auto-redirect"
+            };
+            let node = catalog
+                .nodes
+                .iter()
+                .find(|node| node.native_name == field)
+                .unwrap();
+            let context = coordinator
+                .intent_context_with_lease(&manager, &id, Some(&node.node_id), &lease)
+                .await
+                .unwrap();
+            let preview = IntentPreviewRequest {
+                expected_state_revision: before.state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                change: ConfigurationIntentAction::EditNode {
+                    node_id: node.node_id.clone(),
+                    reference_id: context.values[0].reference_id.clone(),
+                    value: SemanticValue::Present(Value::Bool(true)),
+                },
+            };
+            let plan = coordinator
+                .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+                .await
+                .unwrap();
+            assert!(plan.can_commit, "{:?}", plan.blockers);
+            assert_eq!(
+                plan.effects
+                    .iter()
+                    .filter(|effect| effect.role == IntentEffectRole::Related)
+                    .count(),
+                1
+            );
+            let request = ConfigurationIntentRequest {
+                operation_id: Uuid::new_v4().to_string(),
+                expected_state_revision: preview.expected_state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                plan_hash: plan.plan_hash,
+                capability_profile_hash: plan.capability_profile_hash,
+                change: preview.change,
+            };
+            store.fail_next_configuration_write();
+            assert!(
+                coordinator
+                    .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                store.load_configuration_state(&id).await.unwrap().unwrap(),
+                before
+            );
+            let changed = coordinator
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .unwrap();
+            assert_eq!(changed.state.intent_history.len(), 1);
+            assert_eq!(changed.state.generation, before.generation + 1);
+            assert_eq!(
+                changed.state.applied_revision,
+                before.view().applied_revision
+            );
+            assert_eq!(
+                changed.state.last_known_good_revision,
+                before.view().last_known_good_revision
+            );
+            let repeated = coordinator
+                .update_intent_with_lease(&manager, &id, request, &lease)
+                .await
+                .unwrap();
+            assert_eq!(repeated.state, changed.state);
+            assert_eq!(repeated.operation_result, changed.operation_result);
+            assert_eq!(
+                repeated.editor_session.unwrap().working_content,
+                changed.editor_session.unwrap().working_content
+            );
+            drop(lease);
+            let mut reopened = ConfigurationCoordinator::new(store.clone());
+            reopened.history_vault = coordinator.history_vault.clone();
+            let lease = reopened.acquire_lease(&manager, &id).await.unwrap();
+            let current = store.load_configuration_state(&id).await.unwrap().unwrap();
+            let preview = IntentPreviewRequest {
+                expected_state_revision: current.state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                change: ConfigurationIntentAction::Undo {
+                    record_id: current.intent_history.records[0].record_id.clone(),
+                    choices: Default::default(),
+                },
+            };
+            let plan = reopened
+                .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+                .await
+                .unwrap();
+            assert!(plan.can_commit, "{:?}", plan.blockers);
+            let undo = ConfigurationIntentRequest {
+                operation_id: Uuid::new_v4().to_string(),
+                expected_state_revision: current.state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                plan_hash: plan.plan_hash,
+                capability_profile_hash: plan.capability_profile_hash,
+                change: preview.change,
+            };
+            let restored = reopened
+                .update_intent_with_lease(&manager, &id, undo, &lease)
+                .await
+                .unwrap();
+            let persisted = store.load_configuration_state(&id).await.unwrap().unwrap();
+            assert_eq!(
+                persisted.upstream_document().unwrap(),
+                before.upstream_document().unwrap()
+            );
+            assert!(restored.state.intent_history[0].can_redo);
+            assert!(matches!(
+                manager.get(&id).await.unwrap().1,
+                camellia_nexus_core::ProgramState::Stopped
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_reference_edits_validate_commit_replay_and_restore_without_partial_writes() {
+        use camellia_nexus_core::{
+            ConfigurationIntentAction, ConfigurationIntentRequest, IntentPreviewRequest,
+            SemanticValue, SourceUpdateKind,
+        };
+        let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+        change_fixture_source(&coordinator, &manager, &id, r#"{"outbounds":[{"protocol":"freedom","tag":"first","proxySettings":{"tag":"direct","transportLayer":true}},{"protocol":"freedom","tag":"direct"},{"protocol":"freedom","tag":"other"}]}"#, SourceUpdateKind::UserEdit).await;
+        let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+        let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let profile = intent_profile(&manager.get(&id).await.unwrap().0).unwrap();
+        let catalog = camellia_nexus_core::configuration_intent_catalog(&profile).unwrap();
+        let node = catalog
+            .nodes
+            .iter()
+            .find(|node| node.pattern == ["outbounds", "*", "proxySettings", "tag"])
+            .unwrap();
+        let context = coordinator
+            .intent_context_with_lease(&manager, &id, Some(&node.node_id), &lease)
+            .await
+            .unwrap();
+        let mut preview = IntentPreviewRequest {
+            expected_state_revision: before.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            change: ConfigurationIntentAction::EditNode {
+                node_id: node.node_id.clone(),
+                reference_id: context.values[0].reference_id.clone(),
+                value: SemanticValue::Present(Value::from("missing")),
+            },
+        };
+        let plan = coordinator
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(!plan.can_commit);
+        assert_eq!(
+            plan.blockers[0].message_key,
+            "CONFIGURATION_REFERENCE_MISSING"
+        );
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            before
+        );
+        if let ConfigurationIntentAction::EditNode { value, .. } = &mut preview.change {
+            *value = SemanticValue::Present(Value::from("other"));
+        }
+        let plan = coordinator
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(plan.can_commit, "{:?}", plan.blockers);
+        let request = ConfigurationIntentRequest {
+            operation_id: Uuid::new_v4().to_string(),
+            expected_state_revision: before.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            plan_hash: plan.plan_hash,
+            capability_profile_hash: plan.capability_profile_hash,
+            change: preview.change,
+        };
+        store.fail_next_configuration_write();
+        assert!(
+            coordinator
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            before
+        );
+        let changed = coordinator
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        let persisted = store.load_configuration_state(&id).await.unwrap().unwrap();
+        assert_eq!(
+            persisted.upstream_document().unwrap()["outbounds"][0]["proxySettings"]["tag"],
+            "other"
+        );
+        assert_eq!(
+            persisted.upstream_document().unwrap()["outbounds"][0]["proxySettings"]["transportLayer"],
+            true
+        );
+        let repeated = coordinator
+            .update_intent_with_lease(&manager, &id, request, &lease)
+            .await
+            .unwrap();
+        assert_eq!(repeated.state, changed.state);
+        assert_eq!(repeated.operation_result, changed.operation_result);
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            persisted
+        );
+        drop(lease);
+        let mut reopened = ConfigurationCoordinator::new(store.clone());
+        reopened.history_vault = coordinator.history_vault.clone();
+        let lease = reopened.acquire_lease(&manager, &id).await.unwrap();
+        let preview = IntentPreviewRequest {
+            expected_state_revision: persisted.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            change: ConfigurationIntentAction::Undo {
+                record_id: persisted.intent_history.records[0].record_id.clone(),
+                choices: BTreeMap::new(),
+            },
+        };
+        let plan = reopened
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(plan.can_commit, "{:?}", plan.blockers);
+        reopened
+            .update_intent_with_lease(
+                &manager,
+                &id,
+                ConfigurationIntentRequest {
+                    operation_id: Uuid::new_v4().to_string(),
+                    expected_state_revision: persisted.state_revision,
+                    editor_session_id: None,
+                    expected_draft_revision: None,
+                    plan_hash: plan.plan_hash,
+                    capability_profile_hash: plan.capability_profile_hash,
+                    change: preview.change,
+                },
+                &lease,
+            )
+            .await
+            .unwrap();
+        let restored = store.load_configuration_state(&id).await.unwrap().unwrap();
+        assert_eq!(
+            restored.upstream_document().unwrap(),
+            before.upstream_document().unwrap()
+        );
+        assert_eq!(restored.applied, before.applied);
+        assert_eq!(restored.last_known_good, before.last_known_good);
+        assert!(matches!(
+            manager.get(&id).await.unwrap().1,
+            camellia_nexus_core::ProgramState::Stopped
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linked_object_removal_commits_references_draft_history_and_receipt_together() {
+        use camellia_nexus_core::{
+            ConfigurationIntentAction, ConfigurationIntentRequest, IntentObjectOperation,
+            IntentPreviewRequest, SourceUpdateKind,
+        };
+        let (_directory, store, manager, coordinator, id) = workspace_fixture_for_program(
+            Arc::new(crate::NativeProcessDriver::default()),
+            ProgramKind::SingBox,
+        )
+        .await;
+        change_fixture_source(&coordinator, &manager, &id, r#"{"log":{"level":"info"},"dns":{"servers":[{"type":"udp","tag":"first","server":"1.1.1.1"},{"type":"udp","tag":"second","server":"9.9.9.9"}],"final":"first"},"outbounds":[{"type":"direct","tag":"direct","domain_resolver":{"server":"first","strategy":"prefer_ipv4"}}]}"#, SourceUpdateKind::UserEdit).await;
+        let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+        let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let mut draft = final_editor_session_for_state(&before);
+        let mut text: Value = serde_json::from_str(&draft.working_content).unwrap();
+        text["log"]["level"] = Value::from("debug");
+        draft.working_content = serde_json::to_string_pretty(&text).unwrap();
+        let snapshot = coordinator
+            .update_final_configuration_draft_with_lease(&manager, &id, draft, 0, &lease)
+            .await
+            .unwrap();
+        let draft_before = store.load_final_editor_draft(&id).await.unwrap().unwrap();
+        let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let profile = intent_profile(&manager.get(&id).await.unwrap().0).unwrap();
+        let catalog = camellia_nexus_core::configuration_intent_catalog(&profile).unwrap();
+        let node = catalog
+            .nodes
+            .iter()
+            .find(|node| node.pattern == ["dns", "servers"] && node.type_selections.is_empty())
+            .unwrap();
+        let context = coordinator
+            .intent_context_with_lease(&manager, &id, Some(&node.node_id), &lease)
+            .await
+            .unwrap();
+        let object = context
+            .object_editors
+            .iter()
+            .flat_map(|editor| &editor.objects)
+            .find(|object| object.label == "first")
+            .unwrap();
+        let mut preview = IntentPreviewRequest {
+            expected_state_revision: snapshot.state.state_revision,
+            editor_session_id: Some(draft_before.session_id.clone()),
+            expected_draft_revision: Some(draft_before.draft_revision),
+            change: ConfigurationIntentAction::ObjectNode {
+                node_id: node.node_id.clone(),
+                operation: IntentObjectOperation::Remove {
+                    object_id: object.object_id.clone(),
+                    expected_hash: object.content_hash.clone(),
+                    replacements: BTreeMap::new(),
+                },
+            },
+        };
+        let blocked = coordinator
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(!blocked.can_commit);
+        assert_eq!(blocked.reference_choices.len(), 2);
+        let ConfigurationIntentAction::ObjectNode {
+            operation: IntentObjectOperation::Remove { replacements, .. },
+            ..
+        } = &mut preview.change
+        else {
+            unreachable!()
+        };
+        *replacements = blocked
+            .reference_choices
+            .iter()
+            .map(|choice| (choice.choice_id.clone(), "second".into()))
+            .collect();
+        let plan = coordinator
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(plan.can_commit, "{:?}", plan.blockers);
+        let request = ConfigurationIntentRequest {
+            operation_id: Uuid::new_v4().to_string(),
+            expected_state_revision: preview.expected_state_revision,
+            editor_session_id: preview.editor_session_id,
+            expected_draft_revision: preview.expected_draft_revision,
+            plan_hash: plan.plan_hash,
+            capability_profile_hash: plan.capability_profile_hash,
+            change: preview.change,
+        };
+        store.fail_next_configuration_write();
+        assert!(
+            coordinator
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            before
+        );
+        assert_eq!(
+            store.load_final_editor_draft(&id).await.unwrap().unwrap(),
+            draft_before
+        );
+        let changed = coordinator
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        let repeated = coordinator
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        assert_eq!(changed, repeated);
+        let persisted = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let candidate: Value = serde_json::from_str(&persisted.desired.content).unwrap();
+        assert_eq!(candidate["dns"]["final"], "second");
+        assert_eq!(candidate["dns"]["servers"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            candidate["outbounds"][0]["domain_resolver"],
+            serde_json::json!({"server":"second","strategy":"prefer_ipv4"})
+        );
+        let draft: Value =
+            serde_json::from_str(&changed.editor_session.as_ref().unwrap().working_content)
+                .unwrap();
+        assert_eq!(draft["log"]["level"], "debug");
+        assert_eq!(draft["dns"]["final"], "second");
+        assert_eq!(persisted.applied, before.applied);
+        assert_eq!(persisted.last_known_good, before.last_known_good);
+        assert_eq!(persisted.intent_history.records.len(), 1);
+        drop(lease);
+        let mut reopened = ConfigurationCoordinator::new(store.clone());
+        reopened.history_vault = coordinator.history_vault.clone();
+        let lease = reopened.acquire_lease(&manager, &id).await.unwrap();
+        let draft = changed.editor_session.as_ref().unwrap();
+        let preview = IntentPreviewRequest {
+            expected_state_revision: persisted.state_revision,
+            editor_session_id: Some(draft.session_id.clone()),
+            expected_draft_revision: Some(draft.draft_revision),
+            change: ConfigurationIntentAction::Undo {
+                record_id: persisted.intent_history.records[0].record_id.clone(),
+                choices: BTreeMap::new(),
+            },
+        };
+        let plan = reopened
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(plan.can_commit, "{:?}", plan.blockers);
+        let request = ConfigurationIntentRequest {
+            operation_id: Uuid::new_v4().to_string(),
+            expected_state_revision: preview.expected_state_revision,
+            editor_session_id: preview.editor_session_id,
+            expected_draft_revision: preview.expected_draft_revision,
+            plan_hash: plan.plan_hash,
+            capability_profile_hash: plan.capability_profile_hash,
+            change: preview.change,
+        };
+        let restored = reopened
+            .update_intent_with_lease(&manager, &id, request, &lease)
+            .await
+            .unwrap();
+        let candidate: Value = serde_json::from_str(&restored.state.desired.content).unwrap();
+        assert_eq!(candidate["dns"]["final"], "first");
+        assert_eq!(candidate["dns"]["servers"].as_array().unwrap().len(), 2);
+        let draft: Value =
+            serde_json::from_str(&restored.editor_session.as_ref().unwrap().working_content)
+                .unwrap();
+        assert_eq!(draft["log"]["level"], "debug");
+        assert_eq!(draft["dns"]["final"], "first");
+        let restored_state = store.load_configuration_state(&id).await.unwrap().unwrap();
+        assert_eq!(restored_state.applied, before.applied);
+        assert_eq!(restored_state.last_known_good, before.last_known_good);
+        assert!(matches!(
+            manager.get(&id).await.unwrap().1,
+            camellia_nexus_core::ProgramState::Stopped
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_credential_changes_require_protection_and_restore_after_storage_failure_and_reload()
+     {
+        use camellia_nexus_core::{
+            ConfigurationIntentAction, ConfigurationIntentRequest, IntentPreviewRequest,
+            SemanticValue, SourceUpdateKind,
+        };
+        for kind in [ProgramKind::SingBox, ProgramKind::Xray, ProgramKind::Mihomo] {
+            let (_directory, store, manager, coordinator, id) = workspace_fixture_for_program(
+                Arc::new(crate::NativeProcessDriver::default()),
+                kind,
+            )
+            .await;
+            let (content, protocol, pattern) = match kind {
+                ProgramKind::SingBox => (
+                    r#"{"outbounds":[{"type":"shadowsocks","tag":"private","server":"127.0.0.1","server_port":443,"method":"aes-128-gcm","password":"fixture-original"}]}"#,
+                    "shadowsocks",
+                    vec!["outbounds", "*", "password"],
+                ),
+                ProgramKind::Xray => (
+                    r#"{"outbounds":[{"protocol":"trojan","tag":"private","settings":{"address":"127.0.0.1","port":443,"password":"fixture-original"}}]}"#,
+                    "trojan",
+                    vec!["outbounds", "*", "settings", "password"],
+                ),
+                ProgramKind::Mihomo => (
+                    "proxies:\n  - type: ss\n    name: private\n    server: 127.0.0.1\n    port: 443\n    cipher: aes-128-gcm\n    password: fixture-original\n",
+                    "ss",
+                    vec!["proxies", "*", "password"],
+                ),
+                ProgramKind::Generic => unreachable!(),
+            };
+            change_fixture_source(
+                &coordinator,
+                &manager,
+                &id,
+                content,
+                SourceUpdateKind::UserEdit,
+            )
+            .await;
+            let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+            let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+            let profile = intent_profile(&manager.get(&id).await.unwrap().0).unwrap();
+            let catalog = camellia_nexus_core::configuration_intent_catalog(&profile).unwrap();
+            let node = catalog
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.pattern == pattern
+                        && node
+                            .type_selections
+                            .iter()
+                            .any(|selection| selection.value == protocol)
+                })
+                .unwrap();
+            let context = coordinator
+                .intent_context_with_lease(&manager, &id, Some(&node.node_id), &lease)
+                .await
+                .unwrap();
+            assert!(
+                !serde_json::to_string(&context)
+                    .unwrap()
+                    .contains("fixture-original")
+            );
+            let preview = IntentPreviewRequest {
+                expected_state_revision: before.state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                change: ConfigurationIntentAction::EditNode {
+                    node_id: node.node_id.clone(),
+                    reference_id: context.values[0].reference_id.clone(),
+                    value: SemanticValue::Present(Value::from("fixture-replacement")),
+                },
+            };
+            let plan = coordinator
+                .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+                .await
+                .unwrap();
+            assert!(plan.can_commit, "{:?}", plan.blockers);
+            assert!(!serde_json::to_string(&plan).unwrap().contains("fixture-"));
+            let request = ConfigurationIntentRequest {
+                operation_id: Uuid::new_v4().to_string(),
+                expected_state_revision: before.state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                plan_hash: plan.plan_hash,
+                capability_profile_hash: plan.capability_profile_hash,
+                change: preview.change,
+            };
+            coordinator.history_vault.fail_next_protection();
+            assert_eq!(
+                coordinator
+                    .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                    .await
+                    .unwrap_err()
+                    .message_key
+                    .as_deref(),
+                Some("INTENT_HISTORY_PROTECTION_FAILED")
+            );
+            assert_eq!(
+                store.load_configuration_state(&id).await.unwrap().unwrap(),
+                before
+            );
+            store.fail_next_configuration_write();
+            assert!(
+                coordinator
+                    .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                store.load_configuration_state(&id).await.unwrap().unwrap(),
+                before
+            );
+            let changed = coordinator
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .unwrap();
+            assert_eq!(changed.state.intent_history.len(), 1);
+            assert!(
+                !serde_json::to_string(&changed.state.intent_history)
+                    .unwrap()
+                    .contains("fixture-")
+            );
+            let repeated = coordinator
+                .update_intent_with_lease(&manager, &id, request, &lease)
+                .await
+                .unwrap();
+            assert_eq!(repeated.state, changed.state);
+            assert_eq!(repeated.operation_result, changed.operation_result);
+            assert_eq!(
+                repeated.editor_session.unwrap().working_content,
+                changed.editor_session.unwrap().working_content
+            );
+            drop(lease);
+            let mut reopened = ConfigurationCoordinator::new(store.clone());
+            reopened.history_vault = coordinator.history_vault.clone();
+            let lease = reopened.acquire_lease(&manager, &id).await.unwrap();
+            let current = store.load_configuration_state(&id).await.unwrap().unwrap();
+            let preview = IntentPreviewRequest {
+                expected_state_revision: current.state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                change: ConfigurationIntentAction::Undo {
+                    record_id: current.intent_history.records[0].record_id.clone(),
+                    choices: Default::default(),
+                },
+            };
+            let plan = reopened
+                .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+                .await
+                .unwrap();
+            assert!(plan.can_commit, "{:?}", plan.blockers);
+            assert!(!serde_json::to_string(&plan).unwrap().contains("fixture-"));
+            let undo = ConfigurationIntentRequest {
+                operation_id: Uuid::new_v4().to_string(),
+                expected_state_revision: current.state_revision,
+                editor_session_id: None,
+                expected_draft_revision: None,
+                plan_hash: plan.plan_hash,
+                capability_profile_hash: plan.capability_profile_hash,
+                change: preview.change,
+            };
+            let restored = reopened
+                .update_intent_with_lease(&manager, &id, undo, &lease)
+                .await
+                .unwrap();
+            let persisted = store.load_configuration_state(&id).await.unwrap().unwrap();
+            assert_eq!(
+                persisted.upstream_document().unwrap(),
+                before.upstream_document().unwrap()
+            );
+            assert_eq!(persisted.applied, before.applied);
+            assert_eq!(persisted.last_known_good, before.last_known_good);
+            assert!(restored.state.intent_history[0].can_redo);
+            assert!(matches!(
+                manager.get(&id).await.unwrap().1,
+                camellia_nexus_core::ProgramState::Stopped
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn protected_intent_history_is_atomic_reentrant_and_restorable_after_reload() {
+        use camellia_nexus_core::{
+            ConfigurationIntentAction, ConfigurationIntentRequest, IntentPreviewRequest,
+        };
+        let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+        coordinator
+            .load_editor_snapshot(&manager, &id, &lease)
+            .await
+            .unwrap();
+        let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let preview = IntentPreviewRequest {
+            expected_state_revision: before.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            change: coordinator
+                .intent_setting_change_with_lease(
+                    &manager,
+                    &id,
+                    "logging.level",
+                    Some(Value::from("debug")),
+                    &lease,
+                )
+                .await
+                .unwrap(),
+        };
+        let plan = coordinator
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        let request = ConfigurationIntentRequest {
+            operation_id: Uuid::new_v4().to_string(),
+            expected_state_revision: preview.expected_state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            plan_hash: plan.plan_hash,
+            capability_profile_hash: plan.capability_profile_hash,
+            change: preview.change,
+        };
+        coordinator.history_vault.fail_next_protection();
+        assert_eq!(
+            coordinator
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .unwrap_err()
+                .message_key
+                .as_deref(),
+            Some("INTENT_HISTORY_PROTECTION_FAILED")
+        );
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            before
+        );
+        let changed = coordinator
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        assert_eq!(changed.state.intent_history.len(), 1);
+        let repeated = coordinator
+            .update_intent_with_lease(&manager, &id, request, &lease)
+            .await
+            .unwrap();
+        assert_eq!(repeated.state, changed.state);
+        drop(lease);
+        let mut reopened = ConfigurationCoordinator::new(store.clone());
+        reopened.history_vault = coordinator.history_vault.clone();
+        let lease = reopened.acquire_lease(&manager, &id).await.unwrap();
+        let state = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let preview = IntentPreviewRequest {
+            expected_state_revision: state.state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            change: ConfigurationIntentAction::Undo {
+                record_id: state.intent_history.records[0].record_id.clone(),
+                choices: Default::default(),
+            },
+        };
+        let plan = reopened
+            .preview_intent_with_lease(&manager, &id, preview.clone(), &lease)
+            .await
+            .unwrap();
+        assert!(plan.can_commit);
+        let request = ConfigurationIntentRequest {
+            operation_id: Uuid::new_v4().to_string(),
+            expected_state_revision: preview.expected_state_revision,
+            editor_session_id: None,
+            expected_draft_revision: None,
+            plan_hash: plan.plan_hash,
+            capability_profile_hash: plan.capability_profile_hash,
+            change: preview.change,
+        };
+        store.fail_next_configuration_write();
+        assert!(
+            reopened
+                .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.load_configuration_state(&id).await.unwrap().unwrap(),
+            state
+        );
+        let restored = reopened
+            .update_intent_with_lease(&manager, &id, request.clone(), &lease)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&restored.state.desired.content).unwrap(),
+            serde_json::from_str::<Value>(&before.desired.content).unwrap()
+        );
+        assert_eq!(
+            restored.state.applied_revision,
+            before.view().applied_revision
+        );
+        assert_eq!(
+            restored.state.last_known_good_revision,
+            before.view().last_known_good_revision
+        );
+        assert!(restored.state.intent_history[0].can_redo);
+        let repeated = reopened
+            .update_intent_with_lease(&manager, &id, request, &lease)
+            .await
+            .unwrap();
+        assert_eq!(repeated.state, restored.state);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn changed_intent_plan_or_capability_binding_is_rejected_before_any_write() {
+        use camellia_nexus_core::{ConfigurationIntentRequest, IntentPreviewRequest};
+        let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
+        let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
+        coordinator
+            .load_editor_snapshot(&manager, &id, &lease)
+            .await
+            .unwrap();
+        let before = store.load_configuration_state(&id).await.unwrap().unwrap();
+        let change = coordinator
+            .intent_setting_change_with_lease(
+                &manager,
+                &id,
+                "logging.level",
+                Some(Value::from("debug")),
+                &lease,
+            )
+            .await
+            .unwrap();
+        let preview = coordinator
+            .preview_intent_with_lease(
+                &manager,
+                &id,
+                IntentPreviewRequest {
+                    expected_state_revision: before.state_revision,
+                    editor_session_id: before
+                        .editor_session
+                        .as_ref()
+                        .map(|draft| draft.session_id.clone()),
+                    expected_draft_revision: before
+                        .editor_session
+                        .as_ref()
+                        .map(|draft| draft.draft_revision),
+                    change: change.clone(),
+                },
+                &lease,
+            )
+            .await
+            .unwrap();
+        let request = ConfigurationIntentRequest {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            expected_state_revision: before.state_revision,
+            editor_session_id: before
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.session_id.clone()),
+            expected_draft_revision: before
+                .editor_session
+                .as_ref()
+                .map(|draft| draft.draft_revision),
+            plan_hash: preview.plan_hash.clone(),
+            capability_profile_hash: preview.capability_profile_hash.clone(),
+            change,
+        };
+        for changed in [
+            ConfigurationIntentRequest {
+                plan_hash: "0".repeat(64),
+                ..request.clone()
+            },
+            ConfigurationIntentRequest {
+                capability_profile_hash: "0".repeat(64),
+                ..request.clone()
+            },
+        ] {
+            let error = coordinator
+                .update_intent_with_lease(&manager, &id, changed, &lease)
+                .await
+                .unwrap_err();
+            assert_eq!(error.message_key.as_deref(), Some("INTENT_PLAN_STALE"));
+            assert_eq!(
+                store.load_configuration_state(&id).await.unwrap().unwrap(),
+                before
+            );
+        }
+        coordinator
+            .update_intent_with_lease(&manager, &id, request, &lease)
+            .await
+            .unwrap();
+        let after = store.load_configuration_state(&id).await.unwrap().unwrap();
+        assert_eq!(after.applied, before.applied);
+        assert_eq!(after.last_known_good, before.last_known_good);
     }
 
     #[cfg(unix)]
@@ -2450,26 +3777,63 @@ mod tests {
         ConfigurationCoordinator,
         ProgramId,
     ) {
+        workspace_fixture_for_program(driver, ProgramKind::Xray).await
+    }
+
+    #[cfg(unix)]
+    async fn workspace_fixture_for_program(
+        driver: Arc<dyn camellia_nexus_core::ProcessDriver>,
+        kind: ProgramKind,
+    ) -> (
+        tempfile::TempDir,
+        Arc<FileStore>,
+        Arc<ProgramManager>,
+        ConfigurationCoordinator,
+        ProgramId,
+    ) {
         use crate::NativeToolRunner;
         use camellia_nexus_core::CreateProgramRequest;
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempfile::tempdir().expect("fixture directory");
-        let binary = directory.path().join("xray");
+        let binary = directory.path().join(match kind {
+            ProgramKind::SingBox => "sing-box",
+            ProgramKind::Mihomo => "mihomo",
+            ProgramKind::Xray => "xray",
+            ProgramKind::Generic => unreachable!(),
+        });
         let baseline = camellia_nexus_core::embedded_core_knowledge()
             .unwrap()
-            .program(ProgramKind::Xray)
+            .program(kind)
             .unwrap()
             .releases
             .last()
             .unwrap();
+        let probe = match kind {
+            ProgramKind::SingBox => format!(
+                "sing-box version {}\nEnvironment: go1.26.0 linux/amd64\nTags: with_gvisor,with_quic",
+                baseline.version
+            ),
+            ProgramKind::Mihomo => format!(
+                "Mihomo Meta v{} linux amd64 with go1.26.0\nUse tags: with_gvisor",
+                baseline.version
+            ),
+            ProgramKind::Xray => format!("Xray {}", baseline.version),
+            ProgramKind::Generic => unreachable!(),
+        };
         std::fs::write(
             &binary,
             r#"#!/bin/sh
 case "$1" in
-version) printf 'probe\n' >> "${0%/*}/identity-probes"; echo 'Xray FIXTURE_VERSION' ;;
-help) echo 'run version -test -c -format -dump' ;;
-run)
+version|-v) printf 'probe\n' >> "${0%/*}/identity-probes"; echo 'FIXTURE_PROBE' ;;
+help|-h|--help) echo 'run version check -test -c -format -dump -d -f -t' ;;
+format) echo '-c --config -D --directory -w' ;;
+schema) exit 1 ;;
+run|check|-t)
+    if [ "$2" = '--help' ]; then
+        echo '-c --config -D --directory'
+        exit 0
+    fi
     if [ -f "${0%/*}/hold-validation" ]; then
         touch "${0%/*}/validation-entered"
         attempts=0
@@ -2487,7 +3851,7 @@ run)
     exit 0 ;;
 esac
 "#
-            .replace("FIXTURE_VERSION", &baseline.version),
+            .replace("FIXTURE_PROBE", &probe),
         )
         .expect("write validator fixture");
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
@@ -2503,12 +3867,34 @@ esac
             .initialize_without_auto_start()
             .await
             .expect("initialize stopped");
+        let content = match kind {
+            ProgramKind::SingBox => {
+                r#"{"log":{"level":"info"},"inbounds":[{"type":"tun","tag":"test-adapter","auto_redirect":false,"mtu":1500}]}"#
+            }
+            ProgramKind::Mihomo => {
+                "log-level: info\ntun:\n  enable: true\n  auto-redirect: false\n  mtu: 1500\n"
+            }
+            ProgramKind::Xray => r#"{"log":{"loglevel":"info"}}"#,
+            ProgramKind::Generic => unreachable!(),
+        };
         let mut program = spec(vec![ConfigSourceSpec::Inline {
             id: "source".into(),
             name: "Source".into(),
             enabled: true,
-            content: r#"{"log":{"loglevel":"info"}}"#.into(),
+            content: content.into(),
         }]);
+        program.program_type = match kind {
+            ProgramKind::SingBox => ProgramType::SingBox {
+                extra_args: Vec::new(),
+            },
+            ProgramKind::Mihomo => ProgramType::Mihomo {
+                extra_args: Vec::new(),
+            },
+            ProgramKind::Xray => ProgramType::Xray {
+                extra_args: Vec::new(),
+            },
+            ProgramKind::Generic => unreachable!(),
+        };
         program.executable = ExecutableSpec::External {
             path: binary,
             metadata: None,
@@ -2519,7 +3905,7 @@ esac
             .create(CreateProgramRequest {
                 spec: program,
                 package_source: None,
-                initial_config: Some(r#"{"log":{"loglevel":"info"}}"#.into()),
+                initial_config: Some(content.into()),
             })
             .await
             .expect("create stopped program");

@@ -5,12 +5,18 @@ use serde_json::{Map, Value, json};
 
 mod conflict_operations;
 mod intent;
+mod intent_catalog;
+mod intent_history;
 mod intent_objects;
+mod intent_plans;
 mod operations;
 mod upstream;
 pub use conflict_operations::*;
 pub use intent::*;
+pub use intent_catalog::*;
+pub use intent_history::*;
 pub use intent_objects::*;
+pub use intent_plans::*;
 pub use operations::*;
 pub use upstream::{SourceUpdateKind, UpstreamState};
 
@@ -3491,6 +3497,7 @@ pub struct ConfigurationState {
     pub base_provenance: Vec<ProvenanceEntry>,
     pub provenance: Vec<ProvenanceEntry>,
     pub guided_intent: GuidedIntent,
+    pub intent_history: IntentHistory,
     pub managed_intent: ManagedIntegrationIntent,
     pub upstream: UpstreamState,
     pub final_edit: FinalEditState,
@@ -3549,6 +3556,7 @@ impl ConfigurationState {
             provenance: base_provenance.clone(),
             base_provenance,
             guided_intent: GuidedIntent::default(),
+            intent_history: IntentHistory::default(),
             managed_intent: ManagedIntegrationIntent::default(),
             upstream,
             final_edit: FinalEditState::default(),
@@ -4159,6 +4167,7 @@ impl ConfigurationState {
                 .as_ref()
                 .map(|candidate| candidate.revision.clone()),
             guided_descriptors: guided_setting_descriptors(self.kind),
+            intent_history: self.intent_history.summaries(),
             intent_objects: Vec::new(),
             intent_object_descriptors: Vec::new(),
             intent_targets: Vec::new(),
@@ -5016,6 +5025,7 @@ pub struct ConfigurationStateView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_known_good_revision: Option<ConfigurationRevision>,
     pub guided_descriptors: Vec<GuidedSettingDescriptor>,
+    pub intent_history: Vec<IntentHistorySummary>,
     pub guided_projection: Vec<GuidedProjection>,
     #[serde(default)]
     pub intent_objects: Vec<IntentObjectProjection>,

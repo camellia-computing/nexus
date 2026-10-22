@@ -5,6 +5,7 @@ pub(super) fn compile_object(
     kind: IntentObjectKind,
     values: &BTreeMap<String, Value>,
     previous: Option<&Value>,
+    new_tag: &str,
 ) -> Result<(SemanticPath, Value)> {
     let program = profile.program;
     let descriptor = intent_object_catalog(program)
@@ -65,7 +66,7 @@ pub(super) fn compile_object(
         .and_then(|value| value.get("tag"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("nexus-{}", uuid::Uuid::new_v4().simple()));
+        .unwrap_or_else(|| new_tag.to_owned());
     let mut object = previous.cloned().unwrap_or_else(|| json!({"tag":tag}));
     let path;
     match kind {
@@ -347,11 +348,15 @@ pub(super) fn compile_object(
                             .or_else(|| {
                                 previous
                                     .and_then(|value| value.get("domain_resolver"))
-                                    .and_then(Value::as_str)
+                                    .and_then(dns_resolver_server)
                             })
                             .filter(|v| !v.is_empty())
                             .ok_or_else(|| invalid("INTENT_DNS_BOOTSTRAP_REQUIRED"))?;
-                        object["domain_resolver"] = json!(bootstrap);
+                        if object.get("domain_resolver").is_some_and(Value::is_object) {
+                            object["domain_resolver"]["server"] = json!(bootstrap);
+                        } else {
+                            object["domain_resolver"] = json!(bootstrap);
+                        }
                     }
                 }
                 if let Some(port) = values.get("serverPort") {

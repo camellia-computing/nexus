@@ -198,3 +198,24 @@ func TestRejectsAmbiguousOrInvalidInput(t *testing.T) {
 		}
 	}
 }
+
+func TestFunctionInputDeclarationsAndGroupTagsKeepTheirNativeScope(t *testing.T) {
+	result, err := extract([]sourceFile{{"config/input.go", "package config\ntype Input struct { Kind string `json:\"kind\"` }\nfunc Decode() { type Input struct { Proxies []string `group:\"proxies,omitempty\"`; Names []string `json:\"inboundTag\"` }; var x Input; _ = x }\nfunc Other() { type Input struct { Level string `yaml:\"level\"` }; var x Input; _ = x }"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Declarations) != 3 {
+		t.Fatalf("function input types missing: %+v", result.Declarations)
+	}
+	byID := map[string]declaration{}
+	for _, entry := range result.Declarations {
+		byID[entry.ID] = entry
+	}
+	input := byID["config#Decode.Input"]
+	if len(input.Fields) != 2 || input.Fields[0].Tags["group"] != "proxies,omitempty" || input.Fields[1].Tags["json"] != "inboundTag" || input.Fields[0].Source.Symbol != "Decode.Input.Proxies" {
+		t.Fatalf("native decoder scope or tags lost: %+v", input)
+	}
+	if byID["config#Input"].Fields[0].Name != "Kind" || byID["config#Other.Input"].Fields[0].Name != "Level" {
+		t.Fatalf("function-local inputs collided with another scope: %+v", byID)
+	}
+}

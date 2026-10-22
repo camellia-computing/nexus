@@ -15,6 +15,8 @@ mod config_update_schedule;
 mod config_updates;
 #[cfg(feature = "desktop")]
 mod configuration_state;
+#[cfg(feature = "desktop")]
+mod intent_history_vault;
 #[cfg(any(feature = "desktop", test))]
 mod license_session;
 #[cfg(feature = "desktop")]
@@ -523,6 +525,8 @@ pub fn run() {
             commands::get_configuration_workspace_preview,
             commands::get_configuration_workspace,
             commands::update_configuration_intent,
+            commands::get_configuration_intent_context,
+            commands::preview_configuration_intent,
             commands::preview_configuration_import,
             commands::update_final_configuration_draft,
             commands::rebase_final_configuration_draft,
@@ -712,9 +716,19 @@ mod tests {
         let script = format!(
             "#!/bin/sh\ncase \"$1\" in\nversion) echo 'sing-box version {version}' ;;\ncheck) if [ \"$2\" = '--help' ]; then echo '-c --config -D --directory'; fi ;;\nformat) echo '-w' ;;\nschema) exit 1 ;;\n*) exit 1 ;;\nesac\n"
         );
-        std::fs::write(path, script).expect("write admission fixture");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        let mut staged = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+        staged
+            .write_all(script.as_bytes())
+            .expect("write admission fixture");
+        staged
+            .as_file()
+            .sync_all()
+            .expect("flush admission fixture");
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o755))
             .expect("fixture permissions");
+        drop(staged.persist(path).expect("install admission fixture"));
     }
 
     #[tokio::test]
@@ -762,7 +776,11 @@ mod tests {
                 })
                 .await
                 .unwrap_err();
-            assert_eq!(error.code, ErrorCode::UnsupportedBinary);
+            assert_eq!(
+                error.code,
+                ErrorCode::UnsupportedBinary,
+                "{version}: {error:?}"
+            );
             assert_eq!(error.message_key.as_deref(), Some(key));
             assert!(manager.list().await.is_empty());
             assert!(!directory.path().join("store").join(id.as_str()).exists());

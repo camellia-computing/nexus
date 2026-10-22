@@ -1,6 +1,7 @@
+use super::intent_catalog::BoundedArcCache;
 use super::*;
 use crate::CoreCapabilityProfile;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 mod catalog;
 mod compiler;
 mod rules;
@@ -8,7 +9,7 @@ pub use catalog::intent_object_catalog;
 use compiler::compile_object;
 use rules::*;
 
-static OBJECT_DESCRIPTORS: OnceLock<Mutex<BTreeMap<String, Vec<IntentObjectDescriptor>>>> =
+static OBJECT_DESCRIPTORS: OnceLock<Mutex<BoundedArcCache<String, Vec<IntentObjectDescriptor>>>> =
     OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -119,6 +120,8 @@ struct ObjectLocation {
     owner: Option<String>,
 }
 
+type IntentRemovalPreview = (Vec<IntentReferenceChoice>, BTreeMap<SemanticPath, Value>);
+
 impl ObjectLocation {
     fn id(&self) -> String {
         self.owner.clone().unwrap_or_else(|| {
@@ -129,6 +132,27 @@ impl ObjectLocation {
                 id
             }
         })
+    }
+
+    fn has_native_upstream_anchor(&self, program: ProgramKind, upstream: &Value) -> bool {
+        if !self
+            .path
+            .iter()
+            .any(|part| matches!(part, SemanticPathSegment::Identity { .. }))
+        {
+            return true;
+        }
+        let Ok(SemanticValue::Present(Value::Object(fields))) =
+            semantic_value_at(upstream, &self.path)
+        else {
+            return false;
+        };
+        let discriminator = if program == ProgramKind::SingBox {
+            "type"
+        } else {
+            "protocol"
+        };
+        fields.get(discriminator) == self.value.get(discriminator)
     }
 }
 
@@ -290,7 +314,11 @@ pub fn intent_targets(kind: ProgramKind, document: &Value) -> Vec<IntentTarget> 
             .into_iter()
             .flatten()
         {
-            if let Some(id) = item.get(*key).and_then(Value::as_str) {
+            if let Some(id) = item
+                .get(*key)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
                 targets.push(IntentTarget {
                     id: id.into(),
                     label: id.into(),
@@ -451,7 +479,7 @@ fn object_values(kind: ProgramKind, object: &ObjectLocation) -> BTreeMap<String,
                 )),
             );
         }
-        if let Some(bootstrap) = value.get("domain_resolver").and_then(Value::as_str) {
+        if let Some(bootstrap) = value.get("domain_resolver").and_then(dns_resolver_server) {
             fields.insert("bootstrap".into(), json!(bootstrap));
         }
     } else if object.kind == IntentObjectKind::Tun {
@@ -488,8 +516,31 @@ pub fn project_intent_objects(
     view: &mut ConfigurationStateView,
 ) -> Result<()> {
     let document = parse_semantic_document(state.format, state.desired.content.as_bytes())?;
-    view.intent_targets = intent_targets(state.kind, &document);
-    let objects = state_locations(state, &document);
+    let objects = intent_object_context_data(profile, state, &document)?;
+    view.intent_targets = objects.intent_targets;
+    view.intent_objects = objects.intent_objects;
+    view.intent_object_descriptors = objects.intent_object_descriptors;
+    Ok(())
+}
+
+pub(super) struct IntentObjectContextData {
+    pub intent_targets: Vec<IntentTarget>,
+    pub intent_objects: Vec<IntentObjectProjection>,
+    pub intent_object_descriptors: Vec<IntentObjectDescriptor>,
+}
+
+pub(super) fn intent_object_context_data(
+    profile: &CoreCapabilityProfile,
+    state: &ConfigurationState,
+    document: &Value,
+) -> Result<IntentObjectContextData> {
+    let mut view = IntentObjectContextData {
+        intent_targets: intent_targets(state.kind, document),
+        intent_objects: Vec::new(),
+        intent_object_descriptors: Vec::new(),
+    };
+    let objects = state_locations(state, document);
+    let upstream = state.upstream_document()?;
     let mut identities = BTreeMap::new();
     for object in &objects {
         *identities.entry(object.id()).or_insert(0) += 1;
@@ -528,7 +579,9 @@ pub fn project_intent_objects(
                     .path_edits
                     .keys()
                     .any(|key| key.starts_with(&id)),
-                editable: identities[&id] == 1 && !object_values(state.kind, &object).is_empty(),
+                editable: identities[&id] == 1
+                    && object.has_native_upstream_anchor(state.kind, &upstream)
+                    && !object_values(state.kind, &object).is_empty(),
                 removed: false,
             }
         })
@@ -558,7 +611,7 @@ pub fn project_intent_objects(
                 .keys()
                 .any(|key| key.starts_with(&id))
             && (deleted_list
-                || semantic_value_at(&document, &object.path).ok() == Some(SemanticValue::Missing))
+                || semantic_value_at(document, &object.path).ok() == Some(SemanticValue::Missing))
         {
             seen.insert(id.clone());
             view.intent_objects.push(IntentObjectProjection {
@@ -578,15 +631,14 @@ pub fn project_intent_objects(
             });
         }
     }
-    let cache = OBJECT_DESCRIPTORS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let cache = OBJECT_DESCRIPTORS.get_or_init(|| Mutex::new(BoundedArcCache::new(16)));
     let cached = cache
         .lock()
         .map_err(|_| invalid("INTENT_SETTING_UNAVAILABLE"))?
-        .get(&profile.profile_hash)
-        .cloned();
+        .get(&profile.profile_hash);
     if let Some(descriptors) = cached {
-        view.intent_object_descriptors = descriptors;
-        return Ok(());
+        view.intent_object_descriptors = descriptors.as_ref().clone();
+        return Ok(view);
     }
     let mut descriptors = intent_object_catalog(state.kind);
     for descriptor in &mut descriptors {
@@ -611,7 +663,14 @@ pub fn project_intent_objects(
                     ),
                 ])
             };
-            compile_object(profile, descriptor.kind, &values, None).is_ok()
+            compile_object(
+                profile,
+                descriptor.kind,
+                &values,
+                None,
+                "nexus-intent-probe",
+            )
+            .is_ok()
         });
         descriptor.can_create = if matches!(
             descriptor.kind,
@@ -622,6 +681,7 @@ pub fn project_intent_objects(
                 descriptor.kind,
                 &object_probe_values(descriptor.kind, &descriptor.protocols),
                 None,
+                "nexus-intent-probe",
             )
             .is_ok()
         } else {
@@ -683,7 +743,8 @@ pub fn project_intent_objects(
                         probe.insert("username".into(), json!("intent-probe"));
                         probe.insert("password".into(), json!("intent-probe-password"));
                     }
-                    compile_object(profile, descriptor.kind, &probe, None).is_ok()
+                    compile_object(profile, descriptor.kind, &probe, None, "nexus-intent-probe")
+                        .is_ok()
                 })
                 .collect::<Vec<_>>();
             if field.control == GuidedControl::Select {
@@ -698,13 +759,10 @@ pub fn project_intent_objects(
         let mut cache = cache
             .lock()
             .map_err(|_| invalid("INTENT_SETTING_UNAVAILABLE"))?;
-        if cache.len() >= 64 {
-            cache.clear();
-        }
-        cache.insert(profile.profile_hash.clone(), descriptors.clone());
+        cache.insert(profile.profile_hash.clone(), Arc::new(descriptors.clone()));
     }
     view.intent_object_descriptors = descriptors;
-    Ok(())
+    Ok(view)
 }
 
 fn object_probe_values(kind: IntentObjectKind, protocols: &[String]) -> BTreeMap<String, Value> {
@@ -751,10 +809,136 @@ fn value_at_native_path<'a>(value: &'a Value, path: &[String]) -> Option<&'a Val
 }
 
 impl ConfigurationState {
+    pub(super) fn intent_removal_choices(
+        &self,
+        profile: &CoreCapabilityProfile,
+        object_id: &str,
+        expected_hash: &str,
+        selections: &BTreeMap<String, String>,
+    ) -> Result<IntentRemovalPreview> {
+        if selections.len() > 1024 {
+            return Err(invalid("INTENT_INPUT_TOO_LARGE"));
+        }
+        let document = parse_semantic_document(self.format, self.desired.content.as_bytes())?;
+        let objects = state_locations(self, &document);
+        let mut matching = objects.iter().filter(|object| object.id() == object_id);
+        let object = matching
+            .next()
+            .ok_or_else(|| invalid("INTENT_OBJECT_MISSING"))?;
+        if matching.next().is_some() || semantic_document_hash(&object.value) != expected_hash {
+            return Err(invalid("INTENT_OBJECT_STALE"));
+        }
+        if !object.has_native_upstream_anchor(self.kind, &self.upstream_document()?) {
+            return Err(invalid("INTENT_NATIVE_SHAPE_REQUIRES_EDITOR"));
+        }
+        let catalog = configuration_intent_catalog(profile)?;
+        let replacements =
+            intent_catalog::native_removal_replacements(profile, self, &object.path)?;
+        let known_choices = replacements
+            .iter()
+            .map(|replacement| &replacement.choice_id)
+            .collect::<BTreeSet<_>>();
+        if selections.keys().any(|id| !known_choices.contains(id)) {
+            return Err(invalid("INTENT_REFERENCE_CHOICE_STALE"));
+        }
+        let mut choices = Vec::with_capacity(replacements.len());
+        let mut edits = BTreeMap::new();
+        for replacement in replacements {
+            let (path, relative) =
+                intent_catalog::native_edit_anchor(profile, self, &replacement.path)?;
+            if intent_catalog::contains_protected_value(&json!(replacement.current_target))
+                || path.iter().any(|part| matches!(part, SemanticPathSegment::Identity { value, .. } if intent_catalog::contains_protected_value(&json!(value)))) {
+                return Err(invalid("INTENT_NATIVE_SHAPE_REQUIRES_EDITOR"));
+            }
+            let targets = replacement
+                .targets
+                .iter()
+                .filter(|name| !intent_catalog::contains_protected_value(&json!(name)))
+                .map(|name| IntentTarget {
+                    id: name.clone(),
+                    label: name.clone(),
+                    kind: "reference".into(),
+                })
+                .collect::<Vec<_>>();
+            let selected = selections.get(&replacement.choice_id);
+            if let Some(selected) = selected {
+                if !targets.iter().any(|target| &target.id == selected) {
+                    return Err(invalid("INTENT_REFERENCE_CHOICE_STALE"));
+                }
+                let updated = replacement.with_target(selected)?;
+                if relative.is_empty() {
+                    edits.insert(path.clone(), updated);
+                } else {
+                    if !edits.contains_key(&path) {
+                        let SemanticValue::Present(value) = semantic_value_at(&document, &path)
+                            .map_err(|_| invalid("INTENT_OBJECT_STALE"))?
+                        else {
+                            return Err(invalid("INTENT_OBJECT_STALE"));
+                        };
+                        edits.insert(path.clone(), value);
+                    }
+                    let mut value = edits
+                        .get_mut(&path)
+                        .expect("Native edit anchor was inserted");
+                    for key in &relative {
+                        value = match value {
+                            Value::Array(items) => key
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|index| items.get_mut(index)),
+                            Value::Object(fields) => fields.get_mut(key),
+                            _ => None,
+                        }
+                        .ok_or_else(|| invalid("INTENT_OBJECT_STALE"))?;
+                    }
+                    *value = updated;
+                }
+            }
+            choices.push(IntentReferenceChoice {
+                choice_id: replacement.choice_id,
+                label: catalog
+                    .nodes
+                    .iter()
+                    .find(|node| {
+                        node.pattern.len() == replacement.path.len()
+                            && node
+                                .pattern
+                                .iter()
+                                .zip(&replacement.path)
+                                .all(|(expected, actual)| expected == "*" || expected == actual)
+                    })
+                    .and_then(|node| {
+                        guided_setting_descriptors(self.kind)
+                            .into_iter()
+                            .find(|setting| node.setting_id.as_ref() == Some(&setting.id))
+                            .map(|setting| setting.label)
+                    })
+                    .unwrap_or_else(|| replacement.path.last().cloned().unwrap_or_default()),
+                semantic_path: if relative.is_empty() {
+                    display_semantic_path(&path)
+                } else {
+                    format!(
+                        "{}/{}",
+                        display_semantic_path(&path),
+                        relative
+                            .iter()
+                            .map(|key| key.replace('~', "~0").replace('/', "~1"))
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    )
+                },
+                current_target: replacement.current_target,
+                targets,
+                selected_target: selected.cloned(),
+            });
+        }
+        Ok((choices, edits))
+    }
+
     pub(super) fn update_intent_object(
         &mut self,
         profile: &CoreCapabilityProfile,
-        change: &ConfigurationIntentAction,
+        change: &IntentCompiledEdit,
     ) -> Result<()> {
         let upstream = self.upstream_document()?;
         let document = parse_semantic_document(self.format, self.desired.content.as_bytes())?;
@@ -777,11 +961,12 @@ impl ConfigurationState {
             Ok(object)
         };
         match change {
-            ConfigurationIntentAction::CreateObject {
+            IntentCompiledEdit::CreateObject {
                 object_kind,
                 values,
             } => {
-                let (path, mut value) = compile_object(profile, *object_kind, values, None)?;
+                let tag = next_object_tag(&document, *object_kind);
+                let (path, mut value) = compile_object(profile, *object_kind, values, None, &tag)?;
                 validate_object_references(self.kind, *object_kind, &document, &value)?;
                 if *object_kind == IntentObjectKind::RouteRule && semantic_value_at(&document, &path).ok().is_some_and(|value| matches!(value, SemanticValue::Present(Value::Array(items)) if items.iter().any(|rule| route_is_catchall(self.kind, rule)))) {
                     return Err(invalid("INTENT_RULE_SHADOWED"));
@@ -853,14 +1038,17 @@ impl ConfigurationState {
                     )?;
                 }
             }
-            ConfigurationIntentAction::UpdateObject {
+            IntentCompiledEdit::UpdateObject {
                 object_id: id,
                 expected_hash,
                 values,
             } => {
                 let object = locate(id, expected_hash)?;
+                if !object.has_native_upstream_anchor(self.kind, &upstream) {
+                    return Err(invalid("INTENT_NATIVE_SHAPE_REQUIRES_EDITOR"));
+                }
                 let (path, mut value) =
-                    compile_object(profile, object.kind, values, Some(&object.value))?;
+                    compile_object(profile, object.kind, values, Some(&object.value), "")?;
                 if self.kind == ProgramKind::Mihomo && object.kind == IntentObjectKind::Listener {
                     preserve_shared_authentication(&document, &mut value);
                 }
@@ -897,7 +1085,7 @@ impl ConfigurationState {
                         touched.extend(relative);
                         self.record_object_field(id, touched, replacement)?;
                     }
-                    for relative in touched_native_fields(self.kind, object.kind, values) {
+                    for relative in touched_native_fields(self.kind, object.kind, values, &value) {
                         let mut touched = path.clone();
                         touched.extend(relative.clone());
                         let replacement = semantic_value_at(&value, &relative)
@@ -910,13 +1098,54 @@ impl ConfigurationState {
                     }
                 }
             }
-            ConfigurationIntentAction::RemoveObject {
+            IntentCompiledEdit::RemoveObject {
                 object_id: id,
                 expected_hash,
+                replacements,
             } => {
                 let object = locate(id, expected_hash)?;
-                if object_referenced(&document, &object.value) {
+                if !object.has_native_upstream_anchor(self.kind, &upstream) {
+                    return Err(invalid("INTENT_NATIVE_SHAPE_REQUIRES_EDITOR"));
+                }
+                let (choices, linked_edits) =
+                    self.intent_removal_choices(profile, id, expected_hash, replacements)?;
+                if choices.iter().any(|choice| choice.targets.is_empty()) {
                     return Err(invalid("INTENT_TARGET_IN_USE"));
+                }
+                if choices
+                    .iter()
+                    .any(|choice| choice.selected_target.is_none())
+                {
+                    return Err(invalid("INTENT_REFERENCE_CHOICE_REQUIRED"));
+                }
+                let mut checked = document.clone();
+                for (path, value) in &linked_edits {
+                    set_semantic_path_creating_anchors(&mut checked, path, value.clone())
+                        .map_err(|_| invalid("INTENT_OBJECT_STALE"))?;
+                }
+                if !object.list {
+                    delete_semantic_path(&mut checked, &object.path)
+                        .map_err(|_| invalid("INTENT_OBJECT_STALE"))?;
+                    if self.kind == ProgramKind::SingBox
+                        && object.kind == IntentObjectKind::DnsServer
+                    {
+                        validate_dns_resolver_graph(&checked, None)?;
+                    }
+                    let previous_issues = profile.assess(&document)?.issues;
+                    for issue in profile.assess(&checked)?.issues {
+                        if issue.code.starts_with("CONFIGURATION_REFERENCE_")
+                            && !previous_issues.iter().any(|previous| {
+                                previous.rule_id == issue.rule_id
+                                    && previous.path == issue.path
+                                    && previous.code == issue.code
+                            })
+                        {
+                            return Err(invalid(&issue.code));
+                        }
+                    }
+                }
+                for (path, value) in linked_edits {
+                    self.record_object_field(id, path, SemanticValue::Present(value))?;
                 }
                 if object.list {
                     self.record_list_edit(object, None)?;
@@ -924,7 +1153,7 @@ impl ConfigurationState {
                     self.record_object_field(id, object.path.clone(), SemanticValue::Missing)?;
                 }
             }
-            ConfigurationIntentAction::FollowObject {
+            IntentCompiledEdit::FollowObject {
                 object_id: id,
                 expected_hash,
             } => {
@@ -1013,6 +1242,31 @@ impl ConfigurationState {
     }
 }
 
+fn next_object_tag(document: &Value, kind: IntentObjectKind) -> String {
+    let prefix = match kind {
+        IntentObjectKind::Listener => "nexus-listener-",
+        IntentObjectKind::DnsServer => "nexus-dns-",
+        IntentObjectKind::Tun => "nexus-tun-",
+        IntentObjectKind::RouteRule => "nexus-rule-",
+    };
+    let mut used = BTreeSet::new();
+    let mut pending = vec![document];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::String(value) if value.starts_with(prefix) => {
+                used.insert(value.as_str());
+            }
+            Value::Object(object) => pending.extend(object.values()),
+            Value::Array(items) => pending.extend(items),
+            _ => {}
+        }
+    }
+    (1..=used.len() + 1)
+        .map(|index| format!("{prefix}{index}"))
+        .find(|tag| !used.contains(tag.as_str()))
+        .expect("one more candidate than occupied identities")
+}
+
 fn listener_port_key(protocol: &str) -> &'static str {
     match protocol {
         "mixed" => "mixed-port",
@@ -1071,6 +1325,7 @@ fn touched_native_fields(
     program: ProgramKind,
     kind: IntentObjectKind,
     values: &BTreeMap<String, Value>,
+    object: &Value,
 ) -> Vec<SemanticPath> {
     let mut paths = Vec::new();
     for key in values.keys().map(String::as_str) {
@@ -1094,7 +1349,11 @@ fn touched_native_fields(
             }
             (IntentObjectKind::DnsServer, "serverPort", ProgramKind::Xray) => &[&["port"]],
             (IntentObjectKind::DnsServer, "bootstrap", ProgramKind::SingBox) => {
-                &[&["domain_resolver"]]
+                if object.get("domain_resolver").is_some_and(Value::is_object) {
+                    &[&["domain_resolver", "server"]]
+                } else {
+                    &[&["domain_resolver"]]
+                }
             }
             (IntentObjectKind::DnsServer, "timeout", ProgramKind::Xray) => &[&["timeoutMs"]],
             (IntentObjectKind::Tun, "address", _) => &[&["address"]],
@@ -1126,7 +1385,7 @@ fn validate_object_references(
     }
     if program == ProgramKind::SingBox
         && kind == IntentObjectKind::DnsServer
-        && let Some(reference) = value.get("domain_resolver").and_then(Value::as_str)
+        && let Some(reference) = value.get("domain_resolver").and_then(dns_resolver_server)
     {
         let targets = intent_targets(program, document);
         if value.get("tag").and_then(Value::as_str) == Some(reference)
@@ -1136,54 +1395,49 @@ fn validate_object_references(
         {
             return Err(invalid("INTENT_TARGET_MISSING"));
         }
-        let tag = value.get("tag").and_then(Value::as_str).unwrap_or_default();
-        let mut next = Some(reference);
-        let mut seen = BTreeSet::new();
-        while let Some(reference) = next {
-            if reference == tag || !seen.insert(reference) {
-                return Err(invalid("INTENT_DNS_CYCLE"));
-            }
-            next = document
-                .pointer("/dns/servers")
-                .and_then(Value::as_array)
-                .and_then(|items| {
-                    items
-                        .iter()
-                        .find(|item| item.get("tag").and_then(Value::as_str) == Some(reference))
-                })
-                .and_then(|item| item.get("domain_resolver"))
-                .and_then(Value::as_str);
-        }
+        validate_dns_resolver_graph(document, Some(value))?;
     }
     Ok(())
 }
 
-fn object_referenced(document: &Value, object: &Value) -> bool {
-    let Some(tag) = object.get("tag").and_then(Value::as_str) else {
-        return false;
-    };
-    fn referenced(value: &Value, tag: &str) -> bool {
-        match value {
-            Value::Object(fields) => fields.iter().any(|(key, value)| {
-                matches!(
-                    key.as_str(),
-                    "final"
-                        | "server"
-                        | "domain_resolver"
-                        | "detour"
-                        | "outbound"
-                        | "outboundTag"
-                        | "inbound"
-                        | "inboundTag"
-                ) && (value.as_str() == Some(tag)
-                    || value
-                        .as_array()
-                        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(tag))))
-                    || referenced(value, tag)
-            }),
-            Value::Array(items) => items.iter().any(|item| referenced(item, tag)),
-            _ => false,
+fn validate_dns_resolver_graph(document: &Value, replacement: Option<&Value>) -> Result<()> {
+    let servers = document
+        .pointer("/dns/servers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(replacement)
+        .filter_map(|server| {
+            Some((
+                server.get("tag")?.as_str()?,
+                server.get("domain_resolver").and_then(dns_resolver_server),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut complete = BTreeSet::new();
+    for tag in servers.keys() {
+        let mut next = Some(*tag);
+        let mut seen = BTreeSet::new();
+        while let Some(reference) = next {
+            if complete.contains(reference) {
+                break;
+            }
+            if !seen.insert(reference) {
+                return Err(invalid("INTENT_DNS_CYCLE"));
+            }
+            next = *servers
+                .get(reference)
+                .ok_or_else(|| invalid("INTENT_TARGET_MISSING"))?;
         }
+        complete.extend(seen);
     }
-    referenced(document, tag)
+    Ok(())
+}
+
+fn dns_resolver_server(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(server) => Some(server),
+        Value::Object(options) => options.get("server").and_then(Value::as_str),
+        _ => None,
+    }
 }

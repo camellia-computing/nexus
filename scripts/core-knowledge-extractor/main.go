@@ -274,6 +274,23 @@ func extractModule(files []sourceFile, modulePath string) (inventory, error) {
 						return result, err
 					}
 					result.Functions = append(result.Functions, function{packagePath + "#" + symbol, fmt.Sprintf("%x", sha256.Sum256([]byte(body))), buildConstraint, sourceRef{source.Path, set.Position(fn.Pos()).Line, symbol}, imports})
+					var declarationErr error
+					ast.Inspect(fn.Body, func(node ast.Node) bool {
+						spec, ok := node.(*ast.TypeSpec)
+						if !ok || declarationErr != nil {
+							return declarationErr == nil
+						}
+						entry, err := extractDeclaration(set, source.Path, packagePath, symbol+".", buildConstraint, imports, spec)
+						if err != nil {
+							declarationErr = err
+							return false
+						}
+						result.Declarations = append(result.Declarations, entry)
+						return false
+					})
+					if declarationErr != nil {
+						return result, declarationErr
+					}
 				}
 				continue
 			}
@@ -304,58 +321,9 @@ func extractModule(files []sourceFile, modulePath string) (inventory, error) {
 			}
 			for _, spec := range group.Specs {
 				typeSpec := spec.(*ast.TypeSpec)
-				typeName, err := expression(set, typeSpec.Type)
+				entry, err := extractDeclaration(set, source.Path, packagePath, "", buildConstraint, imports, typeSpec)
 				if err != nil {
 					return result, err
-				}
-				entry := declaration{ID: packagePath + "#" + typeSpec.Name.Name, Name: typeSpec.Name.Name, Package: packagePath, Type: typeName, Shape: describeType(typeSpec.Type, packagePath, imports), Alias: typeSpec.Assign.IsValid(), BuildConstraint: buildConstraint, Imports: imports, Fields: []field{}, Methods: []string{}, Source: sourceRef{source.Path, set.Position(typeSpec.Pos()).Line, typeSpec.Name.Name}}
-				entry.Imports = map[string]string{}
-				ast.Inspect(typeSpec.Type, func(node ast.Node) bool {
-					if selector, ok := node.(*ast.SelectorExpr); ok {
-						if name, ok := selector.X.(*ast.Ident); ok {
-							if imported, ok := imports[name.Name]; ok {
-								entry.Imports[name.Name] = imported
-							}
-						}
-					}
-					return true
-				})
-				if structure, ok := typeSpec.Type.(*ast.StructType); ok {
-					entry.Type = "struct"
-					for _, item := range structure.Fields.List {
-						fieldType, err := expression(set, item.Type)
-						if err != nil {
-							return result, err
-						}
-						tags := map[string]string{}
-						annotations := map[string]string{}
-						if item.Tag != nil {
-							value, err := strconv.Unquote(item.Tag.Value)
-							if err != nil {
-								return result, fmt.Errorf("invalid Go struct tag: %s", source.Path)
-							}
-							for _, encoding := range []string{"json", "yaml", "proxy", "mapstructure"} {
-								if value, ok := reflect.StructTag(value).Lookup(encoding); ok {
-									tags[encoding] = value
-								}
-							}
-							for _, annotation := range []string{"enum", "minimum", "maximum", "default", "required", "reference", "format", "schema"} {
-								if value, ok := reflect.StructTag(value).Lookup(annotation); ok {
-									annotations[annotation] = value
-								}
-							}
-						}
-						names := []string{}
-						for _, name := range item.Names {
-							names = append(names, name.Name)
-						}
-						if len(names) == 0 {
-							names = append(names, fieldType)
-						}
-						for _, name := range names {
-							entry.Fields = append(entry.Fields, field{Name: name, Type: fieldType, Shape: describeType(item.Type, packagePath, imports), Embedded: len(item.Names) == 0, Tags: tags, Annotations: annotations, Source: sourceRef{source.Path, set.Position(item.Pos()).Line, entry.Name + "." + name}})
-						}
-					}
 				}
 				result.Declarations = append(result.Declarations, entry)
 			}
@@ -396,6 +364,62 @@ func extractModule(files []sourceFile, modulePath string) (inventory, error) {
 	}
 	result.ReportedBuildTags = reports
 	return result, nil
+}
+
+func extractDeclaration(set *token.FileSet, path, packagePath, scope, buildConstraint string, imports map[string]string, typeSpec *ast.TypeSpec) (declaration, error) {
+	typeName, err := expression(set, typeSpec.Type)
+	if err != nil {
+		return declaration{}, err
+	}
+	name := scope + typeSpec.Name.Name
+	entry := declaration{ID: packagePath + "#" + name, Name: name, Package: packagePath, Type: typeName, Shape: describeType(typeSpec.Type, packagePath, imports), Alias: typeSpec.Assign.IsValid(), BuildConstraint: buildConstraint, Imports: map[string]string{}, Fields: []field{}, Methods: []string{}, Source: sourceRef{path, set.Position(typeSpec.Pos()).Line, name}}
+	ast.Inspect(typeSpec.Type, func(node ast.Node) bool {
+		if selector, ok := node.(*ast.SelectorExpr); ok {
+			if name, ok := selector.X.(*ast.Ident); ok {
+				if imported, ok := imports[name.Name]; ok {
+					entry.Imports[name.Name] = imported
+				}
+			}
+		}
+		return true
+	})
+	if structure, ok := typeSpec.Type.(*ast.StructType); ok {
+		entry.Type = "struct"
+		for _, item := range structure.Fields.List {
+			fieldType, err := expression(set, item.Type)
+			if err != nil {
+				return declaration{}, err
+			}
+			tags, annotations := map[string]string{}, map[string]string{}
+			if item.Tag != nil {
+				value, err := strconv.Unquote(item.Tag.Value)
+				if err != nil {
+					return declaration{}, fmt.Errorf("invalid Go struct tag: %s", path)
+				}
+				for _, encoding := range []string{"json", "yaml", "proxy", "group", "mapstructure"} {
+					if value, ok := reflect.StructTag(value).Lookup(encoding); ok {
+						tags[encoding] = value
+					}
+				}
+				for _, annotation := range []string{"enum", "minimum", "maximum", "default", "required", "reference", "format", "schema"} {
+					if value, ok := reflect.StructTag(value).Lookup(annotation); ok {
+						annotations[annotation] = value
+					}
+				}
+			}
+			names := []string{}
+			for _, name := range item.Names {
+				names = append(names, name.Name)
+			}
+			if len(names) == 0 {
+				names = append(names, fieldType)
+			}
+			for _, name := range names {
+				entry.Fields = append(entry.Fields, field{Name: name, Type: fieldType, Shape: describeType(item.Type, packagePath, imports), Embedded: len(item.Names) == 0, Tags: tags, Annotations: annotations, Source: sourceRef{path, set.Position(item.Pos()).Line, entry.Name + "." + name}})
+			}
+		}
+	}
+	return entry, nil
 }
 
 func run(input io.Reader, output io.Writer) error {

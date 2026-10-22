@@ -8,7 +8,7 @@ pub enum SourceUpdateKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "surface", content = "settingId", rename_all = "camelCase")]
-enum UpstreamOwner {
+pub(super) enum UpstreamOwner {
     Sources,
     Intent(String),
     Details(String),
@@ -16,9 +16,9 @@ enum UpstreamOwner {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UpstreamPathWrite {
-    owner: UpstreamOwner,
-    path: SemanticPath,
+pub(super) struct UpstreamPathWrite {
+    pub(super) owner: UpstreamOwner,
+    pub(super) path: SemanticPath,
     value: SemanticValue,
     sequence: u64,
     #[serde(default)]
@@ -321,9 +321,76 @@ impl UpstreamState {
         }
         Ok(document)
     }
+
+    pub(super) fn intent_writes(&self, id: &str) -> Vec<UpstreamPathWrite> {
+        let owner = UpstreamOwner::Intent(id.into());
+        self.writes
+            .iter()
+            .filter(|write| write.owner == owner)
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn changed_intent_owners(&self, other: &Self) -> BTreeSet<String> {
+        self.writes
+            .iter()
+            .chain(&other.writes)
+            .filter_map(|write| match &write.owner {
+                UpstreamOwner::Intent(id) if self.intent_writes(id) != other.intent_writes(id) => {
+                    Some(id.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(super) fn intent_writes_match(&self, id: &str, expected: &[UpstreamPathWrite]) -> bool {
+        let mut actual = self.intent_writes(id);
+        let mut expected = expected.to_vec();
+        for write in actual.iter_mut().chain(&mut expected) {
+            write.sequence = 0;
+        }
+        actual == expected
+    }
+
+    pub(super) fn restore_intent_owner(
+        &mut self,
+        id: &str,
+        writes: &[UpstreamPathWrite],
+        scalar: Option<&Value>,
+        edit: Option<&IntentPathEdit>,
+        reclaim: bool,
+    ) {
+        let owner = UpstreamOwner::Intent(id.into());
+        self.writes.retain(|write| write.owner != owner);
+        for write in writes {
+            let mut write = write.clone();
+            if reclaim {
+                self.sequence = self.sequence.saturating_add(1);
+                write.sequence = self.sequence;
+            }
+            self.writes.push(write);
+        }
+        match scalar {
+            Some(value) => {
+                self.intent.values.insert(id.into(), value.clone());
+            }
+            None => {
+                self.intent.values.remove(id);
+            }
+        }
+        match edit {
+            Some(edit) => {
+                self.intent.path_edits.insert(id.into(), edit.clone());
+            }
+            None => {
+                self.intent.path_edits.remove(id);
+            }
+        }
+    }
 }
 
-fn value_at(root: &Value, path: &[SemanticPathSegment]) -> Result<SemanticValue> {
+pub(super) fn value_at(root: &Value, path: &[SemanticPathSegment]) -> Result<SemanticValue> {
     semantic_value_at(root, path)
         .map_err(|conflict| CamelliaNexusError::new(ErrorCode::ConfigConflict, conflict.reason))
 }

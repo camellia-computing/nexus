@@ -6,6 +6,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { installPreviewInvokeTransport } from '../api';
 import { canUseProgramLifecycleAction, deriveLicenseAccess } from '../licenseAccess';
 import { semanticPathSegments } from '../editor/configurationMarkerModel';
+import nativeIntentSettings from './intentSettings.json';
 import type {
   AppSettings,
   ConfigSource,
@@ -51,6 +52,316 @@ import type {
 } from '../types';
 
 const nowSeconds = Math.floor(Date.now() / 1_000);
+
+type PreviewIntentEdit = import('../types').ConfigurationIntentAction
+  | { action: 'set'; settingId: string; value: unknown }
+  | { action: 'follow'; settingId: string }
+  | { action: 'createObject'; objectKind: import('../types').IntentObjectKind; values: Record<string, unknown> }
+  | { action: 'updateObject'; objectId: string; expectedHash: string; values: Record<string, unknown> }
+  | { action: 'removeObject' | 'followObject'; objectId: string; expectedHash: string };
+
+function previewIntentNodes(state: ConfigurationStateView): import('../types').IntentNode[] {
+  return previewIntentCatalog(state).nodes;
+}
+type NativeIntentFixtures = Record<string, { nodes: import('../types').IntentNode[]; relations: import('../types').IntentContext['relations'] }>;
+let nativeIntentCatalogs: NativeIntentFixtures | undefined;
+let nativeIntentCatalogLoad: Promise<void> | undefined;
+function loadNativeIntentCatalogs() {
+  return nativeIntentCatalogLoad ??= fetch(new URL('./intentCatalogs.json', import.meta.url)).then(async (response) => {
+    if (!response.ok) throw { code: 'INVALID_STATE', messageKey: 'INTENT_CONTEXT_UNAVAILABLE' };
+    nativeIntentCatalogs = await response.json() as NativeIntentFixtures;
+  }).catch((error) => { nativeIntentCatalogLoad = undefined; throw error; });
+}
+function previewIntentCatalog(state: ConfigurationStateView) {
+  const key = state.kind + (previewParameters.has('__ui_linux_capabilities') ? '-linux' : '');
+  const catalog = nativeIntentCatalogs?.[key];
+  if (!catalog) throw { code: 'INVALID_STATE', messageKey: 'INTENT_CONTEXT_UNAVAILABLE' };
+  return catalog;
+}
+function previewIntentSettings(kind: ProgramKind): { descriptor: GuidedSettingDescriptor; pattern: string[] }[] {
+  const key = kind + (previewParameters.has('__ui_linux_capabilities') ? '-linux' : '');
+  return (nativeIntentSettings as Record<string, { descriptor: GuidedSettingDescriptor; pattern: string[] }[]>)[key] ?? [];
+}
+function previewNativeSemanticPath(document: unknown, path: string[]): string {
+  let current = document;
+  const parts: string[] = [];
+  const escape = (value: string) => value.replaceAll('~', '~0').replaceAll('/', '~1');
+  for (const key of path) {
+    const next = current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined;
+    if (Array.isArray(current) && next && typeof next === 'object') {
+      const items = current;
+      const entry = next as Record<string, unknown>;
+      const field = ['tag', 'name', 'id'].find((field) => typeof entry[field] === 'string' && !!entry[field]
+        && items.filter((item) => item && typeof item === 'object' && item[field] === entry[field]).length === 1);
+      if (field && parts.length) parts[parts.length - 1] += `[${field}=${escape(String(entry[field]))}]`;
+      else parts.push(escape(key));
+    } else parts.push(escape(key));
+    current = next;
+  }
+  return '/' + parts.join('/');
+}
+function previewNativeValues(document: unknown, node: import('../types').IntentNode) {
+  const results: { path: string[]; value: unknown }[] = [];
+  function visit(value: unknown, path: string[], depth: number) {
+    if (depth === node.pattern.length) { results.push({ path, value }); return; }
+    if (!value || typeof value !== 'object') return;
+    const part = node.pattern[depth];
+    for (const [key, child] of Object.entries(value)) if (part === '*' || part === key) visit(child, [...path, key], depth + 1);
+    if (!Array.isArray(value) && part !== '*' && depth + 1 === node.pattern.length && !Object.hasOwn(value, part)) visit(undefined, [...path, part], depth + 1);
+  }
+  visit(document, [], 0);
+  return results.filter(({ path }) => node.typeSelections.every((selection) => {
+    const actual = selection.path.reduce<unknown>((value, key, index) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key === '*' ? path[index] : key] : undefined, document);
+    const value = actual && typeof actual === 'object' ? (actual as Record<string, unknown>)[selection.field] : undefined;
+    return selection.comparison === 'asciiCaseInsensitive' ? String(value).toLowerCase() === selection.value.toLowerCase() : value === selection.value;
+  }));
+}
+function previewNativeReference(node: import('../types').IntentNode, path: string, value: unknown, present = true) {
+  return previewContentHash(JSON.stringify([node.nodeId, path, present ? { value } : { missing: true }]));
+}
+function previewProtectedKey(key: string) {
+  return ['password', 'pass', 'secret', 'token', 'uuid', 'privatekey', 'key', 'authentication', 'accounts', 'users', 'clientid', 'clients', 'apikey', 'presharedkey', 'privatekeypath', 'authstr'].includes(key.toLowerCase().replace(/[-_]/g, ''));
+}
+function previewProtectedValue(value: unknown): boolean {
+  if (value && typeof value === 'object') return Object.entries(value).some(([key, value]) => previewProtectedKey(key) || previewProtectedValue(value));
+  if (typeof value !== 'string') return false;
+  if (/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value)) return true;
+  try { const url = new URL(value); return !!url.username || !!url.password || [...url.searchParams.keys()].some(previewProtectedKey); }
+  catch { return false; }
+}
+type PreviewReferenceConstraint = {
+  kind: 'reference'; targets: { path: string[]; identity?: string }[];
+  form: { kind: 'scalar' | 'listable' | 'scalarOrObject'; field?: string };
+  builtinValues: string[]; allowEmpty: boolean; allowUnresolved: boolean;
+};
+function previewReferenceNames(document: unknown, constraint: PreviewReferenceConstraint): Map<string, number> {
+  const names = new Map<string, number>();
+  const add = (name: unknown) => { if (typeof name === 'string' && name) names.set(name, (names.get(name) ?? 0) + 1); };
+  for (const target of constraint.targets) {
+    const collection = target.path.reduce<unknown>((value, key) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined, document);
+    if (target.identity && Array.isArray(collection)) for (const item of collection) add(item?.[target.identity]);
+    else if (!target.identity && collection && typeof collection === 'object' && !Array.isArray(collection)) for (const key of Object.keys(collection)) add(key);
+  }
+  constraint.builtinValues.forEach(add);
+  return names;
+}
+function previewReferenceIssue(document: unknown, constraint: PreviewReferenceConstraint, input: unknown): string | undefined {
+  if (input === null && constraint.allowEmpty) return;
+  let value = input;
+  if (constraint.form.kind === 'scalarOrObject' && value && typeof value === 'object' && !Array.isArray(value)) {
+    value = (value as Record<string, unknown>)[constraint.form.field!];
+    if (typeof value !== 'string' || !value) return 'CONFIGURATION_REFERENCE_INVALID';
+  }
+  const values = typeof value === 'string' ? [value] : constraint.form.kind === 'listable' && Array.isArray(value) ? value : undefined;
+  if (!values || values.some((name) => typeof name !== 'string' || !name && !constraint.allowEmpty)) return 'CONFIGURATION_REFERENCE_INVALID';
+  const names = previewReferenceNames(document, constraint);
+  for (const name of values.filter(Boolean)) {
+    if ((names.get(name) ?? 0) > 1) return 'CONFIGURATION_REFERENCE_AMBIGUOUS';
+    if (!names.has(name) && !constraint.allowUnresolved) return 'CONFIGURATION_REFERENCE_MISSING';
+  }
+}
+function previewNativeContext(programId: string, nodeId?: string): import('../types').IntentContext {
+  const state = configurationState(programId);
+  projectPreviewIntent(programId, state);
+  const nodes = previewIntentNodes(state);
+  const node = nodeId ? nodes.find((item) => item.nodeId === nodeId) : undefined;
+  if (nodeId && !node) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_CONTEXT_UNAVAILABLE' };
+  const document = state.format === 'yaml' ? parseYaml(state.desired.content) : parsePreviewJsonc(state.desired.content);
+  const children = nodes.filter((item) => (item.parentId ?? undefined) === nodeId && (item.disposition !== 'inapplicable' || previewNativeValues(document, item).length > 0));
+  const values = node ? previewNativeValues(document, node).map(({ path, value }) => {
+    const semanticPath = previewNativeSemanticPath(document, path);
+    const protectedValue = path.some(previewProtectedKey) || previewProtectedValue(value);
+    const summary = value && typeof value === 'object' ? { kind: Array.isArray(value) ? 'list' as const : 'object' as const, size: Object.keys(value).length } : undefined;
+    const owner = `intent:native:${node.nodeId}:${semanticPath}`;
+    const projection = node.settingId ? state.guidedProjection.find((item) => item.settingId === node.settingId) : undefined;
+    return { referenceId: previewNativeReference(node, semanticPath, value, value !== undefined), semanticPath, present: value !== undefined, protected: protectedValue, canFollow: projection?.intentValue !== undefined || previewUpstreamContributions.get(programId)?.writes.some((write) => write.owner === owner) === true, value: protectedValue || summary ? undefined : value, summary, intentValue: projection?.intentValue !== undefined ? { state: 'present' as const, value: projection.intentValue } : undefined };
+  }) : [];
+  if (node && !values.length && !node.pattern.includes('*') && !node.typeSelections.length) values.push({ referenceId: previewNativeReference(node, '/' + node.pattern.join('/'), undefined, false), semanticPath: '/' + node.pattern.join('/'), present: false, protected: node.pattern.some(previewProtectedKey), canFollow: node.settingId ? state.guidedProjection.some((item) => item.settingId === node.settingId && item.intentValue !== undefined) : previewUpstreamContributions.get(programId)?.writes.some((write) => write.owner === `intent:native:${node.nodeId}:/${node.pattern.join('/')}`) === true, value: undefined, summary: undefined, intentValue: undefined });
+  const objectEditors = [node, ...children].filter((item): item is import('../types').IntentNode => !!item && item.disposition === 'guided' && item.objectKinds.length > 0).flatMap((node) => (state.intentObjectDescriptors ?? []).filter((descriptor) => node.objectKinds.includes(descriptor.kind)).map((descriptor) => ({ nodeId: node.nodeId, descriptor: { ...descriptor, protocols: node.objectProtocol ? descriptor.protocols.filter((value) => value === node.objectProtocol) : descriptor.protocols }, objects: (state.intentObjects ?? []).filter((object) => object.kind === descriptor.kind && (!node.objectProtocol || object.values.protocol === node.objectProtocol)) })));
+  const seenAdapters = new Set<string>();
+  const uniqueEditors = objectEditors.filter((editor) => { const key = editor.descriptor.kind + ':' + editor.descriptor.protocols.join(','); if (seenAdapters.has(key)) return false; seenAdapters.add(key); return true; });
+  const relations = node ? previewIntentCatalog(state).relations.filter((relation) => [...relation.nodeIds, ...relation.relatedNodeIds].includes(node.nodeId)) : [];
+  const relatedNodes = nodes.filter((related) => related.nodeId !== nodeId && relations.some((relation) => [...relation.nodeIds, ...relation.relatedNodeIds].includes(related.nodeId)));
+  const resolvedNode = node ? structuredClone(node) : undefined;
+  let targets = state.intentTargets ?? [];
+  const issues: import('../types').IntentContext['issues'] = [];
+  for (const relation of relations.filter((relation) => node && relation.nodeIds.includes(node.nodeId))) {
+    const constraint = relation.constraint as PreviewReferenceConstraint;
+    if (constraint.kind !== 'reference') continue;
+    if (constraint.form.kind === 'scalar' && resolvedNode?.control) {
+      targets = [...previewReferenceNames(document, constraint)].filter(([name, count]) => count === 1 && !previewProtectedValue(name)).map(([name]) => ({ id: name, label: name, kind: node?.settingId === 'routing.final' ? 'connection' : node?.settingId === 'dns.final' ? 'dns' : 'reference' }));
+      resolvedNode.control.allowedValues = [...(constraint.allowEmpty ? [''] : []), ...targets.map((target) => target.id)];
+    }
+    for (const entry of node ? previewNativeValues(document, node) : []) {
+      if (entry.value === undefined) continue;
+      const code = previewReferenceIssue(document, constraint, entry.value);
+      if (code) issues.push({ messageKey: code, semanticPath: previewNativeSemanticPath(document, entry.path) });
+    }
+  }
+  return { node: resolvedNode, children, relations, relatedNodes, stateRevision: state.stateRevision, candidateGeneration: state.generation, catalogHash: 'preview-native-catalog-' + state.kind, values, issues, defaultValue: undefined, defaultConditions: [], setting: state.guidedDescriptors.find((setting) => setting.id === node?.settingId), objectEditors: uniqueEditors, targets };
+}
+
+function previewNativeReferenceBlocker(programId: string, change: import('../types').ConfigurationIntentAction): string | undefined {
+  if (change.action === 'objectNode' && change.operation.kind === 'follow') {
+    const operation = change.operation;
+    const state = configurationState(programId);
+    projectPreviewIntent(programId, state);
+    const object = state.intentObjects?.find((object) => object.objectId === operation.objectId && object.contentHash === operation.expectedHash);
+    if (!object) return 'INTENT_OBJECT_STALE';
+    const contributions = previewUpstreamContributions.get(programId)!;
+    const before = parsePreviewSemantic(state.desired.content);
+    const after = parsePreviewSemantic(renderPreviewContributions(contributions.source, contributions.writes.filter((write) => write.owner !== `intent:${object.objectId}`)));
+    const catalog = previewIntentCatalog(state);
+    for (const relation of catalog.relations) {
+      const constraint = relation.constraint as PreviewReferenceConstraint;
+      if (constraint.kind !== 'reference') continue;
+      for (const node of catalog.nodes.filter((node) => relation.nodeIds.includes(node.nodeId))) for (const entry of previewNativeValues(after, node)) {
+        const parent = entry.path.slice(0, -1).reduce<unknown>((value, key) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined, after) as Record<string, unknown>;
+        if (!relation.when.every((condition) => parent && Object.hasOwn(parent, condition.sibling) ? condition.values.some((value) => previewSemanticEqual(value, parent[condition.sibling])) : condition.allowMissing)) continue;
+        if (previewReferenceIssue(after, constraint, entry.value) && !previewReferenceIssue(before, constraint, entry.value)) return 'INTENT_TARGET_IN_USE';
+      }
+    }
+    return;
+  }
+  if (change.action !== 'editNode' || change.value.state !== 'present') return;
+  const context = previewNativeContext(programId, change.nodeId);
+  const state = configurationState(programId);
+  const document = state.format === 'yaml' ? parseYaml(state.desired.content) : parsePreviewJsonc(state.desired.content);
+  for (const relation of context.relations.filter((relation) => relation.nodeIds.includes(change.nodeId))) {
+    const constraint = relation.constraint as PreviewReferenceConstraint;
+    if (constraint.kind === 'reference') {
+      const code = previewReferenceIssue(document, constraint, change.value.value);
+      if (code) return code;
+    }
+  }
+}
+
+function previewRemovalReferences(programId: string, change: import('../types').ConfigurationIntentAction) {
+  type Choice = import('../types').IntentChangePlan['referenceChoices'][number];
+  const choices: Choice[] = [];
+  const edits: { path: string[]; value: unknown }[] = [];
+  if (change.action !== 'objectNode' || change.operation.kind !== 'remove') return { choices, edits };
+  const operation = change.operation;
+  const state = configurationState(programId);
+  projectPreviewIntent(programId, state);
+  const object = state.intentObjects?.find((object) => object.objectId === operation.objectId && object.contentHash === operation.expectedHash);
+  if (!object) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_OBJECT_STALE' };
+  const collectionPath = object.kind === 'dnsServer' ? ['dns', 'servers'] : object.kind === 'listener' || object.kind === 'tun' ? ['inbounds'] : undefined;
+  if (collectionPath && state.kind !== 'mihomo') {
+    const document = state.format === 'yaml' ? parseYaml(state.desired.content) : parsePreviewJsonc(state.desired.content);
+    const catalog = previewIntentCatalog(state);
+    const seen = new Set<string>();
+    for (const relation of catalog.relations) {
+      const constraint = relation.constraint as PreviewReferenceConstraint;
+      if (constraint.kind !== 'reference' || !constraint.targets.some((target) => JSON.stringify(target.path) === JSON.stringify(collectionPath))) continue;
+      const names = previewReferenceNames(document, constraint);
+      for (const node of catalog.nodes.filter((node) => relation.nodeIds.includes(node.nodeId))) for (const entry of previewNativeValues(document, node)) {
+        const value = entry.value;
+        const parent = entry.path.slice(0, -1).reduce<unknown>((value, key) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined, document) as Record<string, unknown>;
+        if (!relation.when.every((condition) => parent && Object.hasOwn(parent, condition.sibling) ? condition.values.some((value) => JSON.stringify(value) === JSON.stringify(parent[condition.sibling])) : condition.allowMissing)) continue;
+        const reference = constraint.form.kind === 'scalarOrObject' && value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>)[constraint.form.field!] : value;
+        if (!(reference === object.label || Array.isArray(reference) && reference.includes(object.label))) continue;
+        const code = previewReferenceIssue(document, constraint, value);
+        if (code) throw { code: 'CONFIG_INVALID', messageKey: code };
+        const key = JSON.stringify(entry.path);
+        if (seen.has(key)) continue; seen.add(key);
+        let current = document;
+        for (const segment of entry.path) {
+          const next = current && typeof current === 'object' ? (current as Record<string, unknown>)[segment] : undefined;
+          if (Array.isArray(current) && next && typeof next === 'object') {
+            const items: unknown[] = current; const fields = next as Record<string, unknown>;
+            const field = ['tag', 'name', 'id'].find((field) => typeof fields[field] === 'string' && fields[field]);
+            if (field && items.filter((item) => item && typeof item === 'object' && (item as Record<string, unknown>)[field] === fields[field]).length !== 1) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_OBJECT_AMBIGUOUS' };
+          }
+          current = next;
+        }
+        const originTargets = new Set(constraint.targets.flatMap((target) => {
+          if (!target.path.every((key, index) => entry.path[index] === key)) return [];
+          const owner = entry.path.slice(0, target.path.length + 1).reduce<unknown>((value, key) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined, document);
+          const name = target.identity && owner && typeof owner === 'object' ? (owner as Record<string, unknown>)[target.identity] : undefined;
+          return typeof name === 'string' ? [name] : [];
+        }));
+        const targets = [...names].filter(([name, count]) => name !== object.label && !originTargets.has(name) && count === 1 && !previewProtectedValue(name)).map(([name]) => ({ id: name, label: name, kind: 'reference' }));
+        const choiceId = previewContentHash(JSON.stringify([state.compatibilityProfile.profileHash, relation.relationId, entry.path, value, operation.objectId]));
+        const selectedTarget = operation.replacements[choiceId];
+        if (selectedTarget && !targets.some((target) => target.id === selectedTarget)) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_REFERENCE_CHOICE_STALE' };
+        choices.push({ choiceId, label: state.guidedDescriptors.find((setting) => setting.id === node.settingId)?.label ?? node.nativeName, semanticPath: previewNativeSemanticPath(document, entry.path), currentTarget: object.label, targets, selectedTarget });
+        if (selectedTarget) {
+          const replacement = typeof reference === 'string' ? selectedTarget : (reference as unknown[]).map((name) => name === object.label ? selectedTarget : name);
+          edits.push({ path: entry.path, value: constraint.form.kind === 'scalarOrObject' && value && typeof value === 'object' && !Array.isArray(value) ? { ...value, [constraint.form.field!]: replacement } : replacement });
+        }
+      }
+    }
+  }
+  if (Object.keys(operation.replacements).some((id) => !choices.some((choice) => choice.choiceId === id))) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_REFERENCE_CHOICE_STALE' };
+  return { choices, edits };
+}
+
+function unwrapNativeObject(change: import('../types').ConfigurationIntentAction): PreviewIntentEdit {
+  if (change.action !== 'objectNode') return change;
+  const operation = change.operation;
+  if (operation.kind === 'create') return { action: 'createObject', objectKind: operation.objectKind, values: operation.values };
+  if (operation.kind === 'update') return { action: 'updateObject', objectId: operation.objectId, expectedHash: operation.expectedHash, values: operation.values };
+  return { action: operation.kind === 'remove' ? 'removeObject' : 'followObject', objectId: operation.objectId, expectedHash: operation.expectedHash };
+}
+
+function previewRequiredNativeEdits(programId: string, change: import('../types').ConfigurationIntentAction) {
+  if (change.action !== 'editNode' || change.value.state !== 'present') return [];
+  const state = configurationState(programId);
+  const context = previewNativeContext(programId, change.nodeId);
+  const selected = context.values.find((value) => value.referenceId === change.referenceId);
+  if (!context.node || !selected) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_PLAN_STALE' };
+  const document = state.format === 'yaml' ? parseYaml(previewUpstreamDocuments.get(programId) ?? state.desired.content) : parsePreviewJsonc(previewUpstreamDocuments.get(programId) ?? state.desired.content);
+  const path = previewNativeValues(document, context.node).find((entry) => previewNativeSemanticPath(document, entry.path) === selected.semanticPath)?.path ?? (!context.node.pattern.includes('*') ? context.node.pattern : undefined);
+  if (!path) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_NATIVE_SHAPE_REQUIRES_EDITOR' };
+  setPreviewGuidedPath(document, path, change.value.value);
+  const parent = path.slice(0, -1).reduce<unknown>((value, key) => value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined, document) as Record<string, unknown>;
+  return context.relations.flatMap((relation) => {
+    const constraint = relation.constraint as { kind: string; whenValue?: unknown; sibling?: string; value?: unknown };
+    if (constraint.kind !== 'requires' || !relation.nodeIds.includes(change.nodeId) || JSON.stringify(constraint.whenValue) !== JSON.stringify(change.value.state === 'present' ? change.value.value : undefined)
+      || !relation.when.every((condition) => Object.hasOwn(parent, condition.sibling) ? condition.values.some((value) => JSON.stringify(value) === JSON.stringify(parent[condition.sibling])) : condition.allowMissing)) return [];
+    const sibling = constraint.sibling!;
+    if (JSON.stringify(parent[sibling]) === JSON.stringify(constraint.value)) return [];
+    const node = context.relatedNodes.find((node) => node.nativeName === sibling && node.disposition === 'guided');
+    if (!node) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_LINKED_EDIT_UNAVAILABLE' };
+    const relatedPath = [...path.slice(0, -1), sibling];
+    const semanticPath = previewNativeSemanticPath(document, relatedPath);
+    return [{ nodeId: node.nodeId, path: relatedPath, semanticPath, value: constraint.value,
+      effect: { semanticPath, role: 'related' as const, protected: false, before: Object.hasOwn(parent, sibling) ? { state: 'present' as const, value: parent[sibling] } : { state: 'missing' as const }, after: { state: 'present' as const, value: constraint.value } } }];
+  });
+}
+
+function previewHistoryConflicts(programId: string, action: Extract<import('../types').ConfigurationIntentAction, { action: 'undo' | 'redo' }>, ownerFilter?: string): import('../types').IntentChangePlan['historyConflicts'] {
+  const delta = previewIntentHistory.get(`${programId}:${action.recordId}`);
+  if (!delta) return [];
+  const expected = action.action === 'undo' ? delta.after : delta.before;
+  const restoring = action.action === 'undo' ? delta.before : delta.after;
+  const state = configurationState(programId);
+  const document = state.format === 'yaml' ? parseYaml(state.desired.content) : parsePreviewJsonc(state.desired.content);
+  return delta.owners.flatMap((owner) => {
+    if (ownerFilter !== undefined && owner !== ownerFilter) return [];
+    const writes = expected.filter((write) => write.owner === owner);
+    const paths = writes.length ? writes : restoring.filter((write) => write.owner === owner);
+    const values = delta.values.filter((entry) => entry.owner === owner);
+    const currentWrites = previewUpstreamContributions.get(programId)?.writes.filter((write) => write.owner === owner) ?? [];
+    if (previewSemanticEqual(currentWrites, writes) && values.every((entry) => {
+      const current = previewConflictPathValue(document, entry.segments);
+      const value = action.action === 'undo' ? entry.after : entry.before;
+      return current.present === (value.state === 'present') && (!current.present || value.state === 'present' && previewSemanticEqual(current.value, value.value));
+    })) return [];
+    const protectedValue = paths.some((write) => /password|authentication|secret|users|token/i.test(write.change.semanticPath));
+    const contributions = previewUpstreamContributions.get(programId)!;
+    const restored = parsePreviewSemantic(renderPreviewContributions(contributions.source, [
+      ...contributions.writes.filter((write) => write.owner !== owner), ...restoring.filter((write) => write.owner === owner),
+    ]));
+    const currentValues = paths.map((write) => previewConflictPathValue(document, write.change.segments));
+    const restoringValues = paths.map((write) => previewConflictPathValue(restored, write.change.segments));
+    return [{ conflictId: previewContentHash(JSON.stringify([action.recordId, action.action, owner, currentValues, restoringValues])), semanticPaths: paths.map((write) => write.change.semanticPath), protected: protectedValue,
+      current: currentValues.map((value) => protectedValue ? null : value.present ? { state: 'present' as const, value: value.value } : { state: 'missing' as const }),
+      restoring: restoringValues.map((value) => protectedValue ? null : value.present ? { state: 'present' as const, value: value.value } : { state: 'missing' as const }),
+    }];
+  });
+}
 
 function parsePreviewJsonc(content: string): unknown {
   const errors: ParseError[] = [];
@@ -379,6 +690,9 @@ let sourceSaveFailurePending = previewParameters.has('__ui_source_save_error');
 let finalDraftDiscardRacePending = previewParameters.has('__ui_final_draft_discard_race');
 let configurationResponseLostPending = previewParameters.has('__ui_configuration_response_lost');
 let configurationSaveResponseLostPending = previewParameters.has('__ui_configuration_save_response_lost');
+let intentResponseLostPending = previewParameters.has('__ui_intent_response_lost');
+let intentPendingResult = previewParameters.has('__ui_intent_result_pending');
+let intentProtectionFailurePending = previewParameters.has('__ui_intent_protection_failure');
 let configurationWorkspaceReads = 0;
 let configurationMetadataFailurePending = previewParameters.has('__ui_config_metadata_error_once');
 let configurationResponseHeldPending = previewParameters.has('__ui_configuration_hold_response');
@@ -1006,6 +1320,12 @@ const previewUpstreamContributions = new Map<string, {
   source: string;
   writes: Array<{ owner: string; change: FinalChangeProjection; listEdit?: { original?: unknown; replacement?: unknown } }>;
 }>();
+type PreviewIntentWrite = NonNullable<ReturnType<typeof previewUpstreamContributions.get>>['writes'][number];
+const previewIntentHistory = new Map<string, {
+  owners: string[]; before: PreviewIntentWrite[]; after: PreviewIntentWrite[];
+  values: { owner: string; segments: FinalChangeProjection['segments']; before: import('../types').SemanticValue; after: import('../types').SemanticValue }[];
+  projections: { before: import('../types').GuidedProjection; after: import('../types').GuidedProjection }[];
+}>();
 const previewFinalDrafts = new Map<string, FinalEditorSession>();
 const previewConflictOperations = new Map<string, {
   serialized: string;
@@ -1031,55 +1351,12 @@ function previewGuidedSettings(kind: ProgramSpec['type']['kind']): {
   descriptors: GuidedSettingDescriptor[];
   projection: GuidedProjection[];
 } {
-  if (kind === 'generic') return { descriptors: [], projection: [] };
-  const descriptors: GuidedSettingDescriptor[] = [{
-    id: 'logging.level',
-    category: 'logging',
-    label: 'Log detail',
-    description: '',
-    control: 'select',
-    allowedValues: kind === 'xray'
-      ? ['debug', 'info', 'warning', 'error', 'none']
-      : kind === 'mihomo' ? ['debug', 'info', 'warning', 'error', 'silent'] : ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'panic'],
-  }];
-  const values = new Map<string, unknown>([['logging.level', kind === 'xray' ? 'warning' : 'info']]);
-  if (kind === 'singBox') {
-    descriptors.push(
-      { id: 'dns.strategy', category: 'dns', label: 'DNS address preference', description: '', control: 'select', allowedValues: ['prefer_ipv4', 'prefer_ipv6', 'ipv4_only', 'ipv6_only'] },
-      { id: 'routing.autoDetectInterface', category: 'routing', label: 'Choose network interface automatically', description: '', control: 'toggle', allowedValues: [] },
-      { id: 'logging.timestamp', category: 'logging', label: 'Show log time', description: '', control: 'toggle', allowedValues: [], advanced: true },
-      { id: 'dns.disableCache', category: 'dns', label: 'Disable DNS cache', description: '', control: 'toggle', allowedValues: [], advanced: true },
-      { id: 'dns.timeout', category: 'dns', label: 'DNS timeout', description: '', control: 'text', allowedValues: [], advanced: true },
-    );
-    values.set('dns.strategy', 'prefer_ipv4');
-    values.set('routing.autoDetectInterface', true);
-  } else if (kind === 'xray') {
-    descriptors.push({ id: 'routing.domainStrategy', category: 'routing', label: 'Domain matching', description: '', control: 'select', allowedValues: ['AsIs', 'IPIfNonMatch', 'IPOnDemand'] });
-    descriptors.push({ id: 'logging.dns', category: 'logging', label: 'Log DNS requests', description: '', control: 'toggle', allowedValues: [], advanced: true });
-    descriptors.push({ id: 'dns.queryStrategy', category: 'dns', label: 'DNS address preference', description: '', control: 'select', allowedValues: ['UseIP', 'UseIPv4', 'UseIPv6'] });
-    values.set('routing.domainStrategy', 'AsIs');
-  } else {
-    descriptors.push(
-      { id: 'network.ipv6', category: 'routing', label: 'Allow IPv6 connections', description: '', control: 'toggle', allowedValues: [], advanced: true },
-      { id: 'tun.enabled', category: 'tun', label: 'Use a virtual network adapter', description: '', control: 'toggle', allowedValues: [] },
-      { id: 'tun.strictRoute', category: 'tun', label: 'Prevent traffic outside these routes', description: '', control: 'toggle', allowedValues: [], advanced: true, enabledWhen: 'tun.enabled' },
-      { id: 'dns.enabled', category: 'dns', label: 'Use program DNS', description: '', control: 'toggle', allowedValues: [] },
-      { id: 'dns.mode', category: 'dns', label: 'DNS mode', description: 'Configure DNS mode, or follow the source configuration.', control: 'select', allowedValues: ['normal', 'fake-ip', 'redir-host'] },
-      { id: 'routing.mode', category: 'routing', label: 'Traffic mode', description: '', control: 'select', allowedValues: ['rule', 'global', 'direct'] },
-    );
-    values.set('network.ipv6', true);
-    values.set('tun.enabled', false);
-    values.set('tun.strictRoute', false);
-    values.set('dns.enabled', true);
-    values.set('dns.mode', 'fake-ip');
-    values.set('routing.mode', 'rule');
-  }
+  const descriptors = previewIntentSettings(kind).map((item) => structuredClone(item.descriptor));
   return {
     descriptors,
     projection: descriptors.map((descriptor) => ({
       settingId: descriptor.id,
       status: 'inherited',
-      value: values.get(descriptor.id),
     })),
   };
 }
@@ -1256,6 +1533,7 @@ function configurationState(programId: string): ConfigurationStateView {
     lastKnownGoodRevision: { generation: 1, contentHash: 'preview-desired-hash', createdUnixMs: Date.now() },
     guidedDescriptors: guided.descriptors,
     guidedProjection: guided.projection,
+    intentHistory: [],
     managedIntegrations: kind === 'singBox'
       ? [
           {
@@ -1615,6 +1893,8 @@ function configurationWorkspaceSnapshot(programId: string): {
 
 function projectPreviewIntent(programId: string, state: ConfigurationStateView): void {
   const document = (state.format === 'yaml' ? parseYaml(state.desired.content) : parsePreviewJsonc(state.desired.content)) as Record<string, unknown>;
+  const upstreamContent = previewUpstreamDocuments.get(programId) ?? state.desired.content;
+  const upstream = (state.format === 'yaml' ? parseYaml(upstreamContent) : parsePreviewJsonc(upstreamContent)) as Record<string, unknown>;
   state.guidedProjection = state.guidedProjection.map((projection) => {
     const path = previewGuidedPath(state.kind, projection.settingId);
     return path ? { ...projection, value: previewConflictPathValue(document, path.map((key) => ({ kind: 'key', key }))).value } : projection;
@@ -1636,7 +1916,8 @@ function projectPreviewIntent(programId: string, state: ConfigurationStateView):
   const add = (kind: import('../types').IntentObjectKind, label: string, native: unknown, values: Record<string, unknown>) => {
     const owned = previewUpstreamContributions.get(programId)?.writes.find((write) => write.listEdit && previewSemanticEqual(write.listEdit.replacement, native));
     const objectId = owned ? owned.owner.slice('intent:'.length) : `${kind}:${label}`;
-    objects.push({ objectId, kind, label, values, contentHash: previewContentHash(JSON.stringify(native)), editable: true, removed: false,
+    const anchored = state.kind === 'mihomo' || kind === 'routeRule' || (kind === 'dnsServer' ? (upstream.dns as { servers?: Record<string, unknown>[] } | undefined)?.servers : upstream.inbounds as Record<string, unknown>[] | undefined)?.some((entry) => entry.tag === label && entry[state.kind === 'singBox' ? 'type' : 'protocol'] === (native as Record<string, unknown>)[state.kind === 'singBox' ? 'type' : 'protocol']);
+    objects.push({ objectId, kind, label, values, contentHash: previewContentHash(JSON.stringify(native)), editable: !!anchored, removed: false,
       canFollow: previewUpstreamContributions.get(programId)?.writes.some((write) => write.owner === `intent:${objectId}`) ?? false });
   };
   if (state.kind === 'mihomo') {
@@ -1659,7 +1940,9 @@ function projectPreviewIntent(programId: string, state: ConfigurationStateView):
     if (typeof server !== 'object' || !server.tag) continue;
     const address = String(server.address ?? server.server ?? '');
     const protocol = server.type === 'local' || address === 'localhost' ? 'system' : server.type ?? (address.startsWith('https://') ? 'https' : 'udp');
-    add('dnsServer', String(server.tag), server, { protocol, server: protocol === 'https' && state.kind === 'singBox' ? `https://${address}${server.path ?? '/dns-query'}` : address });
+    const resolver = server.domain_resolver;
+    const bootstrap = typeof resolver === 'string' ? resolver : resolver && typeof resolver === 'object' ? (resolver as Record<string, unknown>).server : undefined;
+    add('dnsServer', String(server.tag), server, { protocol, server: protocol === 'https' && state.kind === 'singBox' ? `https://${address}${server.path ?? '/dns-query'}` : address, ...(typeof bootstrap === 'string' ? { bootstrap } : {}) });
   }
   state.intentObjects = objects;
   state.intentTargets = [...((document.outbounds ?? []) as Record<string, unknown>[]).flatMap((item) => item.tag ? [{ id: String(item.tag), label: String(item.tag), kind: 'connection' }] : []), ...objects.filter((item) => item.kind === 'dnsServer').map((item) => ({ id: item.label, label: item.label, kind: 'dns' }))];
@@ -1700,13 +1983,14 @@ function recordPreviewIntentList(programId: string, owner: string, path: string[
   updatePreviewUpstream(programId, recordPreviewContributions(programId, owner, []));
 }
 
-function applyPreviewIntentObject(programId: string, change: Exclude<import('../types').ConfigurationIntentAction, { action: 'set' | 'follow' }>, document: unknown): void {
+function applyPreviewIntentObject(programId: string, change: Extract<PreviewIntentEdit, { action: 'createObject' | 'updateObject' | 'removeObject' | 'followObject' }>, document: unknown): void {
   const state = configurationState(programId);
   projectPreviewIntent(programId, state);
   const root = document as Record<string, unknown>;
   const creating = change.action === 'createObject';
   const object = !creating ? state.intentObjects?.find((item) => item.objectId === change.objectId) : undefined;
   if (!creating && (!object || object.contentHash !== change.expectedHash)) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_OBJECT_STALE', message: 'Setting changed' };
+  if (object && !object.editable && change.action !== 'followObject') throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_NATIVE_SHAPE_REQUIRES_EDITOR', message: 'Edit in Final configuration' };
   const kind = creating ? change.objectKind : object!.kind;
   const values = change.action === 'createObject' || change.action === 'updateObject' ? change.values : {};
   const fields = { ...object?.values, ...values };
@@ -1769,6 +2053,10 @@ function applyPreviewIntentObject(programId: string, change: Exclude<import('../
         else {
           const url = fields.protocol === 'https' ? new URL(String(fields.server)) : null;
           Object.assign(native, { type: fields.protocol === 'system' ? 'local' : fields.protocol, ...(fields.protocol === 'system' ? {} : { server: url?.hostname ?? fields.server }), ...(url ? { path: url.pathname } : {}) });
+          if (fields.bootstrap) {
+            const current = list[index]?.domain_resolver;
+            Object.assign(native, { domain_resolver: current && typeof current === 'object' ? { ...current, server: fields.bootstrap } : fields.bootstrap });
+          }
         }
         if (index >= 0) list[index] = native; else list.push(native);
       }
@@ -1892,24 +2180,7 @@ function previewContentHash(content: string): string {
 }
 
 function previewGuidedPath(kind: ProgramKind, settingId: string): string[] | undefined {
-  const paths: Record<string, string[]> = {
-    'logging.level': kind === 'xray' ? ['log', 'loglevel'] : kind === 'mihomo' ? ['log-level'] : ['log', 'level'],
-    'logging.timestamp': ['log', 'timestamp'],
-    'logging.dns': ['log', 'dnsLog'],
-    'dns.disableCache': ['dns', kind === 'xray' ? 'disableCache' : 'disable_cache'],
-    'dns.timeout': ['dns', 'timeout'],
-    'dns.queryStrategy': ['dns', 'queryStrategy'],
-    'dns.strategy': ['dns', 'strategy'],
-    'routing.autoDetectInterface': ['route', 'auto_detect_interface'],
-    'routing.domainStrategy': ['routing', 'domainStrategy'],
-    'network.ipv6': ['ipv6'],
-    'tun.enabled': ['tun', 'enable'],
-    'tun.strictRoute': ['tun', 'strict-route'],
-    'dns.enabled': ['dns', 'enable'],
-    'dns.mode': ['dns', 'enhanced-mode'],
-    'routing.mode': ['mode'],
-  };
-  return paths[settingId];
+  return previewIntentSettings(kind).find((item) => item.descriptor.id === settingId)?.pattern;
 }
 
 function setPreviewGuidedPath(
@@ -1921,7 +2192,7 @@ function setPreviewGuidedPath(
   let current = root as Record<string, unknown>;
   for (const key of path.slice(0, -1)) {
     const next = current[key];
-    if (!next || typeof next !== 'object' || Array.isArray(next)) {
+    if (!next || typeof next !== 'object') {
       current[key] = {};
     }
     current = current[key] as Record<string, unknown>;
@@ -2086,9 +2357,13 @@ function recordPreviewContributions(programId: string, owner: string, changes: F
       || !change.segments.every((segment, index) => previewSemanticEqual(segment, write.change.segments[index])));
     contributions.writes.push({ owner, change: structuredClone(change) });
   }
-  let document: unknown = parsePreviewSemantic(contributions.source);
+  return renderPreviewContributions(contributions.source, contributions.writes);
+}
+
+function renderPreviewContributions(content: string, writes: PreviewIntentWrite[]): string {
+  let document: unknown = parsePreviewSemantic(content);
   const source: unknown = structuredClone(document);
-  for (const { owner, change, listEdit } of contributions.writes) {
+  for (const { owner, change, listEdit } of writes) {
     if (listEdit) {
       const values = [...((previewConflictPathValue(document, change.segments).value ?? []) as unknown[])];
       const index = listEdit.original === undefined ? -1 : values.findIndex((value) => previewSemanticEqual(value, listEdit.original));
@@ -3322,6 +3597,14 @@ export function installMockBackend() {
       case 'get_configuration_workspace_preview': {
         return configurationWorkspaceSnapshot(stringArg(args, 'programId'));
       }
+      case 'get_configuration_intent_context': {
+        const programId = stringArg(args, 'programId');
+        const nodeId = objectArgs(args).nodeId as string | undefined;
+        const context = previewNativeContext(programId, nodeId);
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:intent-context', { detail: { programId, nodeId, stateRevision: context.stateRevision } }));
+        if (previewParameters.has('__ui_slow_intent_context') && nodeId) return new Promise((resolve) => window.setTimeout(() => resolve(context), 400));
+        return context;
+      }
       case 'get_configuration_workspace': {
         if (new URLSearchParams(window.location.search).has('__ui_identity_read_error') && !identityReadReady) {
           throw new Error(JSON.stringify({
@@ -3735,13 +4018,46 @@ export function installMockBackend() {
         }
         return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
       }
+      case 'preview_configuration_intent': {
+        const programId = stringArg(args, 'programId');
+        const request = objectArgs(args).request as import('../types').IntentPreviewRequest;
+        const current = configurationState(programId);
+        if (current.stateRevision !== request.expectedStateRevision) throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE' };
+        const requested = request.change;
+        const historyConflicts = requested.action === 'undo' || requested.action === 'redo' ? previewHistoryConflicts(programId, requested) : [];
+        const unresolvedHistory = requested.action === 'undo' || requested.action === 'redo' ? historyConflicts.some((conflict) => !requested.choices[conflict.conflictId]) : false;
+        const change = unwrapNativeObject(requested);
+        const values = 'values' in change ? change.values : {};
+        const related = current.kind === 'mihomo' && (change.action === 'createObject' || change.action === 'updateObject') && 'access' in values && values.access === 'lan';
+        const linked = previewRequiredNativeEdits(programId, requested);
+        const referenceBlocker = previewNativeReferenceBlocker(programId, requested);
+        let removal: ReturnType<typeof previewRemovalReferences> = { choices: [], edits: [] };
+        let removalBlocker: string | undefined;
+        try {
+          removal = previewRemovalReferences(programId, requested);
+          removalBlocker = removal.choices.some((choice) => !choice.targets.length) ? 'INTENT_TARGET_IN_USE' : removal.choices.some((choice) => !choice.selectedTarget) ? 'INTENT_REFERENCE_CHOICE_REQUIRED' : undefined;
+        } catch (error) {
+          if (!error || typeof error !== 'object' || !('messageKey' in error) || typeof error.messageKey !== 'string') throw error;
+          removalBlocker = error.messageKey;
+        }
+        const effectHash = previewContentHash(JSON.stringify([request.change, historyConflicts, linked.map((edit) => edit.effect)]));
+        const blocker = referenceBlocker ?? removalBlocker;
+        const localChoice = blocker === 'INTENT_REFERENCE_CHOICE_REQUIRED' || blocker === 'INTENT_REFERENCE_CHOICE_STALE';
+        return {
+          planHash: previewContentHash(JSON.stringify([request, current.compatibilityProfile.profileHash])),
+          effectHash, capabilityProfileHash: current.compatibilityProfile.profileHash,
+          stateRevision: current.stateRevision, draftRevision: request.expectedDraftRevision,
+          effects: related ? [{ semanticPath: '/allow-lan', role: 'related', protected: false, after: { state: 'present', value: true } }] : linked.map((edit) => edit.effect), affectedObjectIds: [], noticeKeys: related ? ['INTENT_SHARED_LISTENER_SETTINGS'] : [], blockers: blocker ? [{ messageKey: blocker, recoveryAction: localChoice ? 'reviewCandidate' : 'openFinalConfiguration' }] : unresolvedHistory ? [{ messageKey: 'INTENT_HISTORY_OVERLAP', recoveryAction: 'reviewCandidate' }] : [], canCommit: !unresolvedHistory && !referenceBlocker && !removalBlocker,
+          historyConflicts, referenceChoices: removal.choices,
+        } satisfies import('../types').IntentChangePlan;
+      }
       case 'update_configuration_intent': {
         const programId = stringArg(args, 'programId');
         const request = objectArgs(args).request as import('../types').ConfigurationIntentRequest;
         const context: ConfigurationMutationContext = {
           operationId: request.operationId, kind: 'intent', expectedStateRevision: request.expectedStateRevision,
           editorSessionId: request.editorSessionId, expectedDraftRevision: request.expectedDraftRevision,
-          payloadHash: previewContentHash(JSON.stringify(request.change)),
+          payloadHash: previewContentHash(JSON.stringify([request.change, request.planHash, request.capabilityProfileHash])),
         };
         const receipt = previewOperationResult(programId, context);
         if (receipt) return { ...configurationWorkspaceSnapshot(programId), operationResult: receipt };
@@ -3749,12 +4065,57 @@ export function installMockBackend() {
         if (current.stateRevision !== request.expectedStateRevision) {
           throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_STATE_STALE', message: 'Configuration changed' };
         }
-        const change = request.change;
+        const previewRequest: import('../types').IntentPreviewRequest = {
+          expectedStateRevision: request.expectedStateRevision, editorSessionId: request.editorSessionId,
+          expectedDraftRevision: request.expectedDraftRevision, change: request.change,
+        };
+        if (request.capabilityProfileHash !== current.compatibilityProfile.profileHash || request.planHash !== previewContentHash(JSON.stringify([previewRequest, current.compatibilityProfile.profileHash]))) {
+          throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_PLAN_STALE' };
+        }
+        const referenceBlocker = previewNativeReferenceBlocker(programId, request.change);
+        if (referenceBlocker) throw { code: 'CONFIG_INVALID', messageKey: referenceBlocker };
+        const removal = previewRemovalReferences(programId, request.change);
+        if (removal.choices.some((choice) => !choice.targets.length)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_TARGET_IN_USE' };
+        if (removal.choices.some((choice) => !choice.selectedTarget)) throw { code: 'CONFIG_INVALID', messageKey: 'INTENT_REFERENCE_CHOICE_REQUIRED' };
+        if (intentProtectionFailurePending) {
+          intentProtectionFailurePending = false;
+          throw { code: 'STORAGE', messageKey: 'INTENT_HISTORY_PROTECTION_FAILED' };
+        }
+        let change = unwrapNativeObject(request.change);
+        if (request.change.action === 'objectNode') {
+          const nodeId = request.change.nodeId;
+          const node = previewIntentNodes(current).find((node) => node.nodeId === nodeId);
+          const adapter = change;
+          const editor = previewNativeContext(programId, node?.nodeId).objectEditors.find((editor) => editor.nodeId === node?.nodeId && (adapter.action === 'createObject' ? editor.descriptor.kind === adapter.objectKind : 'objectId' in adapter && editor.objects.some((object) => object.objectId === adapter.objectId)));
+          if (!node || !editor) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_PLAN_STALE' };
+        }
+        let nativePath: string[] | undefined;
+        let curatedNativeOwner: string | undefined;
+        if (change.action === 'editNode' || change.action === 'followNode') {
+          const nativeChange = change;
+          const node = previewIntentNodes(current).find((node) => node.nodeId === nativeChange.nodeId);
+          const context = previewNativeContext(programId, node?.nodeId);
+          const value = context.values.find((value) => value.referenceId === (change as { referenceId: string }).referenceId);
+          if (!node || !value) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_PLAN_STALE' };
+          const document = current.format === 'yaml' ? parseYaml(current.desired.content) : parsePreviewJsonc(current.desired.content);
+          nativePath = previewNativeValues(document, node).find((entry) => previewNativeReference(node, previewNativeSemanticPath(document, entry.path), entry.value, entry.value !== undefined) === value.referenceId)?.path ?? (!node.pattern.includes('*') ? node.pattern : undefined);
+          if (!nativePath) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_PLAN_STALE' };
+          if (node.settingId && (change.action === 'followNode' || change.value.state === 'present')) {
+            curatedNativeOwner = `intent:native:${node.nodeId}:${value.semanticPath}`;
+            change = change.action === 'followNode' ? { action: 'follow', settingId: node.settingId } : { action: 'set', settingId: node.settingId, value: change.value.state === 'present' ? change.value.value : undefined };
+          }
+        }
         const contributions = previewUpstreamContributions.get(programId)!;
+        const beforeWrites = structuredClone(contributions.writes);
+        const beforeProjections = structuredClone(current.guidedProjection);
         const upstreamContent = previewUpstreamDocuments.get(programId) ?? current.desired.content;
         const parse = (content: string): unknown => current.format === 'yaml' ? parseYaml(content) : parsePreviewJsonc(content);
         const document = parse(upstreamContent);
+        for (const edit of removal.edits) setPreviewGuidedPath(document, edit.path, edit.value);
+        const linked = previewRequiredNativeEdits(programId, request.change);
+        for (const edit of linked) setPreviewGuidedPath(document, edit.path, edit.value);
         if (change.action === 'set' || change.action === 'follow') {
+          if (curatedNativeOwner) contributions.writes = contributions.writes.filter((write) => write.owner !== curatedNativeOwner);
           const descriptor = current.guidedDescriptors.find((item) => item.id === change.settingId);
           const path = previewGuidedPath(current.kind, change.settingId);
           if (!descriptor || !path) throw { code: 'INVALID_SPEC', message: 'Unknown setting' };
@@ -3769,13 +4130,78 @@ export function installMockBackend() {
             state.guidedProjection = state.guidedProjection.map((item) => item.settingId === change.settingId
               ? { ...item, status: change.action === 'follow' ? 'inherited' : 'explicit', intentValue: change.action === 'set' ? change.value : undefined } : item);
           });
-        } else {
+        } else if (change.action === 'undo' || change.action === 'redo') {
+          const record = current.intentHistory.find((record) => record.recordId === change.recordId);
+          const delta = previewIntentHistory.get(`${programId}:${change.recordId}`);
+          if (!record || !delta || (change.action === 'undo' ? !record.canUndo : !record.canRedo)) throw {code:'CONFIG_CONFLICT', messageKey:'INTENT_HISTORY_UNAVAILABLE'};
+          const conflicts = previewHistoryConflicts(programId, change);
+          if (conflicts.some((conflict) => !change.choices[conflict.conflictId])) throw {code:'CONFIG_CONFLICT', messageKey:'INTENT_HISTORY_OVERLAP'};
+          const historyChange = change;
+          const owners = delta.owners.filter((owner) => previewHistoryConflicts(programId, historyChange, owner)
+            .every((conflict) => historyChange.choices[conflict.conflictId] !== 'keepCurrent'));
+          contributions.writes = contributions.writes.filter((write) => !owners.includes(write.owner));
+          contributions.writes.push(...structuredClone((change.action === 'undo' ? delta.before : delta.after).filter((write) => owners.includes(write.owner))));
+          updatePreviewUpstream(programId, recordPreviewContributions(programId, '', []), (state) => {
+            state.guidedProjection = state.guidedProjection.map((item) => {
+              const patch = delta.projections.find((patch) => patch.before.settingId === item.settingId);
+              return patch && owners.includes(`intent:${item.settingId}`) ? structuredClone(change.action === 'undo' ? patch.before : patch.after) : item;
+            });
+          });
+          record.canUndo = change.action === 'redo'; record.canRedo = change.action === 'undo';
+          previewConfigurationStates.get(programId)!.intentHistory = current.intentHistory;
+        } else if (change.action === 'editNode' || change.action === 'followNode') {
+          const path = nativePath!;
+          const effective = parse(current.desired.content);
+          const owner = `intent:native:${change.nodeId}:${previewNativeSemanticPath(effective, path)}`;
+          if (change.action === 'followNode') contributions.writes = contributions.writes.filter((write) => write.owner !== owner);
+          else {
+            let parent = document as Record<string, unknown>;
+            for (const key of path.slice(0, -1)) { if (!parent[key] || typeof parent[key] !== 'object') parent[key] = {}; parent = parent[key] as Record<string, unknown>; }
+            if (change.value.state === 'missing') delete parent[path[path.length - 1]];
+            else parent[path[path.length - 1]] = change.value.value;
+          }
+          const operations = change.action === 'followNode' ? [] : previewFinalChanges(upstreamContent, JSON.stringify(document));
+          let content = recordPreviewContributions(programId, owner, operations.filter((operation) => !linked.some((edit) => edit.semanticPath === operation.semanticPath)));
+          for (const edit of linked) content = recordPreviewContributions(programId, `intent:native:${edit.nodeId}:${edit.semanticPath}`, operations.filter((operation) => edit.semanticPath === operation.semanticPath));
+          updatePreviewUpstream(programId, content);
+        } else if ('objectKind' in change || 'objectId' in change) {
           applyPreviewIntentObject(programId, change, document);
+        }
+        if (change.action !== 'undo' && change.action !== 'redo') {
+          const next = configurationState(programId);
+          const owners = [...new Set([...beforeWrites, ...contributions.writes].map((write) => write.owner))]
+            .filter((owner) => owner.startsWith('intent:') && JSON.stringify(beforeWrites.filter((write) => write.owner === owner)) !== JSON.stringify(contributions.writes.filter((write) => write.owner === owner)));
+          if (owners.length) {
+            const recordId = request.operationId;
+            previewIntentHistory.set(`${programId}:${recordId}`, { owners,
+              before:beforeWrites.filter((write) => owners.includes(write.owner)), after:structuredClone(contributions.writes.filter((write) => owners.includes(write.owner))),
+              values: owners.flatMap((owner) => [...new Map([...beforeWrites, ...contributions.writes].filter((write) => write.owner === owner).map((write) => [write.change.semanticPath, write])).values()].map((write) => {
+                const before = previewConflictPathValue(parse(upstreamContent), write.change.segments);
+                const after = previewConflictPathValue(parse(previewUpstreamDocuments.get(programId) ?? next.desired.content), write.change.segments);
+                return { owner, segments: write.change.segments, before: before.present ? { state: 'present' as const, value: before.value } : { state: 'missing' as const }, after: after.present ? { state: 'present' as const, value: after.value } : { state: 'missing' as const } };
+              })),
+              projections:beforeProjections.flatMap((before) => { const after = next.guidedProjection.find((item) => item.settingId === before.settingId); return after && JSON.stringify(before) !== JSON.stringify(after) ? [{before,after:structuredClone(after)}] : []; }),
+            });
+            const nodeId = 'nodeId' in request.change ? request.change.nodeId : undefined;
+            const node = previewIntentNodes(current).find((node) => node.nodeId === nodeId)!;
+            const subjectKey = current.guidedDescriptors.find((descriptor) => descriptor.id === node.settingId)?.label ?? node.nativeName;
+            const labelKey = change.action === 'createObject' ? 'Added configuration entry' : change.action === 'removeObject' ? 'Removed configuration entry' : ['follow', 'followNode', 'followObject'].includes(change.action) ? 'Restored source settings' : 'Changed configuration settings';
+            previewConfigurationStates.get(programId)!.intentHistory = [{recordId, labelKey, subjectKey, createdUnixMs:Date.now(), canUndo:true, canRedo:false}, ...current.intentHistory.filter((record) => record.canUndo)].slice(0,64);
+          }
         }
         const result: ConfigurationOperationResult = {
           operationId: request.operationId, status: 'updated', candidateGeneration: configurationState(programId).generation,
         };
         previewConfigurationOperations.set(`${programId}:${request.operationId}`, { request: structuredClone(context), result });
+        window.dispatchEvent(new CustomEvent('camellia-ui-preview:intent-commit', { detail: { programId, operationId: request.operationId } }));
+        if (intentResponseLostPending) {
+          intentResponseLostPending = false;
+          throw { code: 'TIMEOUT', message: 'The update response was not received.' };
+        }
+        if (intentPendingResult) {
+          intentPendingResult = false;
+          return { ...configurationWorkspaceSnapshot(programId), operationResult: { ...result, status: 'pending' } };
+        }
         return { ...configurationWorkspaceSnapshot(programId), operationResult: result };
       }
       case 'get_configuration_operation': {
@@ -4025,7 +4451,8 @@ export function installMockBackend() {
         throw { code: 'MOCK_COMMAND_UNIMPLEMENTED', message: `No UI preview response for ${command}` };
     }
   };
-  const invokeWithResponseControl = (command: string, args?: InvokeArgs) => {
+  const invokeWithResponseControl = async (command: string, args?: InvokeArgs) => {
+    if (['get_configuration_intent_context', 'preview_configuration_intent', 'update_configuration_intent'].includes(command)) await loadNativeIntentCatalogs();
     const result = handlePreviewInvoke(command, args);
     if (configurationResponseHeldPending
       && ['save_configuration_candidate', 'activate_configuration_candidate'].includes(command)) {
@@ -4044,9 +4471,9 @@ export function installMockBackend() {
     mockIPC(invokeWithResponseControl, { shouldMockEvents: true });
   }
   window.addEventListener('camellia-ui-preview:automatic-config-update', (event) => {
-    const detail = (event as CustomEvent<{ programId?: string }>).detail;
+    const detail = (event as CustomEvent<{ programId?: string; content?: string }>).detail;
     const programId = detail?.programId ?? 'xray-primary';
-    const content = '{\n  "log": { "loglevel": "debug" },\n  "automatic": true\n}\n';
+    const content = detail?.content ?? '{\n  "log": { "loglevel": "debug" },\n  "automatic": true\n}\n';
     configurationState(programId);
     updatePreviewUpstream(programId, previewSourceUpdate(programId, content, false), (current) => {
       if (current.sourceStatuses[0]) {

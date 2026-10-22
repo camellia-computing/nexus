@@ -8,11 +8,14 @@ use serde_json::Value;
 use crate::{
     CamelliaNexusError, ConfigurationAssessmentEvidence, ConfigurationAssessmentIssue,
     ConfigurationSchemaDocument, CoreCapabilityProfile, ErrorCode, KnowledgeDeclaration,
-    ProgramKind, Result, config_service::hash_bytes, embedded_core_knowledge,
+    ProgramKind, Result, config_service::hash_bytes,
 };
 
 const MAX_EVIDENCE_VISITS: usize = 32_768;
 const MAX_EVIDENCE_DEPTH: usize = 64;
+
+mod native_inputs;
+pub(crate) use native_inputs::*;
 
 pub(crate) struct UndeclaredEntry {
     pub path: Vec<String>,
@@ -23,39 +26,42 @@ pub(crate) fn undeclared_entries(
     profile: &CoreCapabilityProfile,
     document: &Value,
 ) -> Result<Vec<UndeclaredEntry>> {
-    let knowledge = embedded_core_knowledge()?;
-    let descriptor = knowledge
-        .program(profile.program)
-        .ok_or_else(invalid_knowledge)?;
-    let release = descriptor
-        .releases
-        .iter()
-        .find(|release| release.tag == profile.baseline_tag)
-        .ok_or_else(invalid_knowledge)?;
-    let mut declarations: BTreeMap<&str, Vec<&KnowledgeDeclaration>> = BTreeMap::new();
-    for variant in &descriptor.declarations {
-        if variant.releases.contains(&profile.baseline_tag) {
-            declarations
-                .entry(&variant.declaration.id)
-                .or_default()
-                .push(&variant.declaration);
-        }
-    }
-    let mut walker = FieldWalker {
-        profile,
-        descriptor,
-        module_path: &release.module_path,
-        declarations,
-        visits: 0,
-        entries: Vec::new(),
-    };
+    let mut walker = FieldWalker::for_profile(profile)?;
     let encoding = FieldEncoding::native(profile.program);
-    for id in &descriptor.configuration_roots {
+    for id in &walker.descriptor.configuration_roots {
         let root = walker.declaration(id).ok_or_else(invalid_knowledge)?;
         walker.walk_declaration(root, document, encoding, &mut Vec::new(), 0, true)?;
     }
     walker.walk_decoder_options(document)?;
     Ok(walker.entries)
+}
+
+impl<'a> FieldWalker<'a> {
+    fn for_profile(profile: &'a CoreCapabilityProfile) -> Result<Self> {
+        let descriptor = profile.reviewed_descriptor()?;
+        let release = descriptor
+            .releases
+            .iter()
+            .find(|release| release.tag == profile.baseline_tag)
+            .ok_or_else(invalid_knowledge)?;
+        let mut declarations: BTreeMap<&str, Vec<&KnowledgeDeclaration>> = BTreeMap::new();
+        for variant in &descriptor.declarations {
+            if variant.releases.contains(&profile.baseline_tag) {
+                declarations
+                    .entry(&variant.declaration.id)
+                    .or_default()
+                    .push(&variant.declaration);
+            }
+        }
+        Ok(Self {
+            profile,
+            descriptor,
+            module_path: &release.module_path,
+            declarations,
+            visits: 0,
+            entries: Vec::new(),
+        })
+    }
 }
 
 struct FieldWalker<'a> {
@@ -465,7 +471,7 @@ impl<'a> FieldWalker<'a> {
                     },
                     path,
                     depth + 1,
-                    false,
+                    true,
                 );
             }
             return Ok(());
@@ -938,6 +944,7 @@ mod tests {
     use super::*;
     use crate::{
         ConfigurationSchemaSource, CoreBinaryFingerprint, CoreProbeReport, JsonSchemaDialect,
+        embedded_core_knowledge,
     };
     use serde_json::json;
 
@@ -1035,7 +1042,10 @@ mod tests {
             let decoder = descriptor
                 .value_decoders
                 .iter()
-                .find(|entry| entry.releases.contains(&release.tag))
+                .find(|entry| {
+                    entry.releases.contains(&release.tag)
+                        && entry.decoder.declaration == "option#UDPOverTCPOptions"
+                })
                 .unwrap();
             if decoder.decoder.build_constraint.contains("go1.") {
                 for environment in ["", "Environment: go1.19.0 linux/amd64\n"] {

@@ -385,36 +385,12 @@ fn write_dpapi_file(
 
 #[cfg(windows)]
 fn dpapi_protect(plaintext: &[u8], purpose: &str) -> std::result::Result<Vec<u8>, LicensingError> {
-    use windows::{
-        Win32::Security::Cryptography::{
-            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
-        },
-        core::PCWSTR,
-    };
-
-    let mut plaintext = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(plaintext.len()).map_err(|_| windows_vault_error())?,
-        pbData: plaintext.as_ptr().cast_mut(),
-    };
-    let entropy_bytes = format!("camellia.nexus.config-credentials.v1\0{purpose}");
-    let entropy = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(entropy_bytes.len()).map_err(|_| windows_vault_error())?,
-        pbData: entropy_bytes.as_ptr().cast_mut(),
-    };
-    let mut output = CRYPT_INTEGER_BLOB::default();
-    unsafe {
-        CryptProtectData(
-            &raw mut plaintext,
-            PCWSTR::null(),
-            Some(&raw const entropy),
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &raw mut output,
-        )
-    }
-    .map_err(|_| windows_vault_error())?;
-    copy_and_free_dpapi_blob(output, WINDOWS_MAX_PROTECTED_FILE_BYTES)
+    crate::platform::protected_data::protect(
+        plaintext,
+        "camellia.nexus.config-credentials.v1",
+        purpose,
+        WINDOWS_MAX_PROTECTED_FILE_BYTES,
+    )
 }
 
 #[cfg(windows)]
@@ -422,50 +398,12 @@ fn dpapi_unprotect(
     protected: &[u8],
     purpose: &str,
 ) -> std::result::Result<Vec<u8>, LicensingError> {
-    use windows::Win32::Security::Cryptography::{
-        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
-    };
-
-    let mut protected = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(protected.len()).map_err(|_| windows_vault_error())?,
-        pbData: protected.as_ptr().cast_mut(),
-    };
-    let entropy_bytes = format!("camellia.nexus.config-credentials.v1\0{purpose}");
-    let entropy = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(entropy_bytes.len()).map_err(|_| windows_vault_error())?,
-        pbData: entropy_bytes.as_ptr().cast_mut(),
-    };
-    let mut output = CRYPT_INTEGER_BLOB::default();
-    unsafe {
-        CryptUnprotectData(
-            &raw mut protected,
-            None,
-            Some(&raw const entropy),
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &raw mut output,
-        )
-    }
-    .map_err(|_| windows_vault_error())?;
-    copy_and_free_dpapi_blob(output, WINDOWS_MAX_PROTECTED_FILE_BYTES)
-}
-
-#[cfg(windows)]
-fn copy_and_free_dpapi_blob(
-    output: windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB,
-    maximum: usize,
-) -> std::result::Result<Vec<u8>, LicensingError> {
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-
-    let length = usize::try_from(output.cbData).map_err(|_| windows_vault_error())?;
-    let result = if output.pbData.is_null() || length == 0 || length > maximum {
-        Err(windows_vault_error())
-    } else {
-        Ok(unsafe { std::slice::from_raw_parts(output.pbData, length) }.to_vec())
-    };
-    let _ = unsafe { LocalFree(Some(HLOCAL(output.pbData.cast()))) };
-    result
+    crate::platform::protected_data::unprotect(
+        protected,
+        "camellia.nexus.config-credentials.v1",
+        purpose,
+        WINDOWS_MAX_PROTECTED_FILE_BYTES,
+    )
 }
 
 #[cfg(windows)]

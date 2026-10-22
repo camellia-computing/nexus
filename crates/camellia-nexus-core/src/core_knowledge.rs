@@ -198,6 +198,30 @@ pub enum KnowledgeValueConstraint {
         sibling: String,
         value: serde_json::Value,
     },
+    Reference {
+        targets: Vec<KnowledgeReferenceTarget>,
+        form: KnowledgeReferenceForm,
+        builtin_values: Vec<String>,
+        allow_empty: bool,
+        allow_unresolved: bool,
+        recursive_collection: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnowledgeReferenceTarget {
+    pub path: Vec<String>,
+    /// A list object's native identity field, or map keys when absent.
+    pub identity: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum KnowledgeReferenceForm {
+    Scalar,
+    Listable,
+    ScalarOrObject { field: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +299,7 @@ pub struct KnowledgeSemanticRuleVariant {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnowledgeValueDecoder {
     pub declaration: String,
+    pub method: String,
     pub object_declaration: String,
     pub encoding: String,
     pub scalar_forms: Vec<KnowledgeScalarForm>,
@@ -774,6 +799,44 @@ impl CoreKnowledgeCatalog {
                     KnowledgeValueConstraint::Requires { sibling, .. } => {
                         !sibling.is_empty() && sibling.len() <= 256
                     }
+                    KnowledgeValueConstraint::Reference {
+                        targets,
+                        form,
+                        builtin_values,
+                        recursive_collection,
+                        ..
+                    } => {
+                        !targets.is_empty()
+                            && targets.len() <= 16
+                            && targets
+                                .iter()
+                                .enumerate()
+                                .all(|(index, target)| !targets[..index].contains(target))
+                            && targets.iter().all(|target| {
+                                !target.path.is_empty()
+                                    && target.path.len() <= 64
+                                    && target
+                                        .path
+                                        .iter()
+                                        .all(|part| !part.is_empty() && part.len() <= 256)
+                                    && target.identity.as_ref().is_none_or(|identity| {
+                                        !identity.is_empty() && identity.len() <= 256
+                                    })
+                            })
+                            && builtin_values.len() <= 64
+                            && builtin_values.iter().all(|value| !value.is_empty())
+                            && builtin_values.iter().collect::<BTreeSet<_>>().len()
+                                == builtin_values.len()
+                            && recursive_collection
+                                .as_ref()
+                                .is_none_or(|field| !field.is_empty() && field.len() <= 256)
+                            && match form {
+                                KnowledgeReferenceForm::ScalarOrObject { field } => {
+                                    !field.is_empty() && field.len() <= 256
+                                }
+                                _ => true,
+                            }
+                    }
                 };
                 if rule.id.is_empty()
                     || rule.message_key.is_empty()
@@ -891,7 +954,9 @@ impl CoreKnowledgeCatalog {
                 if variant.releases.is_empty()
                     || decoder.encoding != "json"
                     || forms.len() != decoder.scalar_forms.len()
-                    || decoder.declaration == decoder.object_declaration
+                    || !["UnmarshalJSON", "UnmarshalJSONContext"].contains(&decoder.method.as_str())
+                    || (decoder.declaration == decoder.object_declaration
+                        && !decoder.scalar_forms.is_empty())
                     || decoder.build_constraint.len() > 4096
                     || decoder.evidence.is_empty()
                     || decoder.evidence.len() > 64
@@ -922,14 +987,20 @@ impl CoreKnowledgeCatalog {
                     if !tags.contains(tag.as_str())
                         || !value_decoders.insert((tag, &decoder.declaration))
                         || declaration(&decoder.declaration).is_none_or(|entry| {
-                            !entry.methods.iter().any(|method| method == "UnmarshalJSON")
+                            !entry.methods.contains(&decoder.method)
+                                || !decoder.evidence.iter().any(|evidence| {
+                                    evidence.source.path == entry.source.path
+                                        && evidence.source.symbol
+                                            == format!("{}.{}", entry.name, decoder.method)
+                                })
                         })
                         || declaration(&decoder.object_declaration).is_none_or(|entry| {
                             entry.shape != KnowledgeTypeShape::Structure
-                                || entry
-                                    .methods
-                                    .iter()
-                                    .any(|method| method.starts_with("Unmarshal"))
+                                || (decoder.declaration != decoder.object_declaration
+                                    && entry
+                                        .methods
+                                        .iter()
+                                        .any(|method| method.starts_with("Unmarshal")))
                                 || !entry.build_constraint.is_empty()
                         })
                     {
@@ -1379,8 +1450,12 @@ mod tests {
                 .iter()
                 .filter(|entry| entry.releases.contains(&release.tag))
                 .collect();
-            assert_eq!(decoders.len(), 1);
-            let decoder = &decoders[0].decoder;
+            assert_eq!(decoders.len(), 2);
+            let decoder = &decoders
+                .iter()
+                .find(|entry| entry.decoder.declaration == "option#UDPOverTCPOptions")
+                .unwrap()
+                .decoder;
             assert_eq!(decoder.declaration, "option#UDPOverTCPOptions");
             assert_eq!(
                 decoder.scalar_forms,
@@ -1400,7 +1475,11 @@ mod tests {
                 .iter_mut()
                 .find(|entry| entry.program == ProgramKind::SingBox)
                 .unwrap();
-            let variant = &mut program.value_decoders[0];
+            let variant = program
+                .value_decoders
+                .iter_mut()
+                .find(|entry| entry.decoder.declaration == "option#UDPOverTCPOptions")
+                .unwrap();
             match mutation {
                 0 => variant.decoder.object_declaration = variant.decoder.declaration.clone(),
                 1 => variant.decoder.evidence.clear(),

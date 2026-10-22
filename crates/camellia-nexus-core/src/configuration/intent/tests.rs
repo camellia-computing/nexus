@@ -116,16 +116,15 @@ fn default_route_can_select_a_unique_outbound_added_in_final_configuration() {
             2,
         )
         .unwrap();
-    state
-        .update_intent(
-            &profile,
-            &ConfigurationIntentAction::Set {
-                setting_id: "routing.final".into(),
-                value: json!("final-direct"),
-            },
-            3,
-        )
-        .unwrap();
+    let change = super::super::intent_catalog::tests::registered_edit(
+        &profile,
+        &state,
+        IntentCompiledEdit::Set {
+            setting_id: "routing.final".into(),
+            value: json!("final-direct"),
+        },
+    );
+    state.update_intent(&profile, &change, 3).unwrap();
     let document = parse_semantic_document(state.format, state.desired.content.as_bytes()).unwrap();
     assert_eq!(document["route"]["final"], "final-direct");
     assert_eq!(document["outbounds"][0]["tag"], "final-direct");
@@ -158,9 +157,9 @@ fn simple_rules_use_existing_targets_and_preserve_order_and_unrelated_fields() {
             "direct"
         };
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::CreateObject {
+                &IntentCompiledEdit::CreateObject {
                     object_kind: IntentObjectKind::RouteRule,
                     values: values(&[
                         ("match", json!("subdomain")),
@@ -192,9 +191,9 @@ fn simple_rules_use_existing_targets_and_preserve_order_and_unrelated_fields() {
         assert_eq!(rules[0].values["value"], "changed.example");
         assert_eq!(rules[1].values["value"], "second.example");
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::FollowObject {
+                &IntentCompiledEdit::FollowObject {
                     object_id: rules[0].object_id.clone(),
                     expected_hash: rules[0].content_hash.clone(),
                 },
@@ -212,11 +211,12 @@ fn simple_rules_use_existing_targets_and_preserve_order_and_unrelated_fields() {
             .find(|object| object.values.get("value") == Some(&json!("second.example")))
             .unwrap();
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::RemoveObject {
+                &IntentCompiledEdit::RemoveObject {
                     object_id: created.object_id,
                     expected_hash: created.content_hash,
+                    replacements: BTreeMap::new(),
                 },
                 4,
             )
@@ -271,11 +271,12 @@ fn mihomo_dns_update_remove_and_follow_do_not_capture_sibling_servers() {
     );
     let current = objects(&profile, &state).remove(0);
     state
-        .update_intent(
+        .apply_intent_edit(
             &profile,
-            &ConfigurationIntentAction::RemoveObject {
+            &IntentCompiledEdit::RemoveObject {
                 object_id: current.object_id,
                 expected_hash: current.content_hash,
+                replacements: BTreeMap::new(),
             },
             4,
         )
@@ -285,9 +286,9 @@ fn mihomo_dns_update_remove_and_follow_do_not_capture_sibling_servers() {
         .find(|object| object.removed)
         .unwrap();
     state
-        .update_intent(
+        .apply_intent_edit(
             &profile,
-            &ConfigurationIntentAction::FollowObject {
+            &IntentCompiledEdit::FollowObject {
                 object_id: removed.object_id,
                 expected_hash: removed.content_hash,
             },
@@ -304,7 +305,7 @@ fn mihomo_dns_update_remove_and_follow_do_not_capture_sibling_servers() {
 fn catchall_rules_and_missing_targets_do_not_create_unreachable_guided_rules() {
     let profile = latest(ProgramKind::Mihomo);
     let mut state = state(&profile, json!({"rules":["MATCH,DIRECT"]}));
-    let action = ConfigurationIntentAction::CreateObject {
+    let action = IntentCompiledEdit::CreateObject {
         object_kind: IntentObjectKind::RouteRule,
         values: values(&[
             ("match", json!("domain")),
@@ -315,7 +316,7 @@ fn catchall_rules_and_missing_targets_do_not_create_unreachable_guided_rules() {
     let before = state.clone();
     assert_eq!(
         state
-            .update_intent(&profile, &action, 2)
+            .apply_intent_edit(&profile, &action, 2)
             .unwrap_err()
             .message_key
             .as_deref(),
@@ -369,9 +370,9 @@ fn update(
     fields: &[(&str, Value)],
 ) {
     state
-        .update_intent(
+        .apply_intent_edit(
             profile,
-            &ConfigurationIntentAction::UpdateObject {
+            &IntentCompiledEdit::UpdateObject {
                 object_id: object.object_id.clone(),
                 expected_hash: object.content_hash.clone(),
                 values: values(fields),
@@ -434,9 +435,9 @@ fn each_stable_patch_has_program_specific_log_options_and_safe_listener_creation
                 "mixed"
             };
             state
-                .update_intent(
+                .apply_intent_edit(
                     &profile,
-                    &ConfigurationIntentAction::CreateObject {
+                    &IntentCompiledEdit::CreateObject {
                         object_kind: IntentObjectKind::Listener,
                         values: values(&[
                             ("protocol", json!(protocol)),
@@ -498,9 +499,9 @@ fn lan_listener_requires_authentication_and_does_not_expose_secrets_in_projectio
         ]);
         assert_eq!(
             state
-                .update_intent(
+                .apply_intent_edit(
                     &profile,
-                    &ConfigurationIntentAction::CreateObject {
+                    &IntentCompiledEdit::CreateObject {
                         object_kind: IntentObjectKind::Listener,
                         values: fields.clone()
                     },
@@ -514,9 +515,9 @@ fn lan_listener_requires_authentication_and_does_not_expose_secrets_in_projectio
         fields.insert("username".into(), json!("fixture-user"));
         fields.insert("password".into(), json!("fixture-password"));
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::CreateObject {
+                &IntentCompiledEdit::CreateObject {
                     object_kind: IntentObjectKind::Listener,
                     values: fields,
                 },
@@ -562,9 +563,9 @@ fn dns_identity_update_preserves_url_and_server_options() {
         let profile = latest(kind);
         let mut state = state(&profile, json!({}));
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::CreateObject {
+                &IntentCompiledEdit::CreateObject {
                     object_kind: IntentObjectKind::DnsServer,
                     values: values(&[
                         ("protocol", json!("https")),
@@ -595,11 +596,12 @@ fn removed_source_listener_can_restore_following_without_deleting_siblings() {
     );
     let object = objects(&profile, &state).remove(0);
     state
-        .update_intent(
+        .apply_intent_edit(
             &profile,
-            &ConfigurationIntentAction::RemoveObject {
+            &IntentCompiledEdit::RemoveObject {
                 object_id: object.object_id.clone(),
                 expected_hash: object.content_hash.clone(),
+                replacements: BTreeMap::new(),
             },
             2,
         )
@@ -610,9 +612,9 @@ fn removed_source_listener_can_restore_following_without_deleting_siblings() {
         .unwrap();
     assert_eq!(removed.object_id, object.object_id);
     state
-        .update_intent(
+        .apply_intent_edit(
             &profile,
-            &ConfigurationIntentAction::FollowObject {
+            &IntentCompiledEdit::FollowObject {
                 object_id: removed.object_id,
                 expected_hash: removed.content_hash,
             },
@@ -671,9 +673,9 @@ fn mihomo_dns_additions_do_not_freeze_source_servers() {
     let profile = latest(ProgramKind::Mihomo);
     let mut state = state(&profile, json!({"dns":{"nameserver":["192.0.2.1"]}}));
     state
-        .update_intent(
+        .apply_intent_edit(
             &profile,
-            &ConfigurationIntentAction::CreateObject {
+            &IntentCompiledEdit::CreateObject {
                 object_kind: IntentObjectKind::DnsServer,
                 values: values(&[("protocol", json!("udp")), ("server", json!("192.0.2.2"))]),
             },
@@ -704,9 +706,9 @@ fn mihomo_new_proxy_does_not_change_existing_shared_access_or_accounts() {
     let before = state.clone();
     assert_eq!(
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::CreateObject {
+                &IntentCompiledEdit::CreateObject {
                     object_kind: IntentObjectKind::Listener,
                     values: values(&[
                         ("protocol", json!("http")),
@@ -723,9 +725,9 @@ fn mihomo_new_proxy_does_not_change_existing_shared_access_or_accounts() {
     );
     assert_eq!(state, before);
     state
-        .update_intent(
+        .apply_intent_edit(
             &profile,
-            &ConfigurationIntentAction::CreateObject {
+            &IntentCompiledEdit::CreateObject {
                 object_kind: IntentObjectKind::Listener,
                 values: values(&[
                     ("protocol", json!("http")),
@@ -763,9 +765,9 @@ fn dns_bootstrap_and_reference_checks_are_explicit_and_reentrant() {
     ]);
     assert_eq!(
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::CreateObject {
+                &IntentCompiledEdit::CreateObject {
                     object_kind: IntentObjectKind::DnsServer,
                     values: fields.clone()
                 },
@@ -779,9 +781,9 @@ fn dns_bootstrap_and_reference_checks_are_explicit_and_reentrant() {
     fields.insert("bootstrap".into(), json!("missing"));
     assert_eq!(
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::CreateObject {
+                &IntentCompiledEdit::CreateObject {
                     object_kind: IntentObjectKind::DnsServer,
                     values: fields.clone()
                 },
@@ -794,9 +796,9 @@ fn dns_bootstrap_and_reference_checks_are_explicit_and_reentrant() {
     );
     fields.insert("bootstrap".into(), json!("bootstrap"));
     state
-        .update_intent(
+        .apply_intent_edit(
             &profile,
-            &ConfigurationIntentAction::CreateObject {
+            &IntentCompiledEdit::CreateObject {
                 object_kind: IntentObjectKind::DnsServer,
                 values: fields,
             },
@@ -809,11 +811,12 @@ fn dns_bootstrap_and_reference_checks_are_explicit_and_reentrant() {
         .unwrap();
     assert_eq!(
         state
-            .update_intent(
+            .apply_intent_edit(
                 &profile,
-                &ConfigurationIntentAction::RemoveObject {
+                &IntentCompiledEdit::RemoveObject {
                     object_id: object.object_id,
-                    expected_hash: object.content_hash
+                    expected_hash: object.content_hash,
+                    replacements: BTreeMap::new(),
                 },
                 3
             )
@@ -822,4 +825,116 @@ fn dns_bootstrap_and_reference_checks_are_explicit_and_reentrant() {
             .as_deref(),
         Some("INTENT_TARGET_IN_USE")
     );
+}
+
+#[test]
+fn dns_resolver_object_edits_preserve_native_options_and_follow_later_source_fields() {
+    let knowledge = embedded_core_knowledge().unwrap();
+    for release in &knowledge.program(ProgramKind::SingBox).unwrap().releases {
+        let profile = profile(ProgramKind::SingBox, &release.version);
+        let original = json!({"dns":{"servers":[
+            {"type":"local","tag":"first"},
+            {"type":"local","tag":"second"},
+            {"type":"https","tag":"remote","server":"resolver.example.invalid","path":"/dns-query","domain_resolver":{"server":"first","strategy":"prefer_ipv4","timeout":"2s","disable_cache":true}}
+        ]}});
+        let mut state = state(&profile, original.clone());
+        let remote = objects(&profile, &state)
+            .into_iter()
+            .find(|object| object.label == "remote")
+            .unwrap();
+        assert!(remote.editable, "{}", release.version);
+        assert_eq!(remote.values.get("bootstrap"), Some(&json!("first")));
+        update(
+            &profile,
+            &mut state,
+            &remote,
+            &[("bootstrap", json!("second"))],
+        );
+        assert_eq!(
+            state.upstream_document().unwrap()["dns"]["servers"][2]["domain_resolver"],
+            json!({"server":"second","strategy":"prefer_ipv4","timeout":"2s","disable_cache":true})
+        );
+
+        let mut source = original;
+        source["dns"]["servers"][2]["domain_resolver"]["strategy"] = json!("prefer_ipv6");
+        source["dns"]["servers"][2]["domain_resolver"]["timeout"] = json!("3s");
+        state.base.content = serialize_semantic_document(state.format, &source).unwrap();
+        state
+            .rebuild_desired_with_source_update(3, SourceUpdateKind::UserEdit)
+            .unwrap();
+        let remote = objects(&profile, &state)
+            .into_iter()
+            .find(|object| object.label == "remote")
+            .unwrap();
+        update(
+            &profile,
+            &mut state,
+            &remote,
+            &[("server", json!("https://updated.example.invalid/dns-query"))],
+        );
+        let document = state.upstream_document().unwrap();
+        assert_eq!(
+            document["dns"]["servers"][2]["server"],
+            "updated.example.invalid"
+        );
+        assert_eq!(
+            document["dns"]["servers"][2]["domain_resolver"],
+            json!({"server":"second","strategy":"prefer_ipv6","timeout":"3s","disable_cache":true})
+        );
+        let remote = objects(&profile, &state)
+            .into_iter()
+            .find(|object| object.label == "remote")
+            .unwrap();
+        state
+            .apply_intent_edit(
+                &profile,
+                &IntentCompiledEdit::FollowObject {
+                    object_id: remote.object_id,
+                    expected_hash: remote.content_hash,
+                },
+                5,
+            )
+            .unwrap();
+        assert_eq!(state.upstream_document().unwrap(), source);
+    }
+}
+
+#[test]
+fn dns_cycle_checks_follow_native_string_and_object_resolvers_without_partial_writes() {
+    let knowledge = embedded_core_knowledge().unwrap();
+    for release in &knowledge.program(ProgramKind::SingBox).unwrap().releases {
+        let profile = profile(ProgramKind::SingBox, &release.version);
+        let mut state = state(
+            &profile,
+            json!({"dns":{"servers":[
+                {"type":"local","tag":"bootstrap"},
+                {"type":"udp","tag":"first","server":"first.example.invalid","domain_resolver":{"server":"second","strategy":"prefer_ipv4"}},
+                {"type":"udp","tag":"second","server":"second.example.invalid","domain_resolver":"third"},
+                {"type":"udp","tag":"third","server":"third.example.invalid","domain_resolver":{"server":"bootstrap","timeout":"2s"}}
+            ]}}),
+        );
+        let object = objects(&profile, &state)
+            .into_iter()
+            .find(|object| object.label == "third")
+            .unwrap();
+        let before = state.clone();
+        let error = state
+            .apply_intent_edit(
+                &profile,
+                &IntentCompiledEdit::UpdateObject {
+                    object_id: object.object_id,
+                    expected_hash: object.content_hash,
+                    values: values(&[("bootstrap", json!("first"))]),
+                },
+                2,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.message_key.as_deref(),
+            Some("INTENT_DNS_CYCLE"),
+            "{}",
+            release.version
+        );
+        assert_eq!(state, before);
+    }
 }

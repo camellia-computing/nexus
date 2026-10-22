@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { getNodeValue } from 'jsonc-parser';
 import { formatArgumentLine, parseArgumentLine } from '../src/arguments.ts';
 import {
@@ -19,7 +20,7 @@ import {
 } from '../src/programs/shared/configuration.ts';
 import { applySingBoxDashboardChange } from '../src/programs/sing-box/dashboard-state.ts';
 import { mihomoProgram } from '../src/programs/mihomo/index.ts';
-import { configurationErrorInfo, configurationNoticeDuration, errorInfoOf, intentErrorNeedsFinalEditor, sourceIssueMessage, TRANSIENT_ERROR_DISMISS_MS } from '../src/errors.ts';
+import { configurationChoiceWasRejected, configurationErrorInfo, configurationNoticeDuration, errorInfoOf, intentErrorNeedsFinalEditor, sourceIssueMessage, TRANSIENT_ERROR_DISMISS_MS } from '../src/errors.ts';
 import {
   clientVersionAdvisory,
   compareCanonicalSemVer,
@@ -33,6 +34,7 @@ import {
   signedLicenseStatusPresentation,
 } from '../src/license.ts';
 import { moveCatalogItem } from '../src/catalog.ts';
+import { createIntentContextStore } from '../src/intentContextStore.ts';
 import {
   CREATE_DRAFT_STORAGE_KEY,
   clearCreateDraft,
@@ -59,6 +61,37 @@ import {
 } from '../src/editor/jsonSchema.ts';
 import { JsonSchemaValidator } from '../src/editor/jsonSchemaValidation.ts';
 import { singBoxJsonSchemaSemantics } from '../src/programs/sing-box/jsonSchema.ts';
+
+{
+  const catalogs = JSON.parse(readFileSync(new URL('../src/testing/intentCatalogs.json', import.meta.url), 'utf8'));
+  const settings = JSON.parse(readFileSync(new URL('../src/testing/intentSettings.json', import.meta.url), 'utf8'));
+  assert.deepEqual(Object.keys(settings).sort(), Object.keys(catalogs).sort());
+  for (const key of Object.keys(catalogs)) {
+    const ids = settings[key].map((entry) => entry.descriptor.id);
+    assert.equal(new Set(ids).size, ids.length, 'one registered descriptor per setting');
+    for (const node of catalogs[key].nodes.filter((node) => node.settingId)) {
+      const entry = settings[key].find((entry) => entry.descriptor.id === node.settingId);
+      assert.ok(entry, `${key}: native setting ${node.settingId} needs its Core descriptor`);
+      assert.deepEqual(entry.pattern, node.pattern, 'browser writes use the same registered native path');
+    }
+  }
+}
+
+{
+  let reads = 0;
+  let contextRevision = 4;
+  const contexts = createIntentContextStore(async () => { reads += 1; return { stateRevision: contextRevision }; }, 2);
+  const first = contexts.load('one', 4, 'profile', 'chapter');
+  assert.equal(first, contexts.load('one', 4, 'profile', 'chapter'));
+  await Promise.all([first, contexts.load('one', 4, 'profile', 'chapter')]);
+  assert.equal(reads, 1, 'same revision and node share one read');
+  await assert.rejects(contexts.load('one', 5, 'profile', 'chapter'), (error) => error.messageKey === 'INTENT_PLAN_STALE');
+  contextRevision = 5;
+  await contexts.load('one', 5, 'profile', 'chapter');
+  assert.equal(reads, 3, 'failed reads are evicted before retry');
+  await contexts.load('two', 5, 'profile', 'chapter');
+  assert.equal(reads, 4, 'program contexts cannot cross data roots');
+}
 
 const validJsonAnalysis = analyzeConfiguration(
   'jsonc',
@@ -549,6 +582,21 @@ assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_RULE_SHADOWED' })
 assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_OBJECT_AMBIGUOUS' }), true);
 assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_PORT_INVALID' }), false);
 assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'CONFIGURATION_OPERATION_PENDING' }), false);
+const pendingIntent = configurationErrorInfo({ code: 'CONFIG_CONFLICT', messageKey: 'INTENT_OPERATION_PENDING' }, 'guided-change');
+assert.equal(configurationChoiceWasRejected(pendingIntent), false);
+assert.equal(configurationNoticeDuration(pendingIntent, 'guided-change', true), 0);
+const protectionRefusal = configurationErrorInfo({ code: 'STORAGE', messageKey: 'INTENT_HISTORY_PROTECTION_FAILED' }, 'guided-change');
+assert.equal(configurationChoiceWasRejected(protectionRefusal), true);
+assert.equal(configurationNoticeDuration(protectionRefusal, 'guided-change', true), TRANSIENT_ERROR_DISMISS_MS);
+assert.equal(configurationChoiceWasRejected({ code: 'STORAGE' }), false, 'an unknown storage result must retain its operation identity');
+assert.equal(hasChineseTranslation(pendingIntent.title), true);
+assert.equal(hasChineseTranslation(pendingIntent.message), true);
+for (const messageKey of ['CONFIGURATION_REFERENCE_INVALID', 'CONFIGURATION_REFERENCE_MISSING', 'CONFIGURATION_REFERENCE_AMBIGUOUS', 'INTENT_REFERENCE_CHOICE_REQUIRED', 'INTENT_REFERENCE_CHOICE_STALE']) {
+  const notice = configurationErrorInfo({ code: 'CONFIG_INVALID', messageKey }, 'guided-change');
+  assert.equal(hasChineseTranslation(notice.title), true);
+  assert.equal(hasChineseTranslation(notice.message), true);
+  assert.notEqual(notice.message, messageKey);
+}
 const { dnsServerNeedsResolver, intentSettingOptionMessages, intentOptionMessage } = await import('../src/intentPresentation.ts');
 for (const [setting, options] of Object.entries(intentSettingOptionMessages)) {
   for (const [value, message] of Object.entries(options)) {
@@ -568,6 +616,32 @@ for (const message of [
   'Done',
   'Choose an entry',
   'Choose an entry to edit',
+  'This entry is no longer available here. Your input is kept.',
+  'This setting changed while you were editing.',
+  'Keep existing',
+  'Replace value',
+  'Replacement value',
+  'Show replacement',
+  'Hide replacement',
+  'Enter a replacement value, or keep the existing one.',
+  'Private key',
+  'User identifier',
+  'Access secret',
+  'Related changes',
+  'Choose what these settings should use before removing this entry.',
+  'Replacement for',
+  'Replace and remove',
+  'Affected settings',
+  'Add another suitable entry, or edit these settings in Final configuration.',
+  'DNS server',
+  'DNS used for address lookup',
+  'Back',
+  'This change also updates:',
+  'Only this setting will change.',
+  'Review latest settings',
+  'Automatic routing',
+  'Automatic traffic redirection',
+  'Review the related settings before making this change.',
   'Add a local proxy for your apps to connect to.',
   'Add a DNS server when you need your own resolver.',
   'Choose which connection a domain or IP address uses.',

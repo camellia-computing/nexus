@@ -389,15 +389,75 @@ export interface IntentObjectDescriptor { kind: IntentObjectKind; category: stri
 export interface IntentObjectProjection { objectId: string; kind: IntentObjectKind; label: string; contentHash: string; values: Record<string, unknown>; canFollow: boolean; editable: boolean; removed: boolean }
 export interface IntentTarget { id: string; label: string; kind: string }
 export type ConfigurationIntentAction =
-  | { action: 'set'; settingId: string; value: unknown }
-  | { action: 'follow'; settingId: string }
-  | { action: 'createObject'; objectKind: IntentObjectKind; values: Record<string, unknown> }
-  | { action: 'updateObject'; objectId: string; expectedHash: string; values: Record<string, unknown> }
-  | { action: 'removeObject' | 'followObject'; objectId: string; expectedHash: string };
+  | { action: 'objectNode'; nodeId: string; operation: IntentObjectOperation }
+  | { action: 'editNode'; nodeId: string; referenceId: string; value: SemanticValue }
+  | { action: 'followNode'; nodeId: string; referenceId: string }
+  | { action: 'undo' | 'redo'; recordId: string; choices: Record<string, 'keepCurrent' | 'restore'> };
+export type IntentObjectOperation =
+  | { kind: 'create'; objectKind: IntentObjectKind; values: Record<string, unknown> }
+  | { kind: 'update'; objectId: string; expectedHash: string; values: Record<string, unknown> }
+  | { kind: 'remove'; objectId: string; expectedHash: string; replacements: Record<string, string> }
+  | { kind: 'follow'; objectId: string; expectedHash: string };
 export interface ConfigurationIntentRequest {
   operationId: string; expectedStateRevision: number; editorSessionId?: string; expectedDraftRevision?: number;
   change: ConfigurationIntentAction;
+  planHash: string;
+  capabilityProfileHash: string;
 }
+export interface IntentPreviewRequest {
+  expectedStateRevision: number;
+  editorSessionId?: string;
+  expectedDraftRevision?: number;
+  change: ConfigurationIntentAction;
+}
+export interface IntentChangePlan {
+  planHash: string;
+  effectHash: string;
+  capabilityProfileHash: string;
+  stateRevision: number;
+  draftRevision?: number;
+  effects: { semanticPath: string; role: 'explicit' | 'related'; before?: SemanticValue; after?: SemanticValue; protected: boolean }[];
+  affectedObjectIds: string[];
+  noticeKeys: string[];
+  blockers: { messageKey: string; recoveryAction: ConfigurationRecoveryAction }[];
+  historyConflicts: { conflictId: string; semanticPaths: string[]; protected: boolean; current: (SemanticValue | null)[]; restoring: (SemanticValue | null)[] }[];
+  referenceChoices: { choiceId: string; label: string; semanticPath: string; currentTarget: string; targets: IntentTarget[]; selectedTarget?: string }[];
+  canCommit: boolean;
+}
+export type IntentSubmission<Change = ConfigurationIntentAction> = (
+  change: Change, plan?: IntentChangePlan, onConfirmed?: () => void,
+) => Promise<boolean>;
+export interface IntentNode {
+  nodeId: string;
+  parentId?: string;
+  nativeName: string;
+  nativeOrder: number;
+  pattern: string[];
+  typeSelections: { path: string[]; field: string; value: string; comparison: 'exact' | 'asciiCaseInsensitive' }[];
+  control?: { kind: GuidedControl; allowedValues: string[]; nullable: boolean };
+  disposition: 'guided' | 'detailsManaged' | 'finalEditor' | 'inapplicable';
+  reasonKey?: string;
+  settingId?: string;
+  objectKinds: IntentObjectKind[];
+  objectProtocol?: string;
+}
+export interface IntentContext {
+  node?: IntentNode;
+  children: IntentNode[];
+  relations: { relationId: string; nodeIds: string[]; relatedNodeIds: string[]; constraint: unknown; when: { sibling: string; values: unknown[]; allowMissing: boolean }[]; messageKey: string; evidence: { source: { modulePath: string; path: string; symbol: string }; sourceCommit: string; behaviorHash: string }[] }[];
+  relatedNodes: IntentNode[];
+  stateRevision: number;
+  candidateGeneration: number;
+  catalogHash: string;
+  values: { referenceId: string; semanticPath: string; present: boolean; value?: unknown; protected: boolean; canFollow: boolean; intentValue?: SemanticValue; summary?: { kind: 'list' | 'object' | 'text'; size: number } }[];
+  issues: { messageKey: string; semanticPath: string }[];
+  defaultValue?: unknown;
+  defaultConditions: ('missing' | 'null' | 'emptyString')[];
+  setting?: GuidedSettingDescriptor;
+  objectEditors: IntentObjectContext[];
+  targets: IntentTarget[];
+}
+export interface IntentObjectContext { nodeId: string; descriptor: IntentObjectDescriptor; objects: IntentObjectProjection[] }
 export type GuidedProjectionStatus = 'inherited' | 'explicit' | 'custom' | 'overridden' | 'finalEdit';
 export interface GuidedProjection {
   settingId: string;
@@ -548,12 +608,14 @@ export interface ConfigurationStateView {
   lastKnownGoodRevision?: ConfigurationRevision;
   guidedDescriptors: GuidedSettingDescriptor[];
   guidedProjection: GuidedProjection[];
+  intentHistory: IntentHistorySummary[];
   intentObjects?: IntentObjectProjection[];
   intentObjectDescriptors?: IntentObjectDescriptor[];
   intentTargets?: IntentTarget[];
   managedIntegrations?: ManagedIntegrationProjection[];
   workspace: ConfigurationWorkspaceView;
 }
+export interface IntentHistorySummary { recordId: string; labelKey: string; subjectKey: string; createdUnixMs: number; canUndo: boolean; canRedo: boolean }
 export interface ConfigurationMutationContext {
   operationId: string;
   kind: 'save' | 'apply' | 'intent';

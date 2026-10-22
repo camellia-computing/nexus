@@ -57,14 +57,15 @@
     {
       "program": "singBox",
       "declaration": "option#UDPOverTCPOptions",
+      "method": "UnmarshalJSON",
       "objectDeclaration": "option#_UDPOverTCPOptions",
       "encoding": "json",
       "scalarForms": ["boolean", "null"],
       "keyComparison": "asciiCaseInsensitive",
-      "objectFields": [
+      "objectFieldVariants": [[
         {"name":"Enabled","type":"bool","embedded":false,"tags":{"json":"enabled,omitempty"}},
         {"name":"Version","type":"uint8","embedded":false,"tags":{"json":"version,omitempty"}}
-      ],
+      ]],
       "layoutEvidence": [
         "github.com/sagernet/sing/common/json/internal/contextjson#cachedTypeFields",
         "github.com/sagernet/sing/common/json/internal/contextjson#typeFields",
@@ -104,9 +105,1167 @@
         {"function":"github.com/sagernet/sing/common/json/internal/contextjson#decodeState.value",
          "bodyHashes":["26c5f7578c6987885cf7fe1529a0143be5867631791d09e48b4e672eaa0a4e31"]}
       ]
+    },
+    {
+      "program": "singBox",
+      "declaration": "option#DNSOptions",
+      "method": "UnmarshalJSONContext",
+      "objectDeclaration": "option#DNSOptions",
+      "encoding": "json",
+      "scalarForms": [],
+      "keyComparison": "asciiCaseInsensitive",
+      "objectFieldVariants": [
+        [{"name":"RawDNSOptions","type":"RawDNSOptions","embedded":true,"tags":{}}],
+        [{"name":"RawDNSOptions","type":"RawDNSOptions","embedded":true,"tags":{}},
+         {"name":"LegacyDNSOptions","type":"LegacyDNSOptions","embedded":true,"tags":{}}]
+      ],
+      "layoutEvidence": [
+        "github.com/sagernet/sing/common/json#UnmarshalContext",
+        "github.com/sagernet/sing/common/json/badjson#UnmarshallExcludedContext",
+        "github.com/sagernet/sing/common/json/internal/contextjson#ObjectKeys",
+        "github.com/sagernet/sing/common/json/internal/contextjson#cachedTypeFields",
+        "github.com/sagernet/sing/common/json/internal/contextjson#typeFields",
+        "github.com/sagernet/sing/common/json/internal/contextjson#dominantField",
+        "github.com/sagernet/sing/common/json/internal/contextjson#decodeState.object"
+      ],
+      "evidence": [{
+        "function":"option#DNSOptions.UnmarshalJSONContext",
+        "imports":{"json":"github.com/sagernet/sing/common/json","badjson":"github.com/sagernet/sing/common/json/badjson"},
+        "bodyHashes":["d7616b5f211471e88367cc39b86ce0a4fae1874ba385037dc49852ba4b6ded9e","6864168641fd9eb368e21f3144d7e03dcb7bcf0b47ec3f9dead2b472fec31d5d"]
+      }]
     }
   ],
   "rules": [
+    {
+      "id": "singBox.reference.route-final",
+      "program": "singBox",
+      "path": [
+        "route",
+        "final"
+      ],
+      "declaration": "option#RouteOptions",
+      "field": "Final",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "outbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {
+            "reference": "outbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "adapter/outbound#Manager.Start",
+          "path": "adapter/outbound/manager.go",
+          "bodyHashes": [
+            "ce27f8c12797e1f6d6084c1c6f0fd624d95f0c39aa9391e167487872b91f06d2",
+            "d2a3a1244eae7261bd0e8f251561d0765d0604dcc53da52359caee817734872e",
+            "63996717aa0078afd9b4a9d9ab1e6b9dfc6c17f8dc846b61016a5968bc66563e",
+            "dfbfc061473c908bd53fae370e695f14045bc68a70aea8d9a87a9239c3ecdfcd"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-final",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "final"
+      ],
+      "declaration": "option#RawDNSOptions",
+      "field": "Final",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "dns#TransportManager.Start",
+          "path": "dns/transport_manager.go",
+          "bodyHashes": [
+            "3d486e274c59a7e11c39dbaa5fcf03bdbf2ec2209659c3ebc806119b892ee0ed",
+            "e33fd8c16fab22b5d3567b5c509787df124bd34fd6f585b4a4a62bca812459f0"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.route-inbound",
+      "program": "singBox",
+      "path": [
+        "route",
+        "rules",
+        "*",
+        "inbound"
+      ],
+      "declaration": "option#RawDefaultRule",
+      "field": "Inbound",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true,
+        "recursiveCollection": "rules"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {
+            "reference": "inbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#LogicalRule.IsValid",
+          "path": "option/rule.go",
+          "bodyHashes": [
+            "eee11bfbaff7e42d26f1c9df7753fbc132394cd6a11d02f8a9dfe10c3cf0d0fa"
+          ],
+          "buildConstraints": [""]
+        },
+        {
+          "function": "route/rule#NewInboundRule",
+          "path": "route/rule/rule_item_inbound.go",
+          "bodyHashes": [
+            "3c5539756b08f751377b6c28b6175fc9d4696156fcc27d7ac4408fbab17335f2"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-inbound",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "rules",
+        "*",
+        "inbound"
+      ],
+      "declaration": "option#RawDefaultDNSRule",
+      "field": "Inbound",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true,
+        "recursiveCollection": "rules"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {
+            "reference": "inbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#LogicalDNSRule.IsValid",
+          "path": "option/rule_dns.go",
+          "bodyHashes": [
+            "ead4b0b8a721c7e35ea1a591989d7010f8cc1ad352c66b0100812ca15710220c"
+          ],
+          "buildConstraints": [""]
+        },
+        {
+          "function": "route/rule#NewInboundRule",
+          "path": "route/rule/rule_item_inbound.go",
+          "bodyHashes": [
+            "3c5539756b08f751377b6c28b6175fc9d4696156fcc27d7ac4408fbab17335f2"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.inbound-detour",
+      "program": "singBox",
+      "path": [
+        "inbounds",
+        "*",
+        "detour"
+      ],
+      "declaration": "option#ListenOptions",
+      "field": "Detour",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "detour,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "detour,omitempty"
+          },
+          "annotations": {
+            "reference": "inbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "common/listener#Listener.loopTCPIn",
+          "path": "common/listener/listener_tcp.go",
+          "bodyHashes": [
+            "20786dcb9f7a466254a1fa3ce95f878953156bc463d4a3080073c87f161c626d",
+            "ed3c06cab9482867d4f23228c07f8cc4bb790cbc1cc7fff7c89aeed4b1326822",
+            "384e8ba9ddafa47a4a00b0ce534c539c6635ed4765d21bc24456efb689d662ad",
+            "0ed766ab7793fa70f712daba130b4e0542bc189f069ea6efe3494842df61c500"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-route",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "rules",
+        "*",
+        "server"
+      ],
+      "declaration": "option#DNSRouteActionOptions",
+      "field": "Server",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "action",
+          "values": [
+            "",
+            "route"
+          ],
+          "allowMissing": true
+        }
+      ],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "route/rule#NewDNSRuleAction",
+          "path": "route/rule/rule_action.go",
+          "bodyHashes": [
+            "51b3d4ad02775c7ca328a95fffe3a4cca4e153818bd79322551c52c2b003fb15",
+            "9319510d8e2ca163c3ee9ad8aecd9b42f3e2113396cbf588c0fe993e48c4c2ec"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.route-resolver",
+      "program": "singBox",
+      "path": [
+        "route",
+        "rules",
+        "*",
+        "server"
+      ],
+      "declaration": "option#RouteActionResolve",
+      "field": "Server",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "action",
+          "values": [
+            "resolve"
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "route/rule#NewRuleAction",
+          "path": "route/rule/rule_action.go",
+          "bodyHashes": [
+            "7fe3e9a9ac71e64e3f40beff9eec306d3b96b8d4b81f68cdffe405368d0b68bd",
+            "dea20772df2f9ffbd87a97389bbf5e4d6c6998213875d405f418d03acf7800ea"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.default-resolver",
+      "program": "singBox",
+      "path": [
+        "route",
+        "default_domain_resolver"
+      ],
+      "declaration": "option#RouteOptions",
+      "field": "DefaultDomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "default_domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.reference.proxy",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "proxySettings",
+        "tag"
+      ],
+      "declaration": "infra/conf#ProxyConfig",
+      "field": "Tag",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "outbounds"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": false,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "tag"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "infra/conf#ProxyConfig.Build",
+          "path": "infra/conf/transport_internet.go",
+          "bodyHashes": [
+            "f37294b28fdbe6e4864f10488bd896e8d0497169718acea24bbf302fddb0e13e"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.reference.inbound-match",
+      "program": "xray",
+      "path": [
+        "routing",
+        "rules",
+        "*",
+        "inboundTag"
+      ],
+      "declaration": "infra/conf#parseFieldRule.RawFieldRule",
+      "field": "InboundTag",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*StringList",
+          "embedded": false,
+          "tags": {
+            "json": "inboundTag"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "infra/conf#parseFieldRule",
+          "path": "infra/conf/router.go",
+          "bodyHashes": [
+            "a7549a7010b72a2561d5b3ebf6f120d9854d7cf6aa5b774730cf6bd8cf3027a9",
+            "f5014dd137a372a6612d72694d839a0167a5326eea19301990f05c5fc8c6eb9e"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.outbound-resolver",
+      "program": "singBox",
+      "path": [
+        "outbounds",
+        "*",
+        "domain_resolver"
+      ],
+      "field": "DomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DialerOptions",
+        "option#AbstractDialerOptions"
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-resolver",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "servers",
+        "*",
+        "domain_resolver"
+      ],
+      "field": "DomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DialerOptions",
+        "option#AbstractDialerOptions"
+      ]
+    },
+    {
+      "id": "singBox.reference.endpoint-resolver",
+      "program": "singBox",
+      "path": [
+        "endpoints",
+        "*",
+        "domain_resolver"
+      ],
+      "field": "DomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DialerOptions",
+        "option#AbstractDialerOptions"
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-evaluate",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "rules",
+        "*",
+        "server"
+      ],
+      "field": "Server",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "action",
+          "values": [
+            "evaluate"
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "route/rule#NewDNSRuleAction",
+          "path": "route/rule/rule_action.go",
+          "bodyHashes": [
+            "51b3d4ad02775c7ca328a95fffe3a4cca4e153818bd79322551c52c2b003fb15",
+            "9319510d8e2ca163c3ee9ad8aecd9b42f3e2113396cbf588c0fe993e48c4c2ec"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DNSEvaluateActionOptions"
+      ],
+      "allowAbsentDeclaration": true
+    },
+    {
+      "id": "mihomo.reference.group-proxies",
+      "program": "mihomo",
+      "path": [
+        "proxy-groups",
+        "*",
+        "proxies"
+      ],
+      "declaration": "adapter/outboundgroup#GroupCommonOption",
+      "field": "Proxies",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "proxies"
+            ],
+            "identity": "name"
+          },
+          {
+            "path": [
+              "proxy-groups"
+            ],
+            "identity": "name"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [
+          "DIRECT",
+          "REJECT",
+          "REJECT-DROP",
+          "COMPATIBLE",
+          "PASS"
+        ],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "[]string",
+          "embedded": false,
+          "tags": {
+            "group": "proxies,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [],
+      "evidenceVariants": [
+        {
+          "constraint": {
+            "kind": "reference",
+            "targets": [
+              {
+                "path": [
+                  "proxies"
+                ],
+                "identity": "name"
+              },
+              {
+                "path": [
+                  "proxy-groups"
+                ],
+                "identity": "name"
+              }
+            ],
+            "form": {
+              "kind": "listable"
+            },
+            "builtinValues": [
+              "DIRECT",
+              "REJECT",
+              "REJECT-DROP",
+              "COMPATIBLE",
+              "PASS"
+            ],
+            "allowEmpty": true,
+            "allowUnresolved": false
+          },
+          "evidence": [
+            {
+              "function": "adapter/outboundgroup#getProxies",
+              "path": "adapter/outboundgroup/parser.go",
+              "bodyHashes": [
+                "7c73cdfcd324901a28553231a47707be48ea6945b569996a6e2e1cfd52ddf5fc"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            },
+            {
+              "function": "config#parseProxies",
+              "path": "config/config.go",
+              "bodyHashes": [
+                "c6f8eabf36d792513b5e41f8619952768283361e938f4e51f239bbed8b9feaec",
+                "923d4824679688e7af7557d65f2623010b46e5e932a53bf44ac7f8d0aa85d747",
+                "1fefa6896407fc5354dff1298268a6445be085948be4ce4653dc7152f0c93633",
+                "dd762812f4ad39fa6e0207721efaddc4eddbf5cc71dc64c24509011bbfcdf20f",
+                "262da639b121ded1d52d81f12b2fbbbc2af106538268d895a8c9fcf2d690e389",
+                "e864eef493631f1ab6f44925554818551bd37fc50d2d0ad6cfe0a2c279ad48a3",
+                "ec9a32491bbcf9a921defd04cb0184592ce0b87059efb2865e8645d474c03337",
+                "587f236bbd79f19403f8c229dc908eb0ed332c2c47dd869bc6ea16359f82cb0f",
+                "770c686ec8b7c243802dfd681106b9eb044cfce27a89a0f89194b9599df785d0"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "constraint": {
+            "kind": "reference",
+            "targets": [
+              {
+                "path": [
+                  "proxies"
+                ],
+                "identity": "name"
+              },
+              {
+                "path": [
+                  "proxy-groups"
+                ],
+                "identity": "name"
+              }
+            ],
+            "form": {
+              "kind": "listable"
+            },
+            "builtinValues": [
+              "DIRECT",
+              "REJECT",
+              "REJECT-DROP",
+              "COMPATIBLE",
+              "PASS",
+              "PASS-RULE"
+            ],
+            "allowEmpty": true,
+            "allowUnresolved": false
+          },
+          "evidence": [
+            {
+              "function": "adapter/outboundgroup#getProxies",
+              "path": "adapter/outboundgroup/parser.go",
+              "bodyHashes": [
+                "7c73cdfcd324901a28553231a47707be48ea6945b569996a6e2e1cfd52ddf5fc"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            },
+            {
+              "function": "config#parseProxies",
+              "path": "config/config.go",
+              "bodyHashes": [
+                "2a4a4079066575cdab9daf7c30ce369b55a7cbe8f0cad796e67e92f0f76d0915",
+                "9ecec7f198ee186e221b42cdb7b8da39c0b39019019f55454f1ed0ed8bb96888"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    },
     {
       "id": "singBox.logging.level",
       "program": "singBox",
@@ -450,6 +1609,7 @@
           "function": "listener/sing_tun#New",
           "path": "listener/sing_tun/server.go",
           "bodyHashes": [
+            "2a3869255d2f6ff6e92f0bbf5419370db7f52a8b6b22e374969286a3c0fce983",
             "05f552b951abcd4c8834e380ed8ee6864ce7fdfc3da3d2a6f6fc42706b52cd81",
             "108a45bf3d4c4faef5364f05304dfd06ffdd79ccfe189bce484efd46f362b7a9",
             "18c8e6166adfd1452766842c6428d942fc2ee3ecc8a267112329ce6f4f81541e",
@@ -555,6 +1715,7 @@
           "function": "listener/sing_tun#New",
           "path": "listener/sing_tun/server.go",
           "bodyHashes": [
+            "2a3869255d2f6ff6e92f0bbf5419370db7f52a8b6b22e374969286a3c0fce983",
             "05f552b951abcd4c8834e380ed8ee6864ce7fdfc3da3d2a6f6fc42706b52cd81",
             "108a45bf3d4c4faef5364f05304dfd06ffdd79ccfe189bce484efd46f362b7a9",
             "18c8e6166adfd1452766842c6428d942fc2ee3ecc8a267112329ce6f4f81541e",

@@ -4227,6 +4227,42 @@ pub async fn get_configuration_workspace(
 }
 
 #[tauri::command]
+pub async fn get_configuration_intent_context(
+    state: State<'_, AppState>,
+    program_id: String,
+    node_id: Option<String>,
+) -> Result<camellia_nexus_core::IntentContext> {
+    authorize_safety(&state, SafetyOperation::View)?;
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    state
+        .configuration_state
+        .intent_context_with_lease(&state.manager, &program_id, node_id.as_deref(), &lease)
+        .await
+}
+
+#[tauri::command]
+pub async fn preview_configuration_intent(
+    state: State<'_, AppState>,
+    program_id: String,
+    request: camellia_nexus_core::IntentPreviewRequest,
+) -> Result<camellia_nexus_core::IntentChangePlan> {
+    authorize_safety(&state, SafetyOperation::View)?;
+    let program_id = id(program_id)?;
+    let lease = state
+        .configuration_state
+        .acquire_lease(&state.manager, &program_id)
+        .await?;
+    state
+        .configuration_state
+        .preview_intent_with_lease(&state.manager, &program_id, request, &lease)
+        .await
+}
+
+#[tauri::command]
 pub async fn update_configuration_intent(
     state: State<'_, AppState>,
     program_id: String,

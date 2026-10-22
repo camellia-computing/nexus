@@ -6,7 +6,7 @@
   import ArgumentPreview from './ArgumentPreview.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import ConfigSourceEditor from './ConfigSourceEditor.svelte';
-  import GuidedConfigurationEditor from './GuidedConfigurationEditor.svelte';
+  import NativeIntentWorkspace from './NativeIntentWorkspace.svelte';
   import ManagedIntegrationStatus from './ManagedIntegrationStatus.svelte';
   import ConfigurationSurfaceIssues from './ConfigurationSurfaceIssues.svelte';
   import FinalConfigurationEditor from './FinalConfigurationEditor.svelte';
@@ -300,6 +300,14 @@
   let workspaceNoticeDurations: Partial<Record<ConfigurationWorkspaceScope, number>> = {};
   let workspaceErrorActions: Partial<Record<ConfigurationWorkspaceScope, () => Promise<void>>> = {};
   let workspaceErrorBusyScope: ConfigurationWorkspaceScope | '' = '';
+  type PendingIntentUpdate = {
+    request: import('./types').ConfigurationIntentRequest;
+    error: unknown;
+    onConfirmed?: () => void;
+    selectionGeneration: number;
+  };
+  let pendingIntentUpdates = new Map<string, PendingIntentUpdate>();
+  $: intentUpdatePending = pendingIntentUpdates.has(selectedId);
   let appSettingsError: ErrorInfo | null = null;
   let licenseError: ErrorInfo | null = null;
   let aboutError: ErrorInfo | null = null;
@@ -926,6 +934,7 @@
       'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED',
     ].includes(blocker.code));
   $: configurationActivationBlocked = !!busy
+    || intentUpdatePending
     || !!pendingConflictRequest
     || !canEditConfigurationByLicense
     || !canRunDiagnosticsByLicense
@@ -942,6 +951,8 @@
     ? licenseActionHint
     : pendingConflictRequest
       ? 'Retry the pending choice before continuing.'
+    : intentUpdatePending
+      ? 'Retry this update before making another change.'
     : busy
       ? 'Another configuration operation is running.'
       : configurationIdentityCheckingId === selectedId
@@ -1485,6 +1496,7 @@
     workspaceErrors = {};
     workspaceErrorActions = {};
     workspaceErrorBusyScope = '';
+    restorePendingIntentUpdate(id);
     clearConfigurationError();
     configDocument = null;
     configurationState = null;
@@ -2234,6 +2246,15 @@
     context: ConfigurationErrorContext = 'guided-change',
   ) {
     reportWorkspaceError('intent', value, context, retry);
+  }
+
+  function restorePendingIntentUpdate(id: string) {
+    const pending = pendingIntentUpdates.get(id);
+    if (!pending) return;
+    reportIntentError({ ...errorInfoOf(pending.error), messageKey: 'INTENT_OPERATION_PENDING' }, async () => {
+      await changeGuidedSetting(pending.request.change, pending.request, undefined,
+        pending.selectionGeneration === selectionGeneration ? pending.onConfirmed : undefined);
+    });
   }
 
   function reportConfigError(
@@ -4323,43 +4344,110 @@
     mainElement.scrollTop = Math.min(scrollTop, maxScrollTop);
   }
 
+  async function previewIntentChange(change: import('./types').ConfigurationIntentAction) {
+    if (!selectedId || !configurationState) throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_CONTEXT_UNAVAILABLE' };
+    return api.previewConfigurationIntent(selectedId, {
+      expectedStateRevision: configurationState.stateRevision,
+      editorSessionId: finalEditorSession?.sessionId,
+      expectedDraftRevision: finalEditorSession?.draftRevision, change,
+    });
+  }
+
   async function changeGuidedSetting(
     change: import('./types').ConfigurationIntentAction,
     retryRequest?: import('./types').ConfigurationIntentRequest,
+    approvedPlan?: import('./types').IntentChangePlan,
+    onConfirmed?: () => void,
   ): Promise<boolean> {
     if (!selectedId || !canEditConfigurationByLicense) return false;
     const id = selectedId;
+    const pendingUpdate = pendingIntentUpdates.get(id);
+    if (pendingUpdate && retryRequest?.operationId !== pendingUpdate.request.operationId) {
+      restorePendingIntentUpdate(id);
+      return false;
+    }
+    const startedGeneration = selectionGeneration;
     let request = retryRequest;
     clearIntentError();
-    return mutateConfiguration(
+    const succeeded = await mutateConfiguration(
       id, 'guided-setting',
       async () => {
         const current = await synchronizeFinalEditorBeforeUpstreamMutation(id);
+        let preview = approvedPlan;
+        if (!request) {
+          if (!preview || preview.stateRevision !== current.stateRevision
+            || preview.draftRevision !== finalEditorSession?.draftRevision
+            || preview.capabilityProfileHash !== current.compatibilityProfile.profileHash) {
+            const updated = await api.previewConfigurationIntent(id, {
+              expectedStateRevision: current.stateRevision,
+              editorSessionId: finalEditorSession?.sessionId,
+              expectedDraftRevision: finalEditorSession?.draftRevision, change,
+            });
+            if (preview && updated.effectHash !== preview.effectHash) {
+              throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_PLAN_STALE' };
+            }
+            preview = updated;
+          }
+          if (!preview.canCommit) throw { code: 'CONFIG_INVALID', messageKey: preview.blockers[0]?.messageKey ?? 'INTENT_VALUE_INVALID' };
+        }
         request ??= {
           operationId: crypto.randomUUID(), expectedStateRevision: current.stateRevision,
           editorSessionId: finalEditorSession?.sessionId,
           expectedDraftRevision: finalEditorSession?.draftRevision, change,
+          planHash: preview!.planHash,
+          capabilityProfileHash: preview!.capabilityProfileHash,
         };
         for (let attempt = 0; attempt < 2; attempt += 1) {
           try {
             const snapshot = await api.updateConfigurationIntent(id, request);
             await adoptConfigurationWorkspace(id, snapshot);
+            if (snapshot.operationResult?.operationId !== request.operationId || snapshot.operationResult.status === 'pending') {
+              throw { code: 'CONFIG_CONFLICT', messageKey: 'CONFIGURATION_OPERATION_PENDING' };
+            }
+            if (snapshot.operationResult.status !== 'updated') {
+              throw { code: 'CONFIG_CONFLICT', messageKey: snapshot.operationResult.status === 'interrupted'
+                ? 'CONFIGURATION_OPERATION_INTERRUPTED' : 'CONFIGURATION_OPERATION_REJECTED' };
+            }
+            pendingIntentUpdates = new Map(pendingIntentUpdates);
+            pendingIntentUpdates.delete(id);
             return;
           } catch (error) {
             if (attempt !== 0 || !isRetryableConfigurationConflict(error)) throw error;
             const refreshed = await api.getConfigurationWorkspace(id);
             if (selectedId !== id) throw error;
             await adoptConfigurationWorkspace(id, refreshed);
+            const updatedPlan = await api.previewConfigurationIntent(id, {
+              expectedStateRevision: refreshed.state.stateRevision,
+              editorSessionId: refreshed.editorSession?.sessionId,
+              expectedDraftRevision: refreshed.editorSession?.draftRevision, change,
+            });
+            // Revisions can change independently; only an equivalent impact may retry.
+            if (!updatedPlan.canCommit || !preview || updatedPlan.effectHash !== preview.effectHash) {
+              throw { code: 'CONFIG_CONFLICT', messageKey: 'INTENT_PLAN_STALE' };
+            }
             request = { ...request, expectedStateRevision: refreshed.state.stateRevision,
               editorSessionId: refreshed.editorSession?.sessionId,
-              expectedDraftRevision: refreshed.editorSession?.draftRevision };
+              expectedDraftRevision: refreshed.editorSession?.draftRevision,
+              planHash: updatedPlan.planHash, capabilityProfileHash: updatedPlan.capabilityProfileHash };
           }
         }
       },
       async (value) => {
-        reportIntentError(value, async () => { await changeGuidedSetting(change, request); });
+        if (request && !configurationChoiceWasRejected(errorInfoOf(value)) && errorInfoOf(value).code !== 'PROGRAM_BUSY') {
+          pendingIntentUpdates = new Map(pendingIntentUpdates).set(id, {
+            request, error: value, onConfirmed, selectionGeneration: startedGeneration,
+          });
+          if (selectedId === id) restorePendingIntentUpdate(id);
+          return;
+        }
+        pendingIntentUpdates = new Map(pendingIntentUpdates);
+        pendingIntentUpdates.delete(id);
+        if (selectedId !== id) return;
+        reportIntentError(value, async () => { await changeGuidedSetting(change, undefined, approvedPlan, onConfirmed); });
       },
     );
+    if (succeeded && selectedId === id && selectionGeneration === startedGeneration) onConfirmed?.();
+    return succeeded;
   }
 
   function runCompatibilityPrimaryAction() {
@@ -6207,19 +6295,22 @@
         </div>
       {:else if activeTab === 'intent'}
         <div id="program-panel-intent" role="tabpanel" tabindex="0" aria-labelledby="program-tab-intent" class="panel configuration-workspace">
-          {#if workspaceErrors.intent}<ErrorNotice error={workspaceErrors.intent} dismissible autoDismissMs={workspaceNoticeDurations.intent ?? 0} onDismiss={() => clearWorkspaceError('intent')} actionLabel={intentErrorNeedsFinalEditor(workspaceErrors.intent) ? 'Open Final configuration' : 'Retry'} onAction={() => intentErrorNeedsFinalEditor(workspaceErrors.intent) ? openFinalConfiguration() : retryWorkspaceError('intent')} actionBusy={workspaceErrorBusyScope === 'intent'} />{/if}
+          {#if workspaceErrors.intent}<ErrorNotice error={workspaceErrors.intent} dismissible={!intentUpdatePending} autoDismissMs={workspaceNoticeDurations.intent ?? 0} onDismiss={() => clearWorkspaceError('intent')} actionLabel={intentErrorNeedsFinalEditor(workspaceErrors.intent) ? 'Open Final configuration' : 'Retry'} onAction={() => intentErrorNeedsFinalEditor(workspaceErrors.intent) ? openFinalConfiguration() : retryWorkspaceError('intent')} actionBusy={workspaceErrorBusyScope === 'intent'} />{/if}
           <header class="workspace-header">
-            <div><h2>{$t('Intent')}</h2><p>{$t(intentObjectEditing ? 'Finish or cancel the open entry before applying.' : 'Change settings for this program; apply them when you are ready.')}</p></div>
+            <div><h2>{$t('Intent')}</h2><p>{$t(intentObjectEditing ? 'Finish or cancel the open entry before applying.' : 'Choose a section, change its settings, then apply when ready.')}</p></div>
             {#if configurationState}<div class="workspace-actions intent-workspace-actions">
-              <button class="primary" type="button" disabled={intentObjectEditing || configurationActivationBlocked || !configurationNeedsActivation} on:click={() => void applyConfiguration()}>{$t(configSaveRequiresRestart ? 'Apply and restart' : 'Apply changes')}</button>
+              <button class="primary" type="button" disabled={intentUpdatePending || intentObjectEditing || configurationActivationBlocked || !configurationNeedsActivation} on:click={() => void applyConfiguration()}>{$t(configSaveRequiresRestart ? 'Apply and restart' : 'Apply changes')}</button>
             </div>{/if}
           </header>
-          {#if configurationState && (configurationState.guidedDescriptors.length > 0 || configurationState.intentObjectDescriptors?.some((item) => item.canCreate) || configurationState.intentObjects?.length)}
-            <GuidedConfigurationEditor
+          {#if configurationState}
+            <NativeIntentWorkspace
+              programId={detail.spec.id}
               state={configurationState}
-              disabled={!!busy || !canEditConfigurationByLicense}
-              onChange={changeGuidedSetting}
+              disabled={intentUpdatePending || !!busy || !canEditConfigurationByLicense}
+              onChange={(change, plan, onConfirmed) => changeGuidedSetting(change, undefined, plan, onConfirmed)}
+              onPreview={previewIntentChange}
               onOpenFinal={openFinalConfiguration}
+              onOpenDetails={() => activateTab('overview')}
               onEditingChange={(editing) => intentObjectEditing = editing}
             />
             {#if !intentObjectEditing && configurationActivationBlocked && configurationActivationReason}<p class="intent-apply-reason">{$t(configurationActivationReason)}</p>{/if}

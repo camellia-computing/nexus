@@ -25,7 +25,7 @@ export const TRANSIENT_ERROR_DISMISS_MS = 12_000;
 export function configurationNoticeDuration(error: ErrorInfo, context: ConfigurationErrorContext, hasUsableWorkspace = false): number {
   if (context === 'final-editor-draft'
     || error.messageKey?.includes('RECOVERY_REQUIRED')
-    || error.messageKey === 'CONFIGURATION_OPERATION_PENDING') return 0;
+    || ['CONFIGURATION_OPERATION_PENDING', 'INTENT_OPERATION_PENDING'].includes(error.messageKey ?? '')) return 0;
   if (context === 'configuration-load') return hasUsableWorkspace ? TRANSIENT_ERROR_DISMISS_MS : 0;
   if (context === 'sources-refresh') return TRANSIENT_ERROR_DISMISS_MS;
   // An unconfirmed write retains its original retry request.
@@ -38,7 +38,8 @@ export function isTransientErrorInfo(error: ErrorInfo | null | undefined) {
 }
 
 export function configurationChoiceWasRejected(error: Pick<ErrorInfo, 'code' | 'messageKey'>): boolean {
-  if (error.messageKey === 'CONFIGURATION_OPERATION_PENDING') return false;
+  if (['CONFIGURATION_OPERATION_PENDING', 'INTENT_OPERATION_PENDING'].includes(error.messageKey ?? '')) return false;
+  if (error.code === 'STORAGE' && error.messageKey === 'INTENT_HISTORY_PROTECTION_FAILED') return true;
   return ['INVALID_SPEC', 'INVALID_PATH', 'INVALID_STATE', 'CONFIG_INVALID', 'CONFIG_CONFLICT', 'NOT_FOUND', 'REQUEST_TOO_LARGE', 'UNSUPPORTED_BINARY']
     .includes(error.code ?? '') || (error.code?.startsWith('LICENSE_') ?? false);
 }
@@ -211,6 +212,9 @@ const assessmentMessages: Record<string, string> = {
   CORE_CONFIGURATION_FIELD_UNCONFIRMED: 'This program has not declared a configuration field. Remove it or choose a build that supports it.',
   CORE_CONFIGURATION_SCHEMA_UNCONFIRMED: 'This program could not provide usable field information. Retry or choose another build.',
   CONFIGURATION_VALUE_NOT_ALLOWED: 'A value is not supported by this program. Review Final configuration.',
+  CONFIGURATION_REFERENCE_INVALID: 'Choose a valid target for this setting.',
+  CONFIGURATION_REFERENCE_MISSING: 'The selected target no longer exists. Choose another target.',
+  CONFIGURATION_REFERENCE_AMBIGUOUS: 'Several entries have this name. Give them distinct names before selecting a target.',
   CONFIGURATION_PLATFORM_UNSUPPORTED: 'This setting is not available on this program’s platform. Disable or remove it.',
   CONFIGURATION_AUTO_ROUTE_REQUIRED: 'Turn on automatic routing before enabling automatic redirection.',
   CONFIGURATION_ASSESSMENT_LIMIT: 'This configuration is too complex to check. Reduce it and try again.',
@@ -396,6 +400,13 @@ export function configurationErrorInfo(
   const base = errorInfoOf(error);
   if (base.messageKey && admissionMessages[base.messageKey]) return base;
   const contextTitle = configurationContextLabels[context].title;
+  if (base.messageKey === 'INTENT_OPERATION_PENDING') return {
+    ...base,
+    title: 'Update needs confirmation',
+    message: 'Retry this update before making another change.',
+    fallbackMessage: '请重试以确认此次修改的结果，然后再进行其他修改。',
+    suggestion: '',
+  };
   if (base.messageKey === 'CONFIGURATION_CONFLICT_STALE') return {
     ...base,
     title: 'Setting changed',
@@ -492,7 +503,18 @@ export function configurationErrorInfo(
       INTENT_DNS_BOOTSTRAP_REQUIRED: 'Choose a DNS server to resolve this server address.',
       INTENT_TARGET_MISSING: 'Choose an available connection or DNS server.',
       INTENT_TARGET_IN_USE: 'This entry is still used by another setting. Choose a different target first.',
+      INTENT_REFERENCE_CHOICE_REQUIRED: 'Choose replacement targets before removing this entry.',
+      INTENT_REFERENCE_CHOICE_STALE: 'The related settings changed. Review the replacement targets again.',
       INTENT_OBJECT_STALE: 'This entry changed. Open it again to review the latest values.',
+      INTENT_PLAN_STALE: 'These settings changed. Review your edit before trying again.',
+      INTENT_HISTORY_UNAVAILABLE: 'This change can no longer be restored.',
+      INTENT_HISTORY_OVERLAP: 'Some settings changed later. Choose what to restore.',
+      INTENT_HISTORY_LIMIT: 'This change is too large to undo safely.',
+      INTENT_HISTORY_PROTECTION_FAILED: 'This change could not be saved safely. Try again.',
+      INTENT_CONTEXT_UNAVAILABLE: 'These settings could not be opened. Try again.',
+      INTENT_INPUT_TOO_LARGE: 'This edit is too large. Edit a smaller part of the configuration.',
+      INTENT_NATIVE_SHAPE_REQUIRES_EDITOR: 'Edit this setting in Final configuration to keep its existing structure.',
+      INTENT_LINKED_EDIT_UNAVAILABLE: 'Review the related settings before making this change.',
       INTENT_OBJECT_MISSING: 'This entry changed. Open it again to review the latest values.',
       INTENT_SETTING_UNAVAILABLE: 'This setting is not available in this program.',
       INTENT_OBJECT_ALREADY_EXISTS: 'This proxy type already exists. Edit it instead.',

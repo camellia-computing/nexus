@@ -309,6 +309,10 @@ export const api = {
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_workspace_preview', { programId }),
   getConfigurationWorkspace: (programId: string) =>
     invoke<import('./types').ConfigurationWorkspaceSnapshot>('get_configuration_workspace', { programId }),
+  getConfigurationIntentContext: (programId: string, nodeId?: string) =>
+    invoke<import('./types').IntentContext>('get_configuration_intent_context', { programId, nodeId }),
+  previewConfigurationIntent: (programId: string, request: import('./types').IntentPreviewRequest) =>
+    invoke<import('./types').IntentChangePlan>('preview_configuration_intent', { programId, request }),
   updateConfigurationIntent: (
     programId: string,
     request: import('./types').ConfigurationIntentRequest,
