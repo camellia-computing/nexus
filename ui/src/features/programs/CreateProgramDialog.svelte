@@ -58,7 +58,23 @@
   }: Props = $props();
   let modalElement: HTMLDivElement;
   let focusedErrorSignature = '';
+  let focusedRequestErrorSignature = '';
   let advancedOpen = $state(false);
+
+  $effect(() => {
+    if (!error) {
+      focusedRequestErrorSignature = '';
+      return;
+    }
+    const signature = `${error.code ?? ''}:${error.title}:${error.message}`;
+    if (signature === focusedRequestErrorSignature) return;
+    focusedRequestErrorSignature = signature;
+    queueMicrotask(() => {
+      const target = modalElement?.querySelector<HTMLElement>('.create-request-error');
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView({ block: 'nearest' });
+    });
+  });
 
   $effect(() => {
     const signature = Object.entries(fieldErrors).map(([key, value]) => `${key}:${value}`).join('|');
@@ -109,7 +125,7 @@
         {/each}
       </div>
 
-      {#if error}<ErrorNotice {error} />{/if}
+      {#if error}<div class="create-request-error" tabindex="-1"><ErrorNotice {error} /></div>{/if}
       {#if Object.keys(fieldErrors).length}
         <div class="create-validation-summary" role="alert" tabindex="-1"><Icon name="alert" size={17} /><span>{$t('Review the highlighted values and try again.')}</span></div>
       {/if}

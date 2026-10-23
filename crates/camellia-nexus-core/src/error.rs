@@ -76,6 +76,8 @@ pub enum ErrorCode {
 pub struct CamelliaNexusError {
     pub code: ErrorCode,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
 }
@@ -88,16 +90,19 @@ impl Serialize for CamelliaNexusError {
         // This is a local IPC boundary: filesystem details are required for actionable
         // diagnostics, while internal runtime errors may still contain implementation data.
         let expose_details = self.code != ErrorCode::Internal;
-        let mut state = serializer.serialize_struct(
-            "CamelliaNexusError",
-            if expose_details && self.details.is_some() {
-                3
-            } else {
-                2
-            },
-        )?;
+        let mut field_count = 2;
+        if self.message_key.is_some() {
+            field_count += 1;
+        }
+        if expose_details && self.details.is_some() {
+            field_count += 1;
+        }
+        let mut state = serializer.serialize_struct("CamelliaNexusError", field_count)?;
         state.serialize_field("code", &self.code)?;
         state.serialize_field("message", &self.message)?;
+        if let Some(message_key) = &self.message_key {
+            state.serialize_field("messageKey", message_key)?;
+        }
         if expose_details && let Some(details) = &self.details {
             state.serialize_field("details", details)?;
         }
@@ -110,8 +115,14 @@ impl CamelliaNexusError {
         Self {
             code,
             message: message.into(),
+            message_key: None,
             details: None,
         }
+    }
+
+    pub fn with_message_key(mut self, message_key: impl Into<String>) -> Self {
+        self.message_key = Some(message_key.into());
+        self
     }
 
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
@@ -171,5 +182,21 @@ mod tests {
         );
         let serialized = serde_json::to_string(&error).expect("serialize activation code error");
         assert!(serialized.contains("LICENSE_ACTIVATION_CODE_CONSUMED"));
+    }
+
+    #[test]
+    fn serialization_exposes_stable_message_keys() {
+        let error = CamelliaNexusError::new(
+            ErrorCode::ConfigConflict,
+            "Configuration changed while saving",
+        )
+        .with_message_key("CONFIGURATION_GENERATION_STALE");
+        let serialized = serde_json::to_value(&error).expect("serialize keyed error");
+        assert_eq!(
+            serialized
+                .get("messageKey")
+                .and_then(serde_json::Value::as_str),
+            Some("CONFIGURATION_GENERATION_STALE")
+        );
     }
 }

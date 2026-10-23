@@ -16,8 +16,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-const CREDENTIAL_JOURNAL_SCHEMA_VERSION: u32 = 1;
-
 #[cfg(windows)]
 const WINDOWS_VAULT_DIRECTORY: &str = "secure/config-credentials-v1";
 #[cfg(windows)]
@@ -29,6 +27,7 @@ const WINDOWS_MAX_PROTECTED_FILE_BYTES: usize = 64 * 1024;
 struct CredentialRecord {
     program_id: String,
     source_id: String,
+    binding: String,
     username: String,
     password: String,
 }
@@ -140,7 +139,8 @@ impl WindowsConfigCredentialStore {
                 read_dpapi_file(&entry.path(), &purpose)?.ok_or_else(windows_vault_error)?;
             let record: CredentialRecord =
                 serde_json::from_slice(&bytes).map_err(|_| windows_vault_error())?;
-            if credential_id_for(&record.program_id, &record.source_id) != credential_id
+            if credential_id_for(&record.program_id, &record.source_id, &record.binding)
+                != credential_id
                 || credentials
                     .entries
                     .insert(credential_id.to_owned(), record)
@@ -166,7 +166,8 @@ impl WindowsConfigCredentialStore {
         let result = (|| {
             for (credential_id, record) in &credentials.entries {
                 if !valid_credential_id(credential_id)
-                    || credential_id_for(&record.program_id, &record.source_id) != *credential_id
+                    || credential_id_for(&record.program_id, &record.source_id, &record.binding)
+                        != *credential_id
                 {
                     return Err(windows_vault_error());
                 }
@@ -384,36 +385,12 @@ fn write_dpapi_file(
 
 #[cfg(windows)]
 fn dpapi_protect(plaintext: &[u8], purpose: &str) -> std::result::Result<Vec<u8>, LicensingError> {
-    use windows::{
-        Win32::Security::Cryptography::{
-            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
-        },
-        core::PCWSTR,
-    };
-
-    let mut plaintext = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(plaintext.len()).map_err(|_| windows_vault_error())?,
-        pbData: plaintext.as_ptr().cast_mut(),
-    };
-    let entropy_bytes = format!("camellia.nexus.config-credentials.v1\0{purpose}");
-    let entropy = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(entropy_bytes.len()).map_err(|_| windows_vault_error())?,
-        pbData: entropy_bytes.as_ptr().cast_mut(),
-    };
-    let mut output = CRYPT_INTEGER_BLOB::default();
-    unsafe {
-        CryptProtectData(
-            &raw mut plaintext,
-            PCWSTR::null(),
-            Some(&raw const entropy),
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &raw mut output,
-        )
-    }
-    .map_err(|_| windows_vault_error())?;
-    copy_and_free_dpapi_blob(output, WINDOWS_MAX_PROTECTED_FILE_BYTES)
+    crate::platform::protected_data::protect(
+        plaintext,
+        "camellia.nexus.config-credentials.v1",
+        purpose,
+        WINDOWS_MAX_PROTECTED_FILE_BYTES,
+    )
 }
 
 #[cfg(windows)]
@@ -421,50 +398,12 @@ fn dpapi_unprotect(
     protected: &[u8],
     purpose: &str,
 ) -> std::result::Result<Vec<u8>, LicensingError> {
-    use windows::Win32::Security::Cryptography::{
-        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
-    };
-
-    let mut protected = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(protected.len()).map_err(|_| windows_vault_error())?,
-        pbData: protected.as_ptr().cast_mut(),
-    };
-    let entropy_bytes = format!("camellia.nexus.config-credentials.v1\0{purpose}");
-    let entropy = CRYPT_INTEGER_BLOB {
-        cbData: u32::try_from(entropy_bytes.len()).map_err(|_| windows_vault_error())?,
-        pbData: entropy_bytes.as_ptr().cast_mut(),
-    };
-    let mut output = CRYPT_INTEGER_BLOB::default();
-    unsafe {
-        CryptUnprotectData(
-            &raw mut protected,
-            None,
-            Some(&raw const entropy),
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &raw mut output,
-        )
-    }
-    .map_err(|_| windows_vault_error())?;
-    copy_and_free_dpapi_blob(output, WINDOWS_MAX_PROTECTED_FILE_BYTES)
-}
-
-#[cfg(windows)]
-fn copy_and_free_dpapi_blob(
-    output: windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB,
-    maximum: usize,
-) -> std::result::Result<Vec<u8>, LicensingError> {
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-
-    let length = usize::try_from(output.cbData).map_err(|_| windows_vault_error())?;
-    let result = if output.pbData.is_null() || length == 0 || length > maximum {
-        Err(windows_vault_error())
-    } else {
-        Ok(unsafe { std::slice::from_raw_parts(output.pbData, length) }.to_vec())
-    };
-    let _ = unsafe { LocalFree(Some(HLOCAL(output.pbData.cast()))) };
-    result
+    crate::platform::protected_data::unprotect(
+        protected,
+        "camellia.nexus.config-credentials.v1",
+        purpose,
+        WINDOWS_MAX_PROTECTED_FILE_BYTES,
+    )
 }
 
 #[cfg(windows)]
@@ -474,7 +413,6 @@ fn windows_vault_error() -> LicensingError {
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct CredentialJournal {
-    schema_version: u32,
     program_id: String,
     target_binding_digest: Option<String>,
     previous_present: bool,
@@ -545,7 +483,7 @@ impl ConfigCredentialVault {
         Self::with_store(store)
     }
 
-    fn with_store(store: DynSecureStore) -> Self {
+    pub(crate) fn with_store(store: DynSecureStore) -> Self {
         Self {
             store,
             mutation: tokio::sync::Mutex::new(()),
@@ -558,15 +496,16 @@ impl ConfigCredentialVault {
         Ok(CredentialSnapshot(Arc::new(self.load()?)))
     }
 
-    pub async fn recover(&self, manager: &ProgramManager) -> Result<bool> {
+    pub async fn recover(
+        &self,
+        manager: &ProgramManager,
+        workspace: &crate::configuration_state::ConfigurationCoordinator,
+    ) -> Result<bool> {
         let _guard = self.mutation.lock().await;
         let Some(journal) = self.read_journal()? else {
             self.delete_backup()?;
             return Ok(false);
         };
-        if journal.schema_version != CREDENTIAL_JOURNAL_SCHEMA_VERSION {
-            return Err(corrupt_credential_journal());
-        }
         let program_id = camellia_nexus_core::ProgramId::parse(&journal.program_id)
             .map_err(|_| corrupt_credential_journal())?;
         let summaries = manager.list().await;
@@ -575,6 +514,9 @@ impl ConfigCredentialVault {
         } else {
             None
         };
+        if let Some(spec) = &current {
+            workspace.reconcile_workspace_commit(spec).await?;
+        }
         let target_matches = self.recover_journal(&journal, current.as_ref())?;
         tracing::warn!(
             program = %program_id,
@@ -616,9 +558,6 @@ impl ConfigCredentialVault {
             self.delete_backup()?;
             return Ok(false);
         };
-        if journal.schema_version != CREDENTIAL_JOURNAL_SCHEMA_VERSION {
-            return Err(corrupt_credential_journal());
-        }
         self.recover_journal(&journal, current)
     }
 
@@ -651,21 +590,28 @@ impl ConfigCredentialVault {
                 else {
                     continue;
                 };
-                let derived_id = credential_id_for(&program_id, id);
+                let previous_record = credential_id
+                    .as_ref()
+                    .and_then(|reference| previous.entries.get(reference))
+                    .filter(|record| record.program_id == program_id && record.source_id == *id);
                 let password = match password.take() {
                     Some(password) if !password.is_empty() => password,
-                    _ => previous
-                        .entries
-                        .get(&derived_id)
+                    _ => previous_record
                         .filter(|record| record.username == *username)
                         .map(|record| record.password.clone())
                         .ok_or_else(missing_credentials)?,
                 };
+                let binding = previous_record
+                    .filter(|record| record.username == *username && record.password == password)
+                    .map(|record| record.binding.clone())
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let derived_id = credential_id_for(&program_id, id, &binding);
                 credentials.entries.insert(
                     derived_id.clone(),
                     CredentialRecord {
                         program_id: program_id.clone(),
                         source_id: id.clone(),
+                        binding,
                         username: username.clone(),
                         password,
                     },
@@ -751,7 +697,6 @@ impl ConfigCredentialVault {
             None => self.delete_backup()?,
         }
         let journal = CredentialJournal {
-            schema_version: CREDENTIAL_JOURNAL_SCHEMA_VERSION,
             program_id: program_id.to_owned(),
             target_binding_digest,
             previous_present: previous.is_some(),
@@ -853,8 +798,8 @@ impl CredentialTransaction<'_> {
         result
     }
 
-    #[cfg(test)]
-    fn abandon(mut self) {
+    /// Keep both credential generations until the ProgramSpec commit is reconciled.
+    pub fn retain_for_recovery(mut self) {
         self.committed = true;
     }
 }
@@ -866,13 +811,13 @@ impl Drop for CredentialTransaction<'_> {
                 .vault
                 .rollback_journal(self.old_bytes.as_deref().map(AsRef::as_ref))
         {
-            tracing::error!(%error, "failed to roll back configuration source credentials");
+            tracing::error!(code = ?error.code, "failed to roll back configuration source credentials");
         }
     }
 }
 
-fn credential_id_for(program_id: &str, source_id: &str) -> String {
-    let digest = Sha256::digest(format!("{program_id}\0{source_id}").as_bytes());
+fn credential_id_for(program_id: &str, source_id: &str, binding: &str) -> String {
+    let digest = Sha256::digest(format!("{program_id}\0{source_id}\0{binding}").as_bytes());
     format_digest("cfg-", &digest)
 }
 
@@ -952,7 +897,7 @@ fn missing_credentials() -> CamelliaNexusError {
         ErrorCode::Storage,
         "The remote configuration credential is unavailable",
     )
-    .with_details("Enter the Basic authentication password again and save the program")
+    .with_message_key("SOURCE_CREDENTIALS_UNAVAILABLE")
 }
 
 fn corrupt_credentials() -> CamelliaNexusError {
@@ -989,13 +934,12 @@ fn credential_store_error(error: LicensingError) -> CamelliaNexusError {
 mod tests {
     use super::*;
     use camellia_nexus_core::{
-        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType, RestartPolicy, SCHEMA_VERSION,
+        ExecutableSpec, ManagedConfigSpec, ProgramId, ProgramType, RestartPolicy,
     };
     use camellia_nexus_licensing::SessionSecureStore;
 
     fn spec(password: Option<&str>) -> ProgramSpec {
         ProgramSpec {
-            schema_version: SCHEMA_VERSION,
             id: ProgramId::parse("credential-test").expect("id"),
             name: "Credential test".into(),
             executable: ExecutableSpec::External {
@@ -1108,6 +1052,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn password_only_update_has_a_distinct_commit_binding_and_recovers_the_old_secret() {
+        let vault = ConfigCredentialVault::with_store(Arc::new(SessionSecureStore::default()));
+        let mut initial = spec(Some("first"));
+        vault
+            .reconcile(&mut initial)
+            .await
+            .unwrap()
+            .commit()
+            .unwrap();
+        let reference = basic_credential_id(&initial);
+        let mut identical = initial.clone();
+        set_basic_authentication(&mut identical, "subscriber", "first");
+        vault
+            .reconcile(&mut identical)
+            .await
+            .unwrap()
+            .commit()
+            .unwrap();
+        assert_eq!(identical, initial);
+
+        let mut changed = initial.clone();
+        set_basic_authentication(&mut changed, "subscriber", "second");
+        vault
+            .reconcile(&mut changed)
+            .await
+            .unwrap()
+            .retain_for_recovery();
+        assert_ne!(basic_credential_id(&changed), reference);
+        assert!(!vault.recover_with_current(Some(&initial)).await.unwrap());
+        assert_eq!(
+            vault
+                .snapshot()
+                .await
+                .unwrap()
+                .basic_password(Some(&reference), "subscriber")
+                .unwrap()
+                .as_str(),
+            "first"
+        );
+        assert!(!vault.recover_with_current(Some(&initial)).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn source_credential_reference_cannot_be_reused_by_another_source() {
+        let vault = ConfigCredentialVault::with_store(Arc::new(SessionSecureStore::default()));
+        let mut initial = spec(Some("first"));
+        vault
+            .reconcile(&mut initial)
+            .await
+            .unwrap()
+            .commit()
+            .unwrap();
+        let mut changed = initial.clone();
+        if let ConfigSourceSpec::Remote { id, .. } =
+            &mut changed.managed_config.as_mut().unwrap().sources[0]
+        {
+            *id = "different-source".into();
+        }
+        assert!(vault.reconcile(&mut changed).await.is_err());
+        assert_eq!(
+            vault
+                .snapshot()
+                .await
+                .unwrap()
+                .basic_password(Some(&basic_credential_id(&initial)), "subscriber")
+                .unwrap()
+                .as_str(),
+            "first"
+        );
+    }
+
+    #[tokio::test]
     async fn crash_recovery_restores_credentials_when_the_program_update_did_not_commit() {
         let vault = ConfigCredentialVault::with_store(Arc::new(SessionSecureStore::default()));
         let mut initial = spec(Some("first"));
@@ -1124,7 +1140,7 @@ mod tests {
             .reconcile(&mut changed)
             .await
             .expect("changed")
-            .abandon();
+            .retain_for_recovery();
 
         assert!(
             !vault
@@ -1163,7 +1179,7 @@ mod tests {
             .reconcile(&mut changed)
             .await
             .expect("changed")
-            .abandon();
+            .retain_for_recovery();
 
         assert!(
             vault
@@ -1191,7 +1207,7 @@ mod tests {
             .reconcile(&mut created)
             .await
             .expect("create credentials")
-            .abandon();
+            .retain_for_recovery();
 
         assert!(!vault.recover_with_current(None).await.expect("recover"));
         assert!(
@@ -1215,10 +1231,14 @@ mod tests {
                 let record = CredentialRecord {
                     program_id: "team-program".into(),
                     source_id: source_id.clone(),
+                    binding: uuid::Uuid::new_v4().to_string(),
                     username: format!("subscriber-{index}"),
                     password: "s".repeat(4096),
                 };
-                (credential_id_for("team-program", &source_id), record)
+                (
+                    credential_id_for("team-program", &source_id, &record.binding),
+                    record,
+                )
             })
             .collect();
         let original = CredentialSet { entries };

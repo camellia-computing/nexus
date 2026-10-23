@@ -28,6 +28,100 @@ known layout-sensitive theme matrix in one worker so resource contention cannot 
 常规浏览器套件继续并行执行；`pnpm --dir ui test:e2e:stability` 另以单 worker 重复已知资源敏感的
 主题布局矩阵，避免资源竞争掩盖真实竞态。
 
+## Upstream Core compatibility matrix / 上游 Core 兼容矩阵
+
+The [Core knowledge artifact](../crates/camellia-nexus-core/core-knowledge.json) covers two stable
+release families per program, with every retained patch bound to its exact source commit. Tests cover
+window boundaries, source field and behavior changes, ambiguous identity, and maintained self-compiled
+baselines without treating a reported version as proof of official origin.
+
+[Core 能力目录](../crates/camellia-nexus-core/core-knowledge.json) 为每个程序维护两个稳定发布系列，
+每个补丁绑定精确源码提交。测试覆盖窗口边界、字段和行为差异、身份歧义，以及不宣称官方来源的
+维护范围内自编译基线。
+
+`python3 scripts/core_knowledge.py` checks content, extractor, rules, and report digests offline.
+`--check-upstream` checks official release membership and immutable tag commits without writing.
+`python3 -m unittest discover -s scripts -p test_core_knowledge.py` checks window and review semantics;
+`go test ./...` in `scripts/core-knowledge-extractor` checks AST extraction. Explicit rebuilding uses
+`--rebuild --write --cache <isolated-directory>` and never executes upstream source.
+
+`python3 scripts/core_knowledge.py` 离线检查内容、提取器、规则和报告摘要；`--check-upstream` 只读
+核对官方稳定发布集合和标签提交。Python 单测验证窗口和审查规则，Go 提取器单测验证 AST 行为。
+显式重建使用 `--rebuild --write --cache <隔离目录>`，不会执行上游源码。
+完整边界见 [Core knowledge and admission](core-knowledge.md)。
+
+Where reproducible binaries exist, native compatibility runs each exact target through streaming
+fingerprint, probe report, target/profile resolution, launch/help contract, representative native
+validation, schema generation when declared, and share translation. Evidence must prove that changing
+the binary, profile, or candidate hash invalidates acceptance; target changes must reparse/rebase and
+preserve Applied/LKG on failure. Missing local binaries are absent evidence, never a ProgramKind-only
+fixture pretending to prove a specific SHA.
+
+存在可复现二进制时，原生兼容测试要让每个精确目标依次经过流式 fingerprint、probe report、
+target/profile 解析、launch/help 契约、代表性 native validation、声明支持时的 Schema 生成及分享转换。
+证据必须证明 binary/profile/candidate 任一 hash 变化都会使 acceptance 失效，且 target 变化会重解析/
+重放并在失败时保留 Applied/LKG。本地缺少二进制时必须明确记录证据缺失，不能把 ProgramKind-only
+fixture 冒充某个精确 SHA 的证明。
+
+Application concurrency tests use the real coordinator, file store, and authorization gate. Pause a
+native check, revoke authorization, and verify that the transition completes before the check resumes.
+Reject publication of validation evidence and active configuration after denial. Also replace the
+binary or staged bytes during validation and between preparation and commit: a successful tool exit
+must not accept changed inputs. Verify staged-file cleanup, retained candidate/editor and Applied/LKG,
+unchanged running process identity before a rejected commit, and successful retry after repair.
+Inject competing draft and ProgramSpec writes at the commit boundary to prove that their revisions
+are rechecked rather than overwritten.
+Exercise the same race after a candidate is already applied: the unchanged-content path must not
+report success for a request whose editor session or ProgramSpec changed while awaiting authorization.
+The unchanged-content path also rechecks the executable and active file against persisted native
+acceptance without launching another process. Replacing either file during authorization must reject
+the request; restoring the input must allow retry without changing Applied/LKG on the rejected path.
+
+Candidate-save tests must inject a failed storage write, stale state and draft revisions, and a lost
+response followed by more editing. After restarting the coordinator, the same request must return its
+saved receipt without consuming the new draft or moving Applied/LKG. Reusing the identity for Apply
+must fail. Check that the saved candidate, consumed draft and receipt appear in one durable commit.
+
+候选保存测试注入存储写入失败、过期状态及草稿 revision，以及响应丢失后继续编辑。重启协调器后，
+原请求只返回已保存回执，不消耗新草稿或更改 Applied/LKG；同一请求编号不能改作应用操作。
+候选、对应草稿清理和保存回执必须在同一次持久化提交中出现。
+
+Hold Save, Apply and native-rejection responses while typing another valid or unfinished document.
+Returning the result must preserve that text and leave it editable. The receipt identifies the saved
+candidate used as the next edit's basis; repair and autosave must not create a conflict against the
+same request's own saved value. Verify the durable receipt and draft again after coordinator restart.
+When no further typing occurred, recovering the receipt must display the saved/applied state rather
+than leave submitted text marked as a new draft. Syntax errors disable Apply without hiding the text;
+repairing them clears the local syntax gate without an extra confirmation.
+For unfinished JSON/YAML, formatting and supported equivalent duration spellings do not require a
+rebase; a real upstream change preserves the original basis until the user repairs the text.
+
+暂停保存、应用成功及原生拒绝的响应，再输入有效或未完成文本；结果返回不得覆盖新输入。
+回执绑定本次实际保存的候选，后续修复与自动保存不能和自身提交制造冲突；重启协调器后核对
+回执及草稿。未完成 JSON/YAML 遇到格式或受支持的时长等价写法不要求重基；真实上游变化
+必须保留原始基线，修复文本后再进行合并。
+没有继续输入时，查询回执应显示已保存或已应用状态，不能把原提交误当成新草稿。
+语法错误禁用应用但保留文本，修复后解除本地语法门禁，不增加确认步骤。
+
+Withhold the first autosave response while two subsequent edits enter the queue. They must serialize
+without racing draft revisions or issuing an extra repair write. Delay a failed autosave until another
+program is selected: its error must not appear in the new workspace. For the current program, preserve
+the text, avoid unattended retry loops, and clear the error after an explicit retry or a successful edit.
+
+暂停第一次自动保存响应，再连续编辑两次，验证草稿按顺序提交且不产生版本争用或额外修补写入。
+切换程序后才返回失败时，不得污染新工作区；仍在原程序时保留文本、不循环重试，明确重试或新编辑
+成功后清除错误。
+
+应用并发测试使用真实协调器、文件存储和授权锁：暂停原生检查并撤销授权，确认授权切换无需等待
+检查结束；拒绝发布验证证据和有效配置。分别在检查期间与提交前替换二进制或暂存内容，确认工具
+退出成功不能接受已变化的输入。核对暂存文件清理、候选/草稿及 Applied/LKG 保留、拒绝提交前运行
+进程身份不变，并在修复后原地重试。在提交边界注入草稿及 ProgramSpec 竞争写入，验证版本检查
+不会覆盖后来的修改。
+候选已经应用后重复执行相同操作，也必须覆盖这组竞争测试；相同内容的快速返回不能把等待授权期间
+出现的新草稿或程序设置变化报告为本次应用成功。
+相同内容的快速返回还须将二进制、有效配置与已保存的原生校验依据重新核对，不启动额外进程。
+等待授权期间替换任一文件都必须拒绝；拒绝不改变 Applied/LKG，修复文件后可以原地重试。
+
 ## Hosted native workflow / 托管原生工作流
 
 `.github/workflows/native-e2e.yml` is the reusable cross-repository workflow:

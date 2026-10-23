@@ -297,7 +297,13 @@ Push-Location $RootDirectory
 $SigningContext = $null
 try {
     Invoke-Step "Install locked frontend dependencies" {
-        pnpm --dir ui install --frozen-lockfile
+        Push-Location (Join-Path $RootDirectory "ui")
+        try {
+            pnpm install --frozen-lockfile
+        }
+        finally {
+            Pop-Location
+        }
     }
 
     if (-not $SkipQuality) {
@@ -320,13 +326,31 @@ try {
             cargo test --workspace --locked --no-default-features
         }
         Invoke-Step "Check Svelte and TypeScript" {
-            pnpm --dir ui check
+            Push-Location (Join-Path $RootDirectory "ui")
+            try {
+                pnpm check
+            }
+            finally {
+                Pop-Location
+            }
         }
         Invoke-Step "Test frontend utilities" {
-            pnpm --dir ui test
+            Push-Location (Join-Path $RootDirectory "ui")
+            try {
+                pnpm test
+            }
+            finally {
+                Pop-Location
+            }
         }
         Invoke-Step "Build frontend" {
-            pnpm --dir ui build
+            Push-Location (Join-Path $RootDirectory "ui")
+            try {
+                pnpm build
+            }
+            finally {
+                Pop-Location
+            }
         }
     }
 

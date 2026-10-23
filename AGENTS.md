@@ -6,6 +6,25 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
 
 ## Product and authority model
 
+- Resolve Intent from an ordered native-input catalog and the current capability profile. Classify
+  every input node as guided, Details-managed, inapplicable, or requiring Final configuration. Source
+  declaration order is presentation order, not dependency order. Reuse the native decoder traversal
+  for JSON, YAML, and proxy tags; do not maintain a second field-name parser.
+- Intent context and change previews are read-only. Commit registered-node plans under the same
+  operation-bound transaction as candidate, rebased draft, and receipt. Recompute the plan at commit;
+  never accept arbitrary writable paths, guess references, or replay an unchanged form. Linked
+  changes require reviewed relations and explicit choices when more than one valid outcome exists.
+- Intent undo/redo persists bounded path-local differences and contribution ownership, not complete
+  workspace snapshots. Undo retains later unrelated edits and previews overlapping edits. Protect
+  sensitive reverse material before committing; protection failure must reject the operation. Recent
+  changes are limited to 64 completed records and 64 MiB per program, excluding pending recovery.
+  Local listeners default to loopback; creating or switching to network access requires authentication.
+  Secrets never enter context, previews, notifications, diagnostics, or history projections.
+- Preserve unrelated object fields and Source list entries. Native identities and value-bound list
+  edits have explicit references; duplicate references cannot select an arbitrary entry. Complex
+  or unsafe shapes remain editable in Final configuration. No page-open, expansion, or language
+  change may create configuration content.
+
 - Camellia Nexus is a Windows-first Tauri 2 desktop lifecycle manager with supported Linux and macOS
   builds. It manages local generic commands, sing-box, Xray, and Mihomo profiles.
 - A profile owns executable selection, arguments, working directory, environment, lifecycle state,
@@ -68,16 +87,63 @@ run IDs, release digests, deployment addresses, credentials, or machine-local in
   the centralized guard.
 - Slow preparation and network reads occur outside the authorization read gate. Re-authorize at the
   final commit boundary and verify the expected `ProgramSpec` before applying prepared content.
+- Acquire the per-program configuration lease before the runtime authorization gate, never in the
+  opposite order. Source observations prepared without the lease must recheck both ProgramSpec and
+  state revision before writing sidecars or the candidate; return the corresponding editor snapshot.
 - Configuration writes are atomic and crash recoverable. A failed native validation or replacement
   must leave the previous usable configuration intact.
-- Managed configuration sources are merged in visible UI order. Later values win; Mihomo mappings
-  merge recursively, same-name object lists replace in place, and ordered lists such as `rules`
-  concatenate in UI order.
+- Candidate save requests bind an operation identity, action kind, state revision and editor revision.
+  Commit the saved candidate, draft consumption and receipt together. Replaying the request returns
+  its receipt and the current workspace without saving or consuming edits created afterward.
+- Save and Apply receipts record the exact candidate revision durably saved by that request, even
+  when subsequent checks reject application. Continue accepting editor input while awaiting the
+  result, defer competing autosaves, and advance its basis only from that confirmed save. Formatting
+  alone must not turn unfinished text into an upstream rebase conflict.
+- Program details and configuration edits commit through the authoritative workspace. Applying a
+  candidate targets the current ProgramSpec only; configuration application must not also replace
+  program settings. Repeated application still verifies the current state revision before reporting
+  success or consuming a draft.
+- Managed configuration sources use program-declared merge rules and a deterministic preview in
+  visible UI order. Divergent same-level values without an explicit merge rule block application.
+  Mihomo mappings merge recursively, same-name object lists replace in place, and ordered lists
+  such as `rules` concatenate in UI order.
+- Managed package replacement commits executable files, ProgramSpec, candidate and editor session
+  together. Recheck the staged identity and state revision at commit. Retain rollback copies until
+  the committed or restored phase is durable; interrupted cleanup must never erase that phase.
+  Pending recovery blocks executable use and preserves local recovery materials.
 - Remote configuration sources are HTTPS-only. Optional Basic credentials belong in the OS secure
   store, never Program JSON, logs, command arguments, or frontend storage. The current limits are
   4 MiB per source and 16 MiB total input.
 - sing-box and Xray use native JSON; Mihomo uses native YAML. The target binary's native validator is
   the final semantic gate before an atomic apply.
+- Core knowledge covers exactly two stable release families per adapter, anchored to the official
+  latest stable Release. sing-box and Mihomo group by major/minor; Xray groups by actual stable
+  release year/month. Every stable patch has an exact source commit and its own capability evidence.
+  Prereleases, unrecognized versions, and releases outside this window cannot be registered, applied,
+  started, or restarted. Stop, inspection, export, and executable replacement remain available.
+- Self-compiled binaries must identify a maintained stable baseline. Reported versions do not prove
+  official origin or installed capabilities. Custom fields require explicit binary schema or
+  dedicated capability evidence; a successful validator exit alone does not prove they are used.
+  Keep admission, build conditions, field semantics, and candidate-only native evidence separate.
+  Program registration, updates, configuration consumers, and lifecycle checks share these rules.
+- Generate configuration structures from Go AST and program-specific decoder registries, including
+  JSON, YAML, and proxy tags. Rules cite immutable source commits and symbols. Track structural and
+  semantic coverage separately; do not convert unknown behavior into a support claim. Knowledge
+  revisions are content hashes, and implementation revisions derive from build information.
+- Platform rules bind configured activation, object context, source/dependency behavior and build
+  conditions per stable patch. Retained binary observations support editor feedback; the desktop's
+  own platform never substitutes for missing binary metadata. Application verifies the current file
+  and native result independently. Preserve off/empty semantics instead of warning about unused options.
+- Persisted identity observations are bounded data, not current capability authority. A knowledge
+  update must not prevent profile loading, stopping, inspection or executable replacement. Reuse
+  observations only while file identity, probe implementation and reviewed target remain current;
+  rebuild the candidate profile and require fresh acceptance before activation.
+- Configuration contributions follow explicit semantic-path write order across Sources, Intent,
+  and Details. An explicit edit changes only its touched paths; background Source refresh never
+  reclaims paths from later user settings. Final editor text is three-way merged with this latest
+  upstream, with choices required only for divergent overlapping user edits. Every configuration
+  mutation returns one authoritative state/editor snapshot. Preserve the original draft basis on
+  stale retries and preserve unresolved user values through repeated upstream changes.
 - Automatic refresh scheduling, retry state, and shared configuration behavior belong in shared
   services/components rather than program-specific copies.
 
