@@ -79,7 +79,7 @@ require_workflow_text() {
   grep -Fq -- "$text" "$file" || fail "$message"
 }
 
-cross_repo_action='uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1'
+cross_repo_action='uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
 cross_repo_workflows=(
   .github/workflows/native-e2e.yml
   .github/workflows/contract-monitor.yml
