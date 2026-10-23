@@ -61,7 +61,7 @@ The command rejects dirty target files, prepares every related edit, runs the ve
 | Transitive maintenance warnings | The supported Tauri/GTK dependency graph still contains unmaintained GTK3, `unic` and procedural-macro support crates. They are warnings rather than known vulnerabilities; yanked packages are denied. | Desktop maintainers | 2026-11-23 | Remove the entry when the supported desktop stack eliminates the warnings; escalate immediately if an affected crate receives a vulnerability advisory. |
 
 The 2026-10-23 review checked the published WASI peer manifests and the frozen peer graph,
-scanned the resolved non-GLib Rust sources for the affected iterator calls, and reran the release
+scanned the resolved non-GLib Rust sources for the [affected iterator calls](https://rustsec.org/advisories/RUSTSEC-2024-0429.html), and reran the release
 authorization audit and exact-head merge-controller tests. The advisory and warning scope did not
 expand; the dates above schedule the next review rather than expire an upstream support guarantee.
 
