@@ -9,7 +9,6 @@ import {
   expectNoHorizontalOverflow,
   genericFixtureRequest,
   invoke,
-  isDomVisible,
   openLicenseSettings,
   requiredEnvironment,
   selectProgram,
@@ -31,8 +30,8 @@ describe('Camellia Nexus native activation and lifecycle', () => {
       await browser.setWindowSize(width, height);
       await expectNoHorizontalOverflow();
       const navigationOpened = await ensureNavigationOpen();
-      expect(await isDomVisible('button[aria-label="Add program"]')).toBe(true);
-      expect(await isDomVisible('button[aria-label="Settings"]')).toBe(true);
+      await waitForDomVisibility('button[aria-label="Add program"]');
+      await waitForDomVisibility('button[aria-label="Settings"]');
       if (navigationOpened) {
         await browser.keys(['Escape']);
         await waitForDomVisibility('button[aria-label="Settings"]', false);
