@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+awk '
+  /- name: Node.js without mutable package cache/ { bootstrap = NR }
+  /uses: pnpm\/action-setup@/ {
+    if (!bootstrap || bootstrap >= NR) exit 1
+    found = 1
+  }
+  END { if (!found) exit 1 }
+' .github/workflows/client-packages.yml || {
+  echo 'Package builds must install Node.js before pnpm for Intel macOS' >&2
+  exit 1
+}
+
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 remote="$root/remote"
