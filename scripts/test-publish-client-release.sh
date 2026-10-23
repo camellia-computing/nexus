@@ -13,6 +13,11 @@ awk '
   exit 1
 }
 
+grep -Fq "if: runner.os != 'macOS' || runner.arch != 'X64'" .github/workflows/client-packages.yml
+grep -Fq "if: runner.os == 'macOS' && runner.arch == 'X64'" .github/workflows/client-packages.yml
+grep -Fq 'run: bash scripts/setup-pnpm-javascript.sh' .github/workflows/client-packages.yml
+grep -Fq 'npm audit signatures --registry=https://registry.npmjs.org' scripts/setup-pnpm-javascript.sh
+
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 remote="$root/remote"

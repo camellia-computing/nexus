@@ -31,6 +31,12 @@ Updates are never auto-merged. A maintainer reviews release notes, lockfile scop
 
 Dependabot updates the frontend's npm ecosystem, including its pnpm lockfile. Keep a single-document application lockfile: GitHub does not yet index the two-document format for dependency alerts and security updates. The version-policy gate rejects that format. The exact pnpm release remains owned by `packageManager`; coupled toolchain updates use `scripts/update-toolchains.sh`.
 
+Intel macOS installs that exact JavaScript pnpm package in an isolated runner directory,
+with lifecycle scripts disabled and npm registry signatures verified before execution.
+The current action's self-update path selects a pnpm 11 standalone package that is not
+published for this architecture. Other package targets use the pinned setup action;
+no target disables package-manager identity or integrity checks.
+
 The Rust toolchain is also excluded from a standalone Dependabot update because one Rust change must update both `rust-toolchain.toml` and the root `rust-version`. Apply coupled updates with, for example:
 
 ```bash
