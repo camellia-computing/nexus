@@ -95,7 +95,7 @@
   inert={drawerMode && !drawerOpen}
 >
   <header class="sidebar-brand-zone">
-    <button class="brand brand-home sidebar-brand" type="button" aria-label={$t('Dashboard')} title={$t('Dashboard')} onclick={onHome}>
+    <button class="brand brand-home sidebar-brand" type="button" aria-label={collapsed && !drawerMode ? $t('Dashboard') : undefined} title={$t('Dashboard')} onclick={onHome}>
       <span class="sidebar-brand-mark" aria-hidden="true"><BrandMark size={34} /></span>
       <span class="brand-name sidebar-brand-copy"><strong>Camellia Nexus</strong><small>Desktop control</small></span>
     </button>
@@ -186,7 +186,7 @@
           type="button"
           aria-pressed={bulkMode ? bulkSelectedIds.has(program.id) : undefined}
           aria-busy={!bulkMode && loadingId === program.id ? 'true' : undefined}
-          aria-label={`${program.name}, ${$t(stateNameKey(program.state))}${!bulkMode && loadingId === program.id ? `, ${$t('Loading program details')}` : ''}`}
+          aria-label={collapsed && !drawerMode ? `${program.name}, ${$t(stateNameKey(program.state))}${!bulkMode && loadingId === program.id ? `, ${$t('Loading program details')}` : ''}` : undefined}
           title={`${program.name} · ${$t(stateNameKey(program.state))}${!bulkMode && loadingId === program.id ? ` · ${$t('Loading program details')}` : ''}`}
           onclick={(event) => onActivate(event, program.id)}
           oncontextmenu={(event) => onContextMenu(event, program)}

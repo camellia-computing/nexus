@@ -50,7 +50,7 @@ impl CallbackThreadLimiter {
 
     fn try_acquire(&self) -> Option<CallbackThreadPermit<'_>> {
         self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < self.capacity).then_some(active + 1)
             })
             .ok()
