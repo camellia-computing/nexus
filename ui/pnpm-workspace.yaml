@@ -2,12 +2,13 @@ overrides:
   # @rolldown/binding-wasm32-wasi 1.1.5 pins the stable 1.x emnapi pair.
   # wasm-runtime 1.2.0 requires the incompatible 2.0 alpha pair.
   '@napi-rs/wasm-runtime': 1.1.6
-  '@wdio/native-utils': 2.5.0
-  brace-expansion: 5.0.9
-  '@puppeteer/browsers': 3.2.0
-  deepmerge-ts: 8.0.1
+  brace-expansion: 5.0.12
+  '@puppeteer/browsers': 3.2.6
+  deepmerge-ts: 8.0.2
   nanoid: 3.3.18
-  serialize-javascript: 7.0.7
+  serialize-javascript: 7.1.3
+  mocha: 11.8.0
+  diff: 9.0.0
 
 allowBuilds:
   edgedriver: false
@@ -15,7 +16,9 @@ allowBuilds:
   geckodriver: false
 
 patchedDependencies:
-  # Temporary GHSA-rgw5-rvv9-x895 bridge: the latest secure brace-expansion
-  # crosses WebdriverIO's legacy minimatch module contract. Keep this exact
-  # patch and its retirement conditions aligned with docs/dependency-management.md.
-  brace-expansion@5.0.9: patches/brace-expansion@5.0.9.patch
+  # Keep the callable/default module exports required by minimatch consumers.
+  brace-expansion@5.0.12: patches/brace-expansion@5.0.12.patch
+
+minimumReleaseAgeExclude:
+  - serialize-javascript@7.1.3
+  - '@puppeteer/browsers@3.2.6'

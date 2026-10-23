@@ -13,7 +13,7 @@ edition = "2024"
 license = "LicenseRef-Camellia-Proprietary-1.0"
 authors = ["Camellia Computing"]
 description = "Cross-platform binary lifecycle manager"
-rust-version = "1.97"
+rust-version = "1.99"
 readme = "README.md"
 
 [workspace.dependencies]

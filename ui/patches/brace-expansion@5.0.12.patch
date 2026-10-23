@@ -1,8 +1,8 @@
 diff --git a/dist/commonjs/index.d.ts b/dist/commonjs/index.d.ts
 --- a/dist/commonjs/index.d.ts
 +++ b/dist/commonjs/index.d.ts
-@@ -5,4 +5,5 @@ export type BraceExpansionOptions = {
-     maxLength?: number;
+@@ -9,4 +9,5 @@ export type BraceExpansionOptions = {
+     maxRewrites?: number;
  };
  export declare function expand(str: string, options?: BraceExpansionOptions): string[];
 +export default expand;
@@ -11,21 +11,18 @@ diff --git a/dist/commonjs/index.d.ts b/dist/commonjs/index.d.ts
 diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
 --- a/dist/commonjs/index.js
 +++ b/dist/commonjs/index.js
-@@ -286,4 +286,8 @@ function expand_(str, max, maxLength, isTop) {
+@@ -330,4 +330,5 @@
      }
      return acc;
  }
-+expand.expand = expand;
-+expand.EXPANSION_MAX = exports.EXPANSION_MAX;
-+expand.EXPANSION_MAX_LENGTH = exports.EXPANSION_MAX_LENGTH;
-+module.exports = expand;
++module.exports = Object.assign(expand, exports);
  //# sourceMappingURL=index.js.map
 \ No newline at end of file
 diff --git a/dist/esm/index.d.ts b/dist/esm/index.d.ts
 --- a/dist/esm/index.d.ts
 +++ b/dist/esm/index.d.ts
-@@ -5,4 +5,5 @@ export type BraceExpansionOptions = {
-     maxLength?: number;
+@@ -9,4 +9,5 @@ export type BraceExpansionOptions = {
+     maxRewrites?: number;
  };
  export declare function expand(str: string, options?: BraceExpansionOptions): string[];
 +export default expand;
@@ -34,7 +31,7 @@ diff --git a/dist/esm/index.d.ts b/dist/esm/index.d.ts
 diff --git a/dist/esm/index.js b/dist/esm/index.js
 --- a/dist/esm/index.js
 +++ b/dist/esm/index.js
-@@ -282,4 +282,5 @@ function expand_(str, max, maxLength, isTop) {
+@@ -326,4 +326,5 @@
      }
      return acc;
  }

@@ -832,7 +832,6 @@
         class="editor-command format-command"
         type="button"
         disabled={readOnly || !formatAvailable || formatting}
-        aria-label={$t('Format document')}
         title={$t(formatAvailable ? 'Format document' : 'Formatting is unavailable for this format.')}
         on:click={() => void formatDocument()}
       >
@@ -1301,7 +1300,8 @@
   }
 
   .editor :global(.cm-diagnosticSource) {
-    color: var(--ui-text-tertiary);
+    color: var(--ui-text-secondary);
+    opacity: 1;
     font: 500 var(--ui-font-size-xs)/1.3 var(--ui-font-mono, "SFMono-Regular", "Cascadia Code", monospace);
   }
 

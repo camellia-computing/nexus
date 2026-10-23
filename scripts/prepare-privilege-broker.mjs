@@ -14,6 +14,10 @@ export function validateTargetTriple(value) {
   return value;
 }
 
+export function resolveCargoTargetDirectory(root, configuredTargetDirectory) {
+  return resolve(root, configuredTargetDirectory || 'target');
+}
+
 function resolveWithin(root, ...parts) {
   const path = resolve(root, ...parts);
   const relation = relative(root, path);
@@ -33,6 +37,7 @@ async function main() {
   const targetTriple = validateTargetTriple(configuredTarget);
 
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const cargoTargetDirectory = resolveCargoTargetDirectory(root, process.env.CARGO_TARGET_DIR);
   const debug = process.env.TAURI_ENV_DEBUG === 'true';
   const profile = debug ? 'debug' : 'release';
   const windows = targetTriple.split('-').includes('windows');
@@ -42,7 +47,7 @@ async function main() {
     destinationDirectory,
     `camellia-nexus-privilege-broker-${targetTriple}${extension}`,
   );
-  const runtimeDirectory = resolveWithin(root, 'target', profile);
+  const runtimeDirectory = resolveWithin(cargoTargetDirectory, profile);
   const runtimeDestination = resolveWithin(
     runtimeDirectory,
     `camellia-nexus-privilege-broker${extension}`,
@@ -66,8 +71,7 @@ async function main() {
   if (result.status !== 0) process.exit(result.status ?? 1);
 
   const source = resolveWithin(
-    root,
-    'target',
+    cargoTargetDirectory,
     targetTriple,
     profile,
     `camellia-nexus-privilege-broker${extension}`,

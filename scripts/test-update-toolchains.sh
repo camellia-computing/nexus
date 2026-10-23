@@ -17,7 +17,7 @@ cp \
   "$repository_root/ui/pnpm-lock.yaml" \
   "$repository_root/ui/pnpm-workspace.yaml" \
   "$fixture/ui/"
-cp "$repository_root/ui/patches/brace-expansion@5.0.9.patch" "$fixture/ui/patches/"
+cp "$repository_root/ui/patches/brace-expansion@5.0.12.patch" "$fixture/ui/patches/"
 cp \
   "$repository_root/scripts/check-version-policy.sh" \
   "$repository_root/scripts/ci-local.sh" \
@@ -67,7 +67,7 @@ if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
 fi
 
 git -C "$fixture" reset -q --hard HEAD
-sed -i '/serialize-javascript: 7.0.7/d' "$fixture/ui/pnpm-workspace.yaml"
+sed -i '/serialize-javascript: 7.1.3/d' "$fixture/ui/pnpm-workspace.yaml"
 if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
   fail 'the serialize-javascript security override could be removed silently'
 fi
@@ -79,9 +79,21 @@ if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
 fi
 
 git -C "$fixture" reset -q --hard HEAD
-sed -i '/uvx --from zizmor==1.28.0/d' "$fixture/.github/workflows/ci.yml"
+sed -i '/uvx --from zizmor==1.31.1/d' "$fixture/.github/workflows/ci.yml"
 if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
   fail 'the blocking workflow security scan could be removed silently'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+printf '\n---\npackageManager: pnpm@99.0.0\n' >> "$fixture/ui/pnpm-lock.yaml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'a multi-document lockfile was accepted despite the dependency graph limitation'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i 's/package-ecosystem: npm/package-ecosystem: unavailable/' "$fixture/.github/dependabot.yml"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'the frontend dependency updater could be removed silently'
 fi
 
 printf '%s\n' 'Toolchain updater tests passed.'

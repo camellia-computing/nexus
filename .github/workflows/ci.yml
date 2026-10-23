@@ -179,10 +179,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: ui/package.json
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -203,14 +203,14 @@ jobs:
             librsvg2-dev
       - name: Workflows
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: 0.12.0
+          version: 0.13.5
           enable-cache: false
       - name: Workflow security
         env:
           GH_TOKEN: ${{ github.token }}
-        run: uvx --from zizmor==1.28.0 zizmor --strict-collection --persona=pedantic --format=github .
+        run: uvx --from zizmor==1.31.1 zizmor --strict-collection --persona=pedantic --format=github .
       - name: Version policy
         run: |
           bash scripts/check-version-policy.sh
@@ -313,10 +313,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: ui/package.json
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -341,7 +341,7 @@ jobs:
     name: Native E2E
     needs: metadata
     if: ${{ contains(fromJSON('["standard", "candidate"]'), needs.metadata.outputs.validation-profile) }}
-    uses: ./.github/workflows/native-e2e.yml
+    uses: ./.github/workflows/native-e2e.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires this form; GitHub resolves the reviewed same-commit source.
     with:
       client-ref: ${{ github.sha }}
       server-ref: main
@@ -353,7 +353,7 @@ jobs:
     name: Candidate Packages
     needs: [metadata, quality]
     if: ${{ needs.metadata.outputs.validation-profile == 'candidate' && needs.metadata.result == 'success' && needs.quality.result == 'success' }}
-    uses: ./.github/workflows/client-packages.yml
+    uses: ./.github/workflows/client-packages.yml # zizmor: ignore[self-repository] actionlint 1.7.12 requires this form; GitHub resolves the reviewed same-commit source.
     with:
       build-id: ${{ needs.metadata.outputs.build-id }}
       commit: ${{ github.sha }}
