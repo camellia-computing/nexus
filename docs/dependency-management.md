@@ -8,7 +8,7 @@ This policy keeps builds reproducible without turning every compatible library u
 | --- | --- | --- |
 | Rust toolchain | `rust-toolchain.toml` | Exact stable patch, including required components |
 | Rust minimum version | Root `Cargo.toml` `rust-version` | Must match the toolchain major and minor |
-| Node.js | `.node-version` | Exact 24.x LTS patch |
+| Node.js | `.node-version` | Exact reviewed LTS patch |
 | Supported Node.js range | `ui/package.json` `engines.node` | Current supported major only |
 | pnpm | `ui/package.json` `packageManager` | Exact patch; CI reads this field |
 | JavaScript direct dependencies | `ui/package.json` | Exact versions, with the lockfile fixing the full graph |
@@ -21,7 +21,7 @@ Workflow files must not repeat Node.js, pnpm, or Rust version literals. `scripts
 
 ## Update policy
 
-Dependabot groups compatible minor and patch Cargo and GitHub Actions updates and opens major upgrades separately. Cargo updates use a cooldown of 3 days for patches, 7 days for minors, and 30 days for majors. GitHub Actions use the supported 7-day default cooldown. Security updates are not delayed by this routine cooldown.
+Dependabot groups compatible minor and patch Cargo and GitHub Actions updates and opens major upgrades separately. The coupled WebdriverIO, Tauri service and Mocha packages form one native-test-stack group, including major proposals; a partially upgraded driver cannot establish native compatibility. Cargo updates use a cooldown of 3 days for patches, 7 days for minors, and 30 days for majors. GitHub Actions use the supported 7-day default cooldown. Security updates are not delayed by this routine cooldown.
 
 Automated commit titles use `build(deps)` for application dependencies and `ci(deps)` for GitHub Actions. Reviewed toolchain changes use `build(toolchain)`. An update that fixes a concrete product or security defect may instead use `fix(deps)` or `fix(security)`.
 
@@ -45,10 +45,18 @@ bash scripts/update-toolchains.sh --node 24.22.1 --pnpm 11.28.7 --rust 1.99.1
 
 The command rejects dirty target files, prepares every related edit, runs the version policy, and restores the original files if validation fails. Review upstream release notes and run the complete quality matrix before merging. CI denies yanked Cargo packages in addition to audited vulnerabilities.
 
+A Node.js major change also requires `--node-types <exact-version>` for that major.
+The updater changes the runtime, `engines.node`, and type declarations in one
+rollback boundary; CI derives the major from `.node-version` rather than keeping
+another fixed-major rule. Refresh the pnpm lockfile with the selected runtime
+before frozen installation and the full matrix. Prefer a supported LTS runtime;
+do not expose newer runtime APIs by independently upgrading `@types/node`.
+
 ## Exceptions
 
 | Exception | Reason | Owner | Review by | Removal condition |
 | --- | --- | --- | --- | --- |
+| Node.js 24 and matching types while Node.js 26 is Current | The build uses the maintained LTS line; Node.js 26 has not entered LTS in the official release schedule. Newer Node declarations would admit APIs absent from the selected runtime. | Frontend maintainers | 2026-11-24 | Once the next LTS is available, update the runtime, matching types, engines and lockfile together; require frozen install, frontend, native and package gates. |
 | jsdiff 9 override | Mocha 11 requests jsdiff 7, affected by GHSA-73rr-hh4g-fpgx. The current release preserves the patch and line-diff operations used by the test reporters; the driver contract verifies them before running the adapter. | Desktop maintainers | 2026-11-23 | Remove once the supported Mocha graph requests a patched current release directly. |
 | Checkout-relative workflow references | The released actionlint 1.7.12 rejects GitHub's self-repository syntax. Line-scoped zizmor annotations retain same-commit references without disabling other workflow checks. | Release maintainers | 2026-11-23 | Adopt self-repository references when a released actionlint validates them. |
 | WebdriverIO 9 and Mocha 11 | The current Tauri service requires WebdriverIO 9. Its Mocha adapter imports `mocha/lib/cli/run-helpers.js`, which Mocha 12 no longer exports. Mocha 11.8.0 passes the actual adapter execution test and avoids the affected braces dependency in Mocha 10. | Desktop maintainers | 2026-11-23 | Upgrade together when the Tauri service supports WebdriverIO 10 and its current Mocha adapter; require the native Windows matrix. |

@@ -541,7 +541,7 @@ name = "camellia-nexus-licensing"
 version = "1.0.7"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "jsonwebtoken",
  "libc",
  "p256",

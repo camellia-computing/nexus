@@ -6,7 +6,8 @@ usage() {
 Usage: scripts/update-toolchains.sh [options]
 
 Update one or more coupled toolchain versions as a validated transaction:
-  --node <24.x.y>   Update .node-version
+  --node <x.y.z>   Update .node-version and engines.node
+  --node-types <x.y.z> Update @types/node with a reviewed Node.js major change
   --pnpm <x.y.z>    Update ui/package.json packageManager
   --rust <x.y.z>    Update rust-toolchain.toml and Cargo.toml rust-version
   -h, --help        Show this help
@@ -19,14 +20,16 @@ fail() {
 }
 
 node_version=
+node_types=
 pnpm_version=
 rust_version=
 while (($# > 0)); do
   case "$1" in
-    --node|--pnpm|--rust)
+    --node|--node-types|--pnpm|--rust)
       (($# >= 2)) || fail "$1 requires a value"
       case "$1" in
         --node) node_version="$2" ;;
+        --node-types) node_types="$2" ;;
         --pnpm) pnpm_version="$2" ;;
         --rust) rust_version="$2" ;;
       esac
@@ -44,8 +47,9 @@ done
 semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 if [[ -n "$node_version" ]]; then
   [[ "$node_version" =~ $semver ]] || fail 'Node.js must be exact stable SemVer'
-  [[ "${node_version%%.*}" == 24 ]] || fail 'Node.js must remain on the supported 24.x major'
 fi
+[[ -z "$node_types" || -n "$node_version" ]] || fail '--node-types requires --node'
+[[ -z "$node_types" || "$node_types" =~ $semver ]] || fail 'Node.js types must be exact stable SemVer'
 [[ -z "$pnpm_version" || "$pnpm_version" =~ $semver ]] || fail 'pnpm must be exact stable SemVer'
 [[ -z "$rust_version" || "$rust_version" =~ $semver ]] || fail 'Rust must be exact stable SemVer'
 
@@ -57,9 +61,14 @@ repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail 'run this
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 [[ "$PWD" == "$repository_root" ]] || fail 'script location and Git worktree root do not match'
 
+if [[ -n "$node_version" ]]; then
+  node_types="${node_types:-$(jq -r '.devDependencies["@types/node"]' ui/package.json)}"
+  [[ "${node_version%%.*}" == "${node_types%%.*}" ]] || fail 'supply matching --node-types for a Node.js major change'
+fi
+
 targets=()
-[[ -z "$node_version" ]] || targets+=(.node-version)
-[[ -z "$pnpm_version" ]] || targets+=(ui/package.json)
+[[ -z "$node_version" ]] || targets+=(.node-version ui/package.json)
+[[ -z "$pnpm_version" || -n "$node_version" ]] || targets+=(ui/package.json)
 [[ -z "$rust_version" ]] || targets+=(rust-toolchain.toml Cargo.toml)
 for file in "${targets[@]}"; do
   [[ -f "$file" ]] || fail "target file is missing: $file"
@@ -98,9 +107,16 @@ replace_line() {
 if [[ -n "$node_version" ]]; then
   printf '%s\n' "$node_version" > .node-version
 fi
-if [[ -n "$pnpm_version" ]]; then
+if [[ -n "$pnpm_version$node_version" ]]; then
   rendered="$(mktemp "$backup_dir/package.XXXXXX")"
-  jq --arg version "pnpm@$pnpm_version" '.packageManager = $version' ui/package.json > "$rendered"
+  jq --arg pnpm "$pnpm_version" --arg node "$node_version" --arg types "$node_types" '
+    if $pnpm != "" then .packageManager = "pnpm@\($pnpm)" else . end
+    | if $node != "" then
+        ($node | split(".")[0] | tonumber) as $major
+        | .engines.node = ">=\($major) <\($major + 1)"
+        | .devDependencies["@types/node"] = $types
+      else . end
+  ' ui/package.json > "$rendered"
   cp "$rendered" ui/package.json
 fi
 if [[ -n "$rust_version" ]]; then

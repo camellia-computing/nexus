@@ -14,6 +14,8 @@ updates:
     commit-message:
       prefix: "build(deps)"
     groups:
+      native-test-stack:
+        patterns: ["@wdio/*", "webdriverio", "expect-webdriverio", "mocha"]
       javascript-nonbreaking:
         patterns: ["*"]
         update-types: [minor, patch]
