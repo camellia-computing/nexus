@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "camellia-nexus"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "async-trait",
  "camellia-nexus-core",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "camellia-nexus-core"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "async-trait",
  "semver",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "camellia-nexus-licensing"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "camellia-nexus-privilege-broker"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "camellia-nexus-core",
  "libc",

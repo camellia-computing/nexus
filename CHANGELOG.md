@@ -3,6 +3,15 @@
 All notable changes to Camellia Nexus will be recorded here from the first
 commercial release onward.
 
+## [1.0.8] - 2026-10-24
+
+### Build
+
+- refresh supported desktop toolchains and CI dependencies (#47)
+
+- update JWT and pair native test and Node toolchains (#54)
+
+
 ## [1.0.7] - 2026-08-19
 
 ### Build
