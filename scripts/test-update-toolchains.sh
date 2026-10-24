@@ -43,10 +43,33 @@ grep -Fxq 'rust-version = "1.99"' "$fixture/Cargo.toml" || fail 'Cargo rust-vers
 
 git -C "$fixture" reset -q --hard HEAD
 before="$(git -C "$fixture" status --porcelain=v1)"
-if (cd "$fixture" && bash scripts/update-toolchains.sh --node 25.0.0 >/dev/null 2>&1); then
-  fail 'unsupported Node.js major was accepted'
+if (cd "$fixture" && bash scripts/update-toolchains.sh --node 26.0.0 >/dev/null 2>&1); then
+  fail 'a Node.js major change without matching types was accepted'
 fi
 [[ "$(git -C "$fixture" status --porcelain=v1)" == "$before" ]] || fail 'invalid input changed the worktree'
+
+(
+  cd "$fixture"
+  bash scripts/update-toolchains.sh --node 26.0.0 --node-types 26.6.5 >/dev/null
+)
+[[ "$(jq -r '.engines.node' "$fixture/ui/package.json")" == '>=26 <27' ]] || fail 'Node.js engines did not follow the configured major'
+[[ "$(jq -r '.devDependencies["@types/node"]' "$fixture/ui/package.json")" == 26.6.5 ]] || fail 'Node.js types were not updated'
+
+git -C "$fixture" reset -q --hard HEAD
+sed -i 's/"@types\/node": "24\.[^"]*"/"@types\/node": "26.6.5"/' "$fixture/ui/package.json"
+if (cd "$fixture" && bash scripts/check-version-policy.sh >/dev/null 2>&1); then
+  fail 'Node.js types newer than the runtime were accepted'
+fi
+
+git -C "$fixture" reset -q --hard HEAD
+# Match the updater's literal jq variable.
+# shellcheck disable=SC2016
+sed -i '/| .devDependencies\["@types\/node"\] = \$types/a\        | .engines.node = ">=0 <1"' "$fixture/scripts/update-toolchains.sh"
+if (cd "$fixture" && bash scripts/update-toolchains.sh --node 26.0.0 --node-types 26.6.5 >/dev/null 2>&1); then
+  fail 'a toolchain update with failed validation was accepted'
+fi
+[[ "$(tr -d '[:space:]' < "$fixture/.node-version")" == "$(cat "$repository_root/.node-version")" ]] || fail 'failed update did not restore Node.js'
+cmp "$repository_root/ui/package.json" "$fixture/ui/package.json" || fail 'failed update did not restore package metadata'
 
 git -C "$fixture" reset -q --hard HEAD
 sed -i '/package-ecosystem: github-actions/,/open-pull-requests-limit:/ {

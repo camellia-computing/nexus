@@ -14,8 +14,10 @@ done
 
 node_version="$(tr -d '[:space:]' < .node-version)"
 [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail '.node-version must contain exact stable SemVer'
-[[ "${node_version%%.*}" == 24 ]] || fail 'Node.js must remain on the supported 24.x major'
-[[ "$(jq -r '.engines.node // empty' ui/package.json)" == '>=24 <25' ]] || fail 'ui engines.node must express the supported major window'
+node_major="${node_version%%.*}"
+[[ "$(jq -r '.engines.node // empty' ui/package.json)" == ">=$node_major <$((10#$node_major + 1))" ]] || fail 'ui engines.node must match .node-version'
+node_types="$(jq -r '.devDependencies["@types/node"] // empty' ui/package.json)"
+[[ "$node_types" =~ ^${node_major}\.[0-9]+\.[0-9]+$ ]] || fail '@types/node must match the configured Node.js major'
 jq -e '.engines.pnpm == null' ui/package.json >/dev/null || fail 'pnpm must not be repeated in engines'
 package_manager="$(jq -r '.packageManager // empty' ui/package.json)"
 [[ "$package_manager" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'packageManager must pin an exact pnpm version'
