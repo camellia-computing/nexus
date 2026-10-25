@@ -14,8 +14,10 @@ done
 
 node_version="$(tr -d '[:space:]' < .node-version)"
 [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail '.node-version must contain exact stable SemVer'
-[[ "${node_version%%.*}" == 24 ]] || fail 'Node.js must remain on the supported 24.x major'
-[[ "$(jq -r '.engines.node // empty' ui/package.json)" == '>=24 <25' ]] || fail 'ui engines.node must express the supported major window'
+node_major="${node_version%%.*}"
+[[ "$(jq -r '.engines.node // empty' ui/package.json)" == ">=$node_major <$((10#$node_major + 1))" ]] || fail 'ui engines.node must match .node-version'
+node_types="$(jq -r '.devDependencies["@types/node"] // empty' ui/package.json)"
+[[ "$node_types" =~ ^${node_major}\.[0-9]+\.[0-9]+$ ]] || fail '@types/node must match the configured Node.js major'
 jq -e '.engines.pnpm == null' ui/package.json >/dev/null || fail 'pnpm must not be repeated in engines'
 package_manager="$(jq -r '.packageManager // empty' ui/package.json)"
 [[ "$package_manager" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'packageManager must pin an exact pnpm version'
@@ -26,14 +28,12 @@ jq -e '
   | all(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"))
 ' ui/package.json >/dev/null || fail 'direct JavaScript dependencies must use exact versions'
 jq -e '
-  .devDependencies["@wdio/native-utils"] == "2.5.0" and
-  .devDependencies["serialize-javascript"] == "7.0.7"
+  .devDependencies["@wdio/native-utils"] == "2.8.0" and
+  .devDependencies["serialize-javascript"] == "7.1.3"
 ' ui/package.json >/dev/null || fail 'reviewed test compatibility and security overrides must be direct dependencies'
-grep -Fxq "  '@wdio/native-utils': 2.5.0" ui/pnpm-workspace.yaml ||
-  fail 'the Tauri WebdriverIO graph must override native-utils from the pnpm 11 workspace settings'
 grep -Fxq "  '@napi-rs/wasm-runtime': 1.1.6" ui/pnpm-workspace.yaml ||
   fail 'the Rolldown WASI fallback must use the stable emnapi-compatible runtime'
-grep -Fxq '  serialize-javascript: 7.0.7' ui/pnpm-workspace.yaml ||
+grep -Fxq '  serialize-javascript: 7.1.3' ui/pnpm-workspace.yaml ||
   fail 'the WebdriverIO Mocha graph must override serialize-javascript to its reviewed patched release'
 grep -Fxq '  brace-expansion: 5.0.12' ui/pnpm-workspace.yaml ||
   fail 'the WebdriverIO graph must use the reviewed current brace-expansion release'
@@ -143,10 +143,10 @@ if grep -q 'RELEASE_APP_' "${cross_repo_workflows[@]}"; then
 fi
 require_workflow_text .github/workflows/ci.yml 'uses: astral-sh/setup-uv@' \
   'CI does not install the pinned workflow security runtime'
-require_workflow_text .github/workflows/ci.yml 'version: 0.12.0' \
+require_workflow_text .github/workflows/ci.yml 'version: 0.13.5' \
   'CI does not select the reviewed exact uv release'
 require_workflow_text .github/workflows/ci.yml \
-  'run: uvx --from zizmor==1.28.0 zizmor --strict-collection --persona=pedantic --format=github .' \
+  'run: uvx --from zizmor==1.31.1 zizmor --strict-collection --persona=pedantic --format=github .' \
   'CI does not block on the reviewed pedantic workflow security scan'
 require_workflow_text .github/workflows/native-e2e.yml \
   'E2E_SUITE: ${{ github.event_name == '\''schedule'\'' && '\''full'\'' || inputs.suite || '\''smoke'\'' }}' \
@@ -206,8 +206,7 @@ audit_ignore_count="$(
     tr -d '[:space:]'
 )"
 [[ "$audit_ignore_count" == 1 ]] || fail 'exactly one registered Rust advisory ignore is permitted'
-grep -q 'pnpm 11' "$policy" || fail 'pnpm 11 update exception is undocumented'
-grep -q '@wdio/native-utils' "$policy" || fail 'WebdriverIO native-utils override is undocumented'
+grep -q 'single-document' "$policy" || fail 'the dependency graph lockfile contract is undocumented'
 grep -q '@napi-rs/wasm-runtime' "$policy" || fail 'Rolldown WASI runtime override is undocumented'
 grep -q 'GHSA-5c6j-r48x-rmvq' "$policy" || fail 'serialize-javascript security override is undocumented'
 grep -q 'GHSA-q2hr-2g5m-vwhr' "$policy" || fail 'brace-expansion module surface patch and security limits are undocumented'
@@ -219,8 +218,17 @@ dependabot=.github/dependabot.yml
 ecosystem_count="$(grep -c 'package-ecosystem:' "$dependabot")"
 default_cooldown_count="$(grep -c 'default-days: 7' "$dependabot")"
 [[ "$ecosystem_count" == "$default_cooldown_count" ]] || fail 'every Dependabot ecosystem must define the default cooldown'
-if grep -qE 'package-ecosystem:[[:space:]]+(npm|rust-toolchain)' "$dependabot"; then
-  fail 'pnpm 11 and coupled Rust toolchain updates must use scripts/update-toolchains.sh'
+if grep -qE 'package-ecosystem:[[:space:]]+rust-toolchain' "$dependabot"; then
+  fail 'coupled Rust toolchain updates must use scripts/update-toolchains.sh'
+fi
+awk '
+  /package-ecosystem:/ { npm = ($NF == "npm"); next }
+  npm && /directory:/ { if ($NF == "/ui") found++ }
+  END { exit !(found == 1) }
+' "$dependabot" || fail 'Dependabot must update the owning frontend directory'
+grep -q '^lockfileVersion:' ui/pnpm-lock.yaml || fail 'the dependency graph requires an application lockfile'
+if grep -qE '^(---|\\.\\.\\.)[[:space:]]*$' ui/pnpm-lock.yaml; then
+  fail 'the dependency graph requires a single-document pnpm lockfile'
 fi
 unsupported_cooldowns="$(awk '
   /package-ecosystem:/ {

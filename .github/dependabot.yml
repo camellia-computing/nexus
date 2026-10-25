@@ -1,5 +1,25 @@
 version: 2
 updates:
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:10"
+      timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    rebase-strategy: disabled
+    commit-message:
+      prefix: "build(deps)"
+    groups:
+      native-test-stack:
+        patterns: ["@wdio/*", "webdriverio", "expect-webdriverio", "mocha"]
+      javascript-nonbreaking:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
   - package-ecosystem: cargo
     directory: /
     schedule:

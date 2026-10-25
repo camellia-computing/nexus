@@ -13,13 +13,13 @@ edition = "2024"
 license = "LicenseRef-Camellia-Proprietary-1.0"
 authors = ["Camellia Computing"]
 description = "Cross-platform binary lifecycle manager"
-rust-version = "1.97"
+rust-version = "1.99"
 readme = "README.md"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
-base64 = "0.22.1"
-jsonwebtoken = { version = "10.4.0", default-features = false, features = ["use_pem"] }
+base64 = "0.23.1"
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_pem"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

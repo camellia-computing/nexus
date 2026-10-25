@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 
-import { validateTargetTriple } from './prepare-privilege-broker.mjs';
+import { resolveCargoTargetDirectory, validateTargetTriple } from './prepare-privilege-broker.mjs';
+
+const root = resolve('fixture', 'project');
+assert.equal(resolveCargoTargetDirectory(root), resolve(root, 'target'));
+assert.equal(resolveCargoTargetDirectory(root, ''), resolve(root, 'target'));
+assert.equal(resolveCargoTargetDirectory(root, '../shared-cache'), resolve(root, '../shared-cache'));
+const absoluteCache = resolve('fixture', 'shared-cache');
+assert.equal(resolveCargoTargetDirectory(root, absoluteCache), absoluteCache);
 
 for (const valid of [
   'x86_64-unknown-linux-gnu',

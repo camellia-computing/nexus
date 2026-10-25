@@ -558,7 +558,7 @@ fn collect_limited(
             break;
         }
         let previous = total
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 Some(value.saturating_add(count))
             })
             .unwrap_or_else(|value| value);
