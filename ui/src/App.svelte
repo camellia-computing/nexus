@@ -57,6 +57,7 @@
   } from './arguments';
   import { programDefinition } from './programs/registry';
   import {
+    configurationReviewBlocker,
     effectiveConfigSourceLimit,
     hasConfigurationArgument,
   } from './programs/shared/configuration';
@@ -928,11 +929,11 @@
   $: configurationEditorHasErrors = configDiagnosticStatus?.content === configContent
     && configDiagnosticStatus?.language === configDocument?.language
     && configDiagnosticStatus.errorCount > 0;
-  $: configurationCapabilityBlocked = !configEditorDirty
-    && !!configurationState?.workspace.editor.blockers.some((blocker) => [
-      'CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_SETTING_REQUIRED',
-      'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED',
-    ].includes(blocker.code));
+  $: configurationReviewIssue = configurationReviewBlocker(
+    configurationState?.workspace.editor.blockers ?? [],
+    !configEditorDirty || (!!finalEditorSession?.draftRevision
+      && !finalEditorSession.rebaseRequired && finalEditorSession.workingContent === configContent),
+  );
   $: configurationActivationBlocked = !!busy
     || intentUpdatePending
     || !!pendingConflictRequest
@@ -945,7 +946,7 @@
     || configurationStateLoadError
     || configurationIdentityCheckingId === selectedId
     || configurationHasMergeBlocker
-    || configurationCapabilityBlocked
+    || !!configurationReviewIssue
     || configurationSyntaxInvalid;
   $: configurationActivationReason = !canEditConfigurationByLicense || !canRunDiagnosticsByLicense
     ? licenseActionHint
@@ -961,11 +962,8 @@
         ? 'Review program detection in Compatibility.'
       : configurationSyntaxInvalid
         ? 'Fix the highlighted configuration syntax.'
-      : configurationCapabilityBlocked
-        ? coreAssessmentMessage(configurationState?.workspace.editor.blockers.find((blocker) => [
-          'CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_SETTING_REQUIRED',
-          'CORE_BUILD_CAPABILITY_UNAVAILABLE', 'CORE_BUILD_CAPABILITY_UNCONFIRMED',
-        ].includes(blocker.code))?.messageKey) ?? 'Fix the highlighted issue, then try again.'
+      : configurationReviewIssue
+        ? coreAssessmentMessage(configurationReviewIssue.messageKey) ?? 'Fix the highlighted issue, then try again.'
       : configurationHasMergeBlocker
         ? 'Resolve conflicts before continuing.'
         : !configurationNeedsActivation

@@ -1,4 +1,14 @@
 import type { ArgumentParseResult } from '../../arguments';
+import type { ConfigurationGateBlocker } from '../../types';
+
+export function configurationReviewBlocker(
+  blockers: readonly ConfigurationGateBlocker[],
+  contentIsCurrent: boolean,
+): ConfigurationGateBlocker | undefined {
+  return contentIsCurrent
+    ? blockers.find((blocker) => blocker.blocks.includes('apply') && blocker.recoveryAction === 'reviewCandidate')
+    : undefined;
+}
 
 export const MAX_CONFIG_SOURCES_PER_PROGRAM = 50;
 

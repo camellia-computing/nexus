@@ -13,6 +13,7 @@ import {
 } from '../src/lib/theme/preferences.ts';
 import { managedWorkingDirectory } from '../src/paths.ts';
 import {
+  configurationReviewBlocker,
   enrichConfigurationArguments,
   effectiveConfigSourceLimit,
   hasConfigurationArgument,
@@ -597,6 +598,12 @@ globalThis.localStorage = {
   removeItem: (key) => draftStorage.delete(key),
 };
 globalThis.document = { documentElement: { lang: '' } };
+for (const code of ['CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_SETTING_UNSUPPORTED', 'CONFIGURATION_VALUE_NOT_ALLOWED', 'FUTURE_REVIEW_REQUIRED']) {
+  const blocker = { code, messageKey: code, scope: { surface: 'configuration' }, blocks: ['validate', 'apply'], recoveryAction: 'reviewCandidate' };
+  assert.equal(configurationReviewBlocker([blocker], true), blocker);
+  assert.equal(configurationReviewBlocker([blocker], false), undefined, 'New input must not retain an old blocker');
+  assert.equal(configurationReviewBlocker([{ ...blocker, recoveryAction: 'validateCandidate' }], true), undefined, 'The single Apply action performs validation');
+}
 const { hasChineseTranslation } = await import('../src/i18n.ts');
 assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_RULE_SHADOWED' }), true);
 assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_OBJECT_AMBIGUOUS' }), true);
@@ -739,6 +746,11 @@ for (const message of [
   'The updated configuration and your edit changed the same path. Review it before saving or applying.',
   'Final configuration also edits this setting. Changes here may require conflict resolution there.',
   'Configuration status',
+  'Clean',
+  'Modified',
+  'Conflict',
+  'Applied',
+  'Needs attention',
   'Merge manually',
   'Review configuration',
   'Using latest settings',

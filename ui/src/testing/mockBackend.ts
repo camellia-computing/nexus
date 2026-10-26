@@ -1857,7 +1857,7 @@ function configurationWorkspaceSnapshot(programId: string): {
         ? editorSession.workingContent : state.desired.content;
       const document = parsePreviewJsonc(content) as { inbounds?: { auto_redirect?: boolean }[] };
       if (document.inbounds?.[0]?.auto_redirect === true) {
-        const code = 'CONFIGURATION_PLATFORM_UNSUPPORTED';
+        const code = previewParameters.get('__ui_review_code') ?? 'CONFIGURATION_PLATFORM_UNSUPPORTED';
         const location = { semanticPath: '/inbounds/0/auto_redirect', documentPath: ['inbounds', '0', 'auto_redirect'] };
         state.workspace.editor.diagnostics.push({ code, message: code, messageKey: code, location, scope: { surface: 'configuration' } });
         state.workspace.editor.blockers.push({ code, messageKey: code, semanticPath: location.semanticPath,

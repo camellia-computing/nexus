@@ -3955,6 +3955,21 @@ test('platform capability feedback is localized, actionable and clears after rep
   await expect(workspace).not.toContainText('此程序在当前平台无法使用该设置');
 });
 
+for (const code of ['CONFIGURATION_SETTING_UNSUPPORTED', 'CONFIGURATION_VALUE_NOT_ALLOWED']) {
+  test(`authoritative ${code} blocks Apply and clears after an autosaved repair`, async ({ page }) => {
+    await openPreview(page, 'cupertino', 'light', 1, `&__ui_platform_issue&__ui_review_code=${code}`);
+    const editor = await openProgramConfiguration(page, 'sing-box-edge');
+    const apply = page.getByRole('button', { name: 'Apply and restart', exact: true });
+    await expect(apply).toBeDisabled();
+    await replaceEditorContent(page, editor, '{"inbounds":[{"type":"tun","tag":"tun-in","auto_route":true,"auto_redirect":false}]}');
+    await expect(page.locator('.editor-blockers')).toHaveCount(0);
+    await expect(apply).toBeEnabled();
+    await replaceEditorContent(page, editor, '{"inbounds":[{"type":"tun","tag":"tun-in","auto_route":true,"auto_redirect":true}]}');
+    await expect(page.locator('.editor-blockers')).toBeVisible();
+    await expect(apply).toBeDisabled();
+  });
+}
+
 test('create program keeps its content scrollable and actions reachable at the minimum window size', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 680, height: 480 });
   await openPreview(page, 'aurora', 'dark', 1.3);
@@ -5356,6 +5371,13 @@ test('a saved JSON draft containing only a trailing newline does not create anot
     return snapshot.editorSession?.draftRevision ?? 0;
   })).toBe(0);
   await expect(page.locator('#program-panel-configuration .editor-state')).toContainText('Applied');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('dialog');
+  await settings.locator('#settings-tab-general').click();
+  await settings.getByRole('button', { name: 'Chinese', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#program-panel-configuration .editor-state')).toContainText('已应用');
+  await expect(page.locator('#program-panel-configuration .editor-state')).not.toContainText('Applied');
 });
 
 test('successive autosaves queue behind a delayed response without racing revisions', async ({ page }) => {

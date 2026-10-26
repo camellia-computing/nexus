@@ -1336,6 +1336,7 @@ const zh: Record<string, string> = {
   More: '更多',
   Clean: '无改动',
   Modified: '已修改',
+  Applied: '已应用',
   'Final edit': '最终编辑',
   'Updated configuration': '更新后的配置',
   'Your edit': '你的修改',
