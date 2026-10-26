@@ -65,8 +65,28 @@ import { singBoxJsonSchemaSemantics } from '../src/programs/sing-box/jsonSchema.
 {
   const catalogs = JSON.parse(readFileSync(new URL('../src/testing/intentCatalogs.json', import.meta.url), 'utf8'));
   const settings = JSON.parse(readFileSync(new URL('../src/testing/intentSettings.json', import.meta.url), 'utf8'));
+  const baselines = JSON.parse(readFileSync(new URL('../src/testing/coreBaselines.json', import.meta.url), 'utf8'));
+  const knowledge = JSON.parse(readFileSync(new URL('../../crates/camellia-nexus-core/core-knowledge.json', import.meta.url), 'utf8'));
+  for (const program of knowledge.programs) {
+    const baseline = baselines[program.program];
+    assert.equal(baseline.knowledgeHash, knowledge.contentHash, 'preview data uses the reviewed catalog');
+    assert.deepEqual(baseline.families, program.families);
+    assert.equal(baseline.latest.tag, program.latestStable);
+    for (const release of [baseline.latest, baseline.previous]) {
+      assert.ok(program.releases.some((entry) => entry.tag === release.tag
+        && entry.version === release.version && entry.commitSha === release.commitSha),
+      'preview baseline must identify a maintained exact source commit');
+    }
+    assert.ok(baseline.previous.version.startsWith(`${program.families[1]}.`));
+  }
   assert.deepEqual(Object.keys(settings).sort(), Object.keys(catalogs).sort());
   for (const key of Object.keys(catalogs)) {
+    const catalogIds = new Set(catalogs[key].nodes.map((node) => node.nodeId));
+    for (const relation of catalogs[key].relations) {
+      for (const nodeId of relation.nodeIds) {
+        assert.ok(catalogIds.has(nodeId), `${key}: relation fields must remain navigable in previews`);
+      }
+    }
     const ids = settings[key].map((entry) => entry.descriptor.id);
     assert.equal(new Set(ids).size, ids.length, 'one registered descriptor per setting');
     for (const node of catalogs[key].nodes.filter((node) => node.settingId)) {
@@ -591,7 +611,7 @@ assert.equal(configurationNoticeDuration(protectionRefusal, 'guided-change', tru
 assert.equal(configurationChoiceWasRejected({ code: 'STORAGE' }), false, 'an unknown storage result must retain its operation identity');
 assert.equal(hasChineseTranslation(pendingIntent.title), true);
 assert.equal(hasChineseTranslation(pendingIntent.message), true);
-for (const messageKey of ['CONFIGURATION_REFERENCE_INVALID', 'CONFIGURATION_REFERENCE_MISSING', 'CONFIGURATION_REFERENCE_AMBIGUOUS', 'INTENT_REFERENCE_CHOICE_REQUIRED', 'INTENT_REFERENCE_CHOICE_STALE']) {
+for (const messageKey of ['CONFIGURATION_SETTING_UNSUPPORTED', 'CONFIGURATION_REFERENCE_INVALID', 'CONFIGURATION_REFERENCE_MISSING', 'CONFIGURATION_REFERENCE_AMBIGUOUS', 'INTENT_REFERENCE_CHOICE_REQUIRED', 'INTENT_REFERENCE_CHOICE_STALE']) {
   const notice = configurationErrorInfo({ code: 'CONFIG_INVALID', messageKey }, 'guided-change');
   assert.equal(hasChineseTranslation(notice.title), true);
   assert.equal(hasChineseTranslation(notice.message), true);

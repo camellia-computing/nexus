@@ -2850,7 +2850,7 @@ mod tests {
             SemanticValue, SourceUpdateKind,
         };
         let (_directory, store, manager, coordinator, id) = workspace_fixture().await;
-        change_fixture_source(&coordinator, &manager, &id, r#"{"outbounds":[{"protocol":"freedom","tag":"first","proxySettings":{"tag":"direct","transportLayer":true}},{"protocol":"freedom","tag":"direct"},{"protocol":"freedom","tag":"other"}]}"#, SourceUpdateKind::UserEdit).await;
+        change_fixture_source(&coordinator, &manager, &id, r#"{"outbounds":[{"protocol":"freedom","tag":"first","streamSettings":{"sockopt":{"dialerProxy":"direct","tcpFastOpen":true}}},{"protocol":"freedom","tag":"direct"},{"protocol":"freedom","tag":"other"}]}"#, SourceUpdateKind::UserEdit).await;
         let lease = coordinator.acquire_lease(&manager, &id).await.unwrap();
         let before = store.load_configuration_state(&id).await.unwrap().unwrap();
         let profile = intent_profile(&manager.get(&id).await.unwrap().0).unwrap();
@@ -2858,7 +2858,9 @@ mod tests {
         let node = catalog
             .nodes
             .iter()
-            .find(|node| node.pattern == ["outbounds", "*", "proxySettings", "tag"])
+            .find(|node| {
+                node.pattern == ["outbounds", "*", "streamSettings", "sockopt", "dialerProxy"]
+            })
             .unwrap();
         let context = coordinator
             .intent_context_with_lease(&manager, &id, Some(&node.node_id), &lease)
@@ -2921,11 +2923,11 @@ mod tests {
             .unwrap();
         let persisted = store.load_configuration_state(&id).await.unwrap().unwrap();
         assert_eq!(
-            persisted.upstream_document().unwrap()["outbounds"][0]["proxySettings"]["tag"],
+            persisted.upstream_document().unwrap()["outbounds"][0]["streamSettings"]["sockopt"]["dialerProxy"],
             "other"
         );
         assert_eq!(
-            persisted.upstream_document().unwrap()["outbounds"][0]["proxySettings"]["transportLayer"],
+            persisted.upstream_document().unwrap()["outbounds"][0]["streamSettings"]["sockopt"]["tcpFastOpen"],
             true
         );
         let repeated = coordinator

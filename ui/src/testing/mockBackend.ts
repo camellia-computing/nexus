@@ -7,6 +7,7 @@ import { installPreviewInvokeTransport } from '../api';
 import { canUseProgramLifecycleAction, deriveLicenseAccess } from '../licenseAccess';
 import { semanticPathSegments } from '../editor/configurationMarkerModel';
 import nativeIntentSettings from './intentSettings.json';
+import coreBaselines from './coreBaselines.json';
 import type {
   AppSettings,
   ConfigSource,
@@ -920,41 +921,25 @@ function unclassifiedCoreTarget(
       commitSha,
     },
     basis: 'binaryReported' as const,
-    knowledgeHash: 'preview-knowledge-digest',
+    knowledgeHash: coreBaselines[program].knowledgeHash,
     reportedVersion: report,
     fingerprintSha256,
   });
   if (coreTargetPreview === 'release-xray' && program === 'xray') {
-    return releaseTarget(
-      'v26.3.27',
-      '26.3.27',
-      'd2758a023cd7f4174a5a5fa4ff66e487d4342ba0',
-      'Xray v26.3.27',
-    );
+    const baseline = coreBaselines.xray.latest;
+    return releaseTarget(baseline.tag, baseline.version, baseline.commitSha, `Xray ${baseline.tag}`);
   }
   if (coreTargetPreview === 'release-mihomo' && program === 'mihomo') {
-    return releaseTarget(
-      'v1.19.29',
-      '1.19.29',
-      'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
-      'Mihomo Meta v1.19.29',
-    );
+    const baseline = coreBaselines.mihomo.latest;
+    return releaseTarget(baseline.tag, baseline.version, baseline.commitSha, `Mihomo Meta ${baseline.tag}`);
   }
   if (coreTargetPreview === 'release-singbox' && program === 'singBox') {
-    return releaseTarget(
-      'v1.13.18',
-      '1.13.18',
-      '45ca32dcb966f07f97fc888fe8586e359dbe8405',
-      'sing-box version 1.13.18',
-    );
+    const baseline = coreBaselines.singBox.previous;
+    return releaseTarget(baseline.tag, baseline.version, baseline.commitSha, `sing-box version ${baseline.version}`);
   }
   if (coreTargetPreview === 'release-singbox-new' && program === 'singBox') {
-    return releaseTarget(
-      'v1.14.0',
-      '1.14.0',
-      '0b8995879f29a9b98ee027bc17b75e101445b238',
-      'sing-box version 1.14.0',
-    );
+    const baseline = coreBaselines.singBox.latest;
+    return releaseTarget(baseline.tag, baseline.version, baseline.commitSha, `sing-box version ${baseline.version}`);
   }
   if (coreTargetPreview === 'future') {
     const displayName = program === 'xray'
@@ -980,12 +965,8 @@ function unclassifiedCoreTarget(
       fingerprintSha256,
     };
   }
-  const baseline = program === 'xray'
-    ? { version: '26.3.27', commit: 'd2758a023cd7f4174a5a5fa4ff66e487d4342ba0' }
-    : program === 'mihomo'
-      ? { version: '1.19.30', commit: 'ac017cdd246ce8bd547653d927e7bf77d7ee73d5' }
-      : { version: '1.14.0', commit: '0b8995879f29a9b98ee027bc17b75e101445b238' };
-  return releaseTarget(`v${baseline.version}`, baseline.version, baseline.commit, reportedVersion ?? baseline.version);
+  const baseline = coreBaselines[program].latest;
+  return releaseTarget(baseline.tag, baseline.version, baseline.commitSha, reportedVersion ?? baseline.version);
 }
 
 function mockCoreAdmission(program: ProgramKind, target?: CoreTargetIdentity): CoreAdmissionReport | null {
@@ -997,8 +978,7 @@ function mockCoreAdmission(program: ProgramKind, target?: CoreTargetIdentity): C
     status,
     messageKey: status === 'admitted' ? 'CORE_ADMISSION_ACCEPTED'
       : status === 'notMaintained' ? 'CORE_VERSION_NOT_MAINTAINED' : 'CORE_VERSION_UNRECOGNIZED',
-    maintainedFamilies: program === 'xray' ? ['26.3', '26.2']
-      : program === 'mihomo' ? ['1.19', '1.18'] : ['1.14', '1.13'],
+    maintainedFamilies: coreBaselines[program].families,
     baseline: release ? {
       tag: release.tag,
       version: release.normalizedVersion,

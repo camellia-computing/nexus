@@ -73,7 +73,7 @@ Mihomo 映射字段递归合并；同名 `proxies`、`proxy-groups` 与 `listene
 
 ### 开发与验证
 
-要求：Rust 1.97、Node.js 24 LTS、pnpm 11，以及目标平台所需的 [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)。
+工具链版本分别以 `rust-toolchain.toml`、`.node-version` 和 `ui/package.json` 为准，并安装目标平台所需的 [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)。
 
 ```bash
 pnpm --dir ui install --frozen-lockfile
@@ -231,7 +231,7 @@ References:
 
 ### Development and verification
 
-Requirements: Rust 1.97, Node.js 24 LTS, pnpm 11 and the target platform’s [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/).
+Use the toolchain versions pinned in `rust-toolchain.toml`, `.node-version` and `ui/package.json`, plus the target platform’s [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 pnpm --dir ui install --frozen-lockfile

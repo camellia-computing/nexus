@@ -13,6 +13,14 @@ module-only alias tags do not define baselines. Every retained patch is assessed
 
 ## Evidence and rules / 证据与规则
 
+Reviewed stable-source changes and their maintained families are recorded in
+[Source behavior review](core-source-review.md). Constructor-rejected fields block application
+only for patches whose source rejects them. Missing fields and accepted null pointers remain
+distinct, and rejected fields are not offered as usable Intent controls.
+
+稳定源码变化及维护系列见 [源码行为审查](core-source-review.md)。构造器拒绝的字段仅在对应补丁中
+阻止应用；缺失字段与可接受的空指针分别处理，不把无法使用的字段作为可用意图控件。
+
 Intent resolves its scalar registry and native object adapters against the same capability profile used by configuration assessment. Field existence does not bypass reviewed platform/build rules. Parser-dependent enum behavior is catalog data: reviewed parser alternatives select the appropriate constraint without release thresholds in application code. Log parsing for sing-box and Mihomo is included in source extraction; Mihomo's choices are debug/info/warning/error/silent, and case handling follows each patch's parser. Unknown parser behavior requires review before regeneration.
 
 ### Native Intent contracts

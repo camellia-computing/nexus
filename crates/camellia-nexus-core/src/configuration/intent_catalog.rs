@@ -292,6 +292,23 @@ fn build_catalog(profile: &CoreCapabilityProfile) -> Result<IntentCatalog> {
         for variant in descriptor.semantic_rules.iter().filter(|variant| {
             variant.releases.contains(&profile.baseline_tag) && variant.rule.path == native.path
         }) {
+            if matches!(
+                variant.rule.constraint,
+                crate::KnowledgeValueConstraint::Rejected { .. }
+            ) && variant.rule.when.is_empty()
+                && matches!(
+                    evaluate_build_condition(
+                        profile.program,
+                        profile.build.as_ref(),
+                        &variant.rule.build_constraint,
+                        &descriptor.reported_build_tags_for(&profile.baseline_tag)
+                    ),
+                    BuildCondition::Satisfied
+                )
+            {
+                availability = NativeInputAvailability::Excluded;
+                break;
+            }
             if let crate::KnowledgeValueConstraint::Reference {
                 form: crate::KnowledgeReferenceForm::Scalar,
                 ..

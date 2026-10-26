@@ -201,7 +201,8 @@
             "ce27f8c12797e1f6d6084c1c6f0fd624d95f0c39aa9391e167487872b91f06d2",
             "d2a3a1244eae7261bd0e8f251561d0765d0604dcc53da52359caee817734872e",
             "63996717aa0078afd9b4a9d9ab1e6b9dfc6c17f8dc846b61016a5968bc66563e",
-            "dfbfc061473c908bd53fae370e695f14045bc68a70aea8d9a87a9239c3ecdfcd"
+            "dfbfc061473c908bd53fae370e695f14045bc68a70aea8d9a87a9239c3ecdfcd",
+            "f0dd5d99538445da695826ce554a0ac11a2b72b8c559da8c611714458da5bc43"
           ],
           "buildConstraints": [
             ""
@@ -267,7 +268,8 @@
           "path": "dns/transport_manager.go",
           "bodyHashes": [
             "3d486e274c59a7e11c39dbaa5fcf03bdbf2ec2209659c3ebc806119b892ee0ed",
-            "e33fd8c16fab22b5d3567b5c509787df124bd34fd6f585b4a4a62bca812459f0"
+            "e33fd8c16fab22b5d3567b5c509787df124bd34fd6f585b4a4a62bca812459f0",
+            "efaa4a27207fd5f26c35a2329e8a822e3cadd85189f28fae2ff1efee5cdb5d12"
           ],
           "buildConstraints": [
             ""
@@ -656,7 +658,8 @@
           "path": "route/rule/rule_action.go",
           "bodyHashes": [
             "7fe3e9a9ac71e64e3f40beff9eec306d3b96b8d4b81f68cdffe405368d0b68bd",
-            "dea20772df2f9ffbd87a97389bbf5e4d6c6998213875d405f418d03acf7800ea"
+            "dea20772df2f9ffbd87a97389bbf5e4d6c6998213875d405f418d03acf7800ea",
+            "58bdd441b3bd9cc0831bcd865d05399202c49711284a9e75ffa15e0feb508738"
           ],
           "buildConstraints": [
             ""
@@ -729,7 +732,8 @@
         "proxySettings",
         "tag"
       ],
-      "declaration": "infra/conf#ProxyConfig",
+      "declarationCandidates": ["infra/conf#ProxyConfig"],
+      "allowAbsentDeclaration": true,
       "field": "Tag",
       "constraint": {
         "kind": "reference",
@@ -832,7 +836,8 @@
           "path": "infra/conf/router.go",
           "bodyHashes": [
             "a7549a7010b72a2561d5b3ebf6f120d9854d7cf6aa5b774730cf6bd8cf3027a9",
-            "f5014dd137a372a6612d72694d839a0167a5326eea19301990f05c5fc8c6eb9e"
+            "f5014dd137a372a6612d72694d839a0167a5326eea19301990f05c5fc8c6eb9e",
+            "95e774c5720e14cc345a5c32d511e4250f47c024b290d6077aa8b372158e41c3"
           ],
           "buildConstraints": [
             ""
@@ -1414,7 +1419,9 @@
             "3e2608ef94a31d0ef9dd3bb705f55f56e66873682eae3cc16dc9460124edf8f5",
             "a97b6c93cf3f4c0936f4cf3ee6c7bc47600a19d8a15a3602c46a6f50726e351a",
             "edb21f9d7f27ad2dcce949d35a2aaba84a73243197ec3e61b7009e2d433f78fa",
-            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7"
+            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7",
+            "186fc9432c05ec3d1230e6a3eb5ffcbab97122cb14cacb40d629e5113dddd591",
+            "6314b3483c9e8a57c3dcb7d16c96009c23db129ba54099dc993a45faf4f730a3"
           ],
           "buildConstraints": [
             ""
@@ -1484,7 +1491,9 @@
             "3e2608ef94a31d0ef9dd3bb705f55f56e66873682eae3cc16dc9460124edf8f5",
             "a97b6c93cf3f4c0936f4cf3ee6c7bc47600a19d8a15a3602c46a6f50726e351a",
             "edb21f9d7f27ad2dcce949d35a2aaba84a73243197ec3e61b7009e2d433f78fa",
-            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7"
+            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7",
+            "186fc9432c05ec3d1230e6a3eb5ffcbab97122cb14cacb40d629e5113dddd591",
+            "6314b3483c9e8a57c3dcb7d16c96009c23db129ba54099dc993a45faf4f730a3"
           ],
           "buildConstraints": [
             ""
@@ -1545,7 +1554,9 @@
             "3e2608ef94a31d0ef9dd3bb705f55f56e66873682eae3cc16dc9460124edf8f5",
             "a97b6c93cf3f4c0936f4cf3ee6c7bc47600a19d8a15a3602c46a6f50726e351a",
             "edb21f9d7f27ad2dcce949d35a2aaba84a73243197ec3e61b7009e2d433f78fa",
-            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7"
+            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7",
+            "186fc9432c05ec3d1230e6a3eb5ffcbab97122cb14cacb40d629e5113dddd591",
+            "6314b3483c9e8a57c3dcb7d16c96009c23db129ba54099dc993a45faf4f730a3"
           ],
           "buildConstraints": [
             ""
@@ -1631,7 +1642,8 @@
             "bc5ead0af6df7ac5d0ecc5bc75f6364b40b5924d2becbc35dfaf0ffb49292e2a",
             "cec0493f755bb425a99da4c94ca27d6a7cf3d08fc6da48582ba223d7bedd8b5c",
             "e0ce41cfdf021c7687130cd5aadc1732bf2d8dc6c21eb4f276b8f62c808bfa16",
-            "efafbe60ab0ace76f88c1d063a065894999c6af41eecccb531e01181594716de"
+            "efafbe60ab0ace76f88c1d063a065894999c6af41eecccb531e01181594716de",
+            "47ca4208ec482d315a15421ca3a0ed84b92c0acaf2c2d44b8efe0f002e73592b"
           ],
           "buildConstraints": [
             ""
@@ -1737,7 +1749,8 @@
             "bc5ead0af6df7ac5d0ecc5bc75f6364b40b5924d2becbc35dfaf0ffb49292e2a",
             "cec0493f755bb425a99da4c94ca27d6a7cf3d08fc6da48582ba223d7bedd8b5c",
             "e0ce41cfdf021c7687130cd5aadc1732bf2d8dc6c21eb4f276b8f62c808bfa16",
-            "efafbe60ab0ace76f88c1d063a065894999c6af41eecccb531e01181594716de"
+            "efafbe60ab0ace76f88c1d063a065894999c6af41eecccb531e01181594716de",
+            "47ca4208ec482d315a15421ca3a0ed84b92c0acaf2c2d44b8efe0f002e73592b"
           ],
           "buildConstraints": [
             ""
@@ -1827,8 +1840,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -1847,8 +1859,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -1857,8 +1868,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -1870,15 +1880,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -1897,8 +1906,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -1907,8 +1915,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -1920,7 +1927,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -1962,8 +1969,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -1982,8 +1988,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -1992,8 +1997,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2005,15 +2009,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2032,8 +2035,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2042,8 +2044,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -2055,7 +2056,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -2097,8 +2098,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -2117,8 +2117,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2127,8 +2126,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2140,15 +2138,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2167,8 +2164,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2177,8 +2173,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -2190,7 +2185,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -2232,8 +2227,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -2252,8 +2246,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2262,8 +2255,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2275,15 +2267,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2302,8 +2293,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2312,8 +2302,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -2325,7 +2314,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -2367,8 +2356,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -2387,8 +2375,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2397,8 +2384,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2410,15 +2396,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2437,8 +2422,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2447,8 +2431,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -2460,7 +2443,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -2502,8 +2485,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -2522,8 +2504,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2532,8 +2513,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2545,15 +2525,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2572,8 +2551,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2582,8 +2560,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -2595,7 +2572,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -2637,8 +2614,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -2657,8 +2633,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2667,8 +2642,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2680,15 +2654,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2707,8 +2680,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2717,8 +2689,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -2730,7 +2701,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -2772,8 +2743,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -2792,8 +2762,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2802,8 +2771,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2815,15 +2783,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2842,8 +2809,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2852,8 +2818,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -2865,7 +2830,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -2907,8 +2872,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -2927,8 +2891,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2937,8 +2900,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -2950,15 +2912,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -2977,8 +2938,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -2987,8 +2947,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -3000,7 +2959,7 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         }
       ]
@@ -3042,8 +3001,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4"
-          ],
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
           "buildConstraints": [
             "linux"
           ]
@@ -3062,8 +3020,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600"
-          ],
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
           "buildConstraints": [
             "darwin"
           ]
@@ -3072,8 +3029,7 @@
           "function": "transport/internet#applyInboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4"
-          ],
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
           "buildConstraints": [
             "windows"
           ]
@@ -3085,15 +3041,14 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
           ]
         },
         {
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_linux.go",
           "bodyHashes": [
-            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557"
-          ],
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
           "buildConstraints": [
             "linux"
           ]
@@ -3112,8 +3067,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_darwin.go",
           "bodyHashes": [
-            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70"
-          ],
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
           "buildConstraints": [
             "darwin"
           ]
@@ -3122,8 +3076,7 @@
           "function": "transport/internet#applyOutboundSocketOptions",
           "path": "transport/internet/sockopt_windows.go",
           "bodyHashes": [
-            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b"
-          ],
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
           "buildConstraints": [
             "windows"
           ]
@@ -3135,7 +3088,226 @@
             "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
           ],
           "buildConstraints": [
-            "(js || netbsd || openbsd || solaris)"
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.outbounds.proxy-settings",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "proxySettings"
+      ],
+      "declaration": "infra/conf#OutboundDetourConfig",
+      "field": "ProxySettings",
+      "fieldShapes": [
+        {
+          "type": "*ProxyConfig",
+          "embedded": false,
+          "tags": {
+            "json": "proxySettings"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "*json.RawMessage",
+          "embedded": false,
+          "tags": {
+            "json": "proxySettings"
+          },
+          "annotations": {}
+        }
+      ],
+      "constraint": {
+        "kind": "rejected",
+        "allowNull": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_SETTING_UNSUPPORTED",
+      "evidenceVariants": [
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": false,
+          "evidence": [
+            {
+              "function": "infra/conf#OutboundDetourConfig.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "cb51b2557adbc9440a6360194cd212f1400d1040c912cdf07efaec4c2f71bf59"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": true,
+          "evidence": [
+            {
+              "function": "infra/conf#OutboundDetourConfig.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "7e9e6a31db28640a4d4b64618dd1f1a613487d26f56e1b3b943422a06bbc3a06"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.reverse",
+      "program": "xray",
+      "path": [
+        "reverse"
+      ],
+      "declaration": "infra/conf#Config",
+      "field": "Reverse",
+      "fieldShapes": [
+        {
+          "type": "*ReverseConfig",
+          "embedded": false,
+          "tags": {
+            "json": "reverse"
+          },
+          "annotations": {}
+        }
+      ],
+      "constraint": {
+        "kind": "rejected",
+        "allowNull": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_SETTING_UNSUPPORTED",
+      "evidenceVariants": [
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": false,
+          "evidence": [
+            {
+              "function": "infra/conf#Config.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "794944d10d7b687925df2e6975be205f57a041f8460c8868743e6058c233f07f"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": true,
+          "evidence": [
+            {
+              "function": "infra/conf#Config.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "caff17e2180cabfa2bd2277341e94381ac5fd7389086a04615f67733124c5e50"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mihomo.tun.dns-mode",
+      "program": "mihomo",
+      "path": ["tun", "dns-mode"],
+      "declaration": "listener/config#Tun",
+      "field": "DNSMode",
+      "constraint": {"kind": "enum", "values": ["", "disabled", "native", "hijack"], "allowNull": true},
+      "defaultValue": "",
+      "defaultWhen": ["missing"],
+      "buildConstraint": "",
+      "when": [{"sibling": "enable", "values": [true], "allowMissing": false}],
+      "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+      "fieldShapes": [{"type": "string", "embedded": false, "tags": {"json": "dns-mode", "yaml": "dns-mode"}, "annotations": {}}],
+      "evidence": [{"function": "listener/sing_tun#New", "path": "listener/sing_tun/server.go", "bodyHashes": ["47ca4208ec482d315a15421ca3a0ed84b92c0acaf2c2d44b8efe0f002e73592b"], "buildConstraints": [""]}]
+    },
+    {
+      "id": "xray.reference.dialer-proxy",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "dialerProxy"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "DialerProxy",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "outbounds"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "dialerProxy"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#DialSystem",
+          "path": "transport/internet/dialer.go",
+          "bodyHashes": [
+            "ba42464b74c17eb79eee5baf21b8dc0a2121632eb82a9fa5d7057bbfd53861f7",
+            "f5da8706f146c4468d326c21632483a24610e0c153b375d551c27c6870ed0c89"
+          ],
+          "buildConstraints": [
+            ""
           ]
         }
       ]

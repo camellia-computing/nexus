@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ RULES = ROOT / "scripts/core-knowledge-rules.json"
 PROGRAMS = (
     {"program":"singBox","repository":"SagerNet/sing-box","familyPolicy":"majorMinor","prefixes":["option/","include/","constant/","protocol/","log/","adapter/inbound/manager.go","adapter/outbound/manager.go","dns/transport_manager.go","route/rule/rule_item_inbound.go","route/rule/rule_action.go","common/listener/listener_tcp.go"],"roots":["option#Options"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
     {"program":"mihomo","repository":"MetaCubeX/mihomo","familyPolicy":"majorMinor","prefixes":["config/","adapter/","listener/","constant/","rules/","log/","common/structure/","main.go"],"roots":["config#RawConfig"],"outboundCollection":"proxies","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"ss","proxy.outbound.hysteria2":"hysteria2","proxy.outbound.tuicV5":"tuic"}},
-    {"program":"xray","repository":"XTLS/Xray-core","familyPolicy":"releaseMonth","prefixes":["infra/conf/","transport/internet/sockopt"],"roots":["infra/conf#Config"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria","proxy.outbound.tuicV5":"tuic"}},
+    {"program":"xray","repository":"XTLS/Xray-core","familyPolicy":"releaseMonth","prefixes":["infra/conf/","transport/internet/sockopt","transport/internet/dialer.go"],"roots":["infra/conf#Config"],"outboundCollection":"outbounds","shareProtocols":{"proxy.outbound.vless":"vless","proxy.outbound.shadowsocks":"shadowsocks","proxy.outbound.hysteria2":"hysteria","proxy.outbound.tuicV5":"tuic"}},
 )
 STABLE_TAG = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -87,7 +88,14 @@ def run(args: list[str], *, cwd: Path | None = None, data: bytes | None = None, 
 
 
 def github(path: str) -> Any:
-    return json.loads(run(["gh", "api", path], timeout=45))
+    for attempt in range(3):
+        try:
+            return json.loads(run(["gh", "api", path], timeout=45))
+        except (RuntimeError, subprocess.TimeoutExpired):
+            if attempt == 2:
+                raise
+            time.sleep(attempt + 1)
+    raise AssertionError("unreachable API retry state")
 
 
 def discover(descriptor: dict) -> tuple[dict, list[tuple[int, int]], list[dict]]:
@@ -358,6 +366,9 @@ def reviewed_rules(program: str, inventory: dict, rules: list[dict]) -> list[dic
                 raise ValueError(f"semantic rule parser requires source review: {rule['id']}")
             if any(variant["constraint"] != variants[0]["constraint"] for variant in variants):
                 raise ValueError(f"semantic rule parser is ambiguous: {rule['id']}")
+            if any(variant.get("applicable", True) != variants[0].get("applicable", True)
+                   for variant in variants):
+                raise ValueError(f"semantic rule applicability is ambiguous: {rule['id']}")
             rule = {**rule, **variants[0]}
         evidence = []
         for recipe in rule["evidence"]:
@@ -372,7 +383,9 @@ def reviewed_rules(program: str, inventory: dict, rules: list[dict]) -> list[dic
             evidence.append({"source": fn["source"], "bodyHash": fn["bodyHash"]})
         if not evidence:
             raise ValueError(f"semantic rule lacks reviewed behavior: {rule['id']}")
-        result.append({**{key: value for key, value in rule.items() if key not in {"program", "evidence", "evidenceVariants", "declarationCandidates", "allowAbsentDeclaration"}},
+        if not rule.get("applicable", True):
+            continue
+        result.append({**{key: value for key, value in rule.items() if key not in {"program", "evidence", "evidenceVariants", "declarationCandidates", "allowAbsentDeclaration", "applicable"}},
                        "fieldHash": digest(field_shape),
                        "evidence": evidence})
         result[-1].pop("fieldShapes")
@@ -564,7 +577,10 @@ def build(cache: Path) -> tuple[dict, dict, dict]:
                 for evidence in report["evidence"]:
                     evidence["source"].pop("line")
                 build_report_variants.setdefault(digest(report), {"report": report, "releases": []})["releases"].append(tag)
-            semantic_rules = reviewed_rules(descriptor["program"], inventory, rules)
+            try:
+                semantic_rules = reviewed_rules(descriptor["program"], inventory, rules)
+            except ValueError as error:
+                raise ValueError(f"{descriptor['program']} {tag}: {error}") from error
             for rule in semantic_rules:
                 rule_variants.setdefault(digest(rule), {"rule": rule, "releases": []})["releases"].append(tag)
             current_release = {"tag": tag, "version": tag.removeprefix("v"), "commitSha": sha, "modulePath": module_path, "dependencies": dependencies, "publishedAt": release["published_at"], "sourceTimestamp": timestamp, "sourceUrl": f"https://github.com/{descriptor['repository']}/tree/{sha}"}

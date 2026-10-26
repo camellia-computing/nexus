@@ -32,6 +32,7 @@
     CORE_BUILD_CAPABILITY_UNAVAILABLE: 'Configuration needs attention',
     CORE_BUILD_CAPABILITY_UNCONFIRMED: 'Configuration needs attention',
     CONFIGURATION_VALUE_NOT_ALLOWED: 'Configuration needs attention',
+    CONFIGURATION_SETTING_UNSUPPORTED: 'Configuration needs attention',
     CONFIGURATION_ASSESSMENT_LIMIT: 'Configuration needs attention',
     CORE_TARGET_CHANGED: 'Program changed',
     CORE_TARGET_SOURCE_REJECTED: 'Source is not supported by this target',

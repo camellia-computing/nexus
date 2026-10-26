@@ -1,14 +1,16 @@
 //! Generates read-only native capability fixtures for the browser regression backend.
 use camellia_nexus_core::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args().skip(1);
     let destination = arguments.next().ok_or("fixture destination required")?;
     let settings_destination = arguments.next().ok_or("settings destination required")?;
+    let baselines_destination = arguments.next().ok_or("baseline destination required")?;
     let knowledge = embedded_core_knowledge()?;
     let mut catalogs = BTreeMap::new();
     let mut settings = BTreeMap::new();
+    let mut baselines = BTreeMap::new();
     for program in [ProgramKind::SingBox, ProgramKind::Xray, ProgramKind::Mihomo] {
         for platform in ["windows", "linux"] {
             let release = knowledge
@@ -80,10 +82,28 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         .push(serde_json::json!({"descriptor":setting, "pattern":node.pattern}));
                 }
             }
+            let node_index = catalog
+                .nodes
+                .iter()
+                .map(|node| (&node.node_id, node))
+                .collect::<BTreeMap<_, _>>();
+            let mut relation_nodes = BTreeSet::new();
+            for mut node in catalog
+                .nodes
+                .iter()
+                .filter(|node| !node.semantic_rule_ids.is_empty())
+            {
+                while relation_nodes.insert(&node.node_id) {
+                    let Some(parent) = &node.parent_id else { break };
+                    node = node_index
+                        .get(parent)
+                        .ok_or("semantic field ancestor missing")?;
+                }
+            }
             let nodes = catalog
                 .nodes
                 .iter()
-                .filter(|node| node.pattern.len() <= 4)
+                .filter(|node| node.pattern.len() <= 4 || relation_nodes.contains(&node.node_id))
                 .map(|node| {
                     let mut value = serde_json::to_value(node)?;
                     let fields = value.as_object_mut().ok_or("node object required")?;
@@ -97,6 +117,29 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 .as_str()
                 .ok_or("program name missing")?
                 .to_owned();
+            if platform == "windows" {
+                let descriptor = knowledge.program(program).ok_or("program missing")?;
+                let previous_prefix = format!(
+                    "{}.",
+                    descriptor
+                        .families
+                        .get(1)
+                        .ok_or("previous family missing")?
+                );
+                let previous = descriptor
+                    .releases
+                    .iter()
+                    .rev()
+                    .find(|release| release.version.starts_with(&previous_prefix))
+                    .ok_or("previous release missing")?;
+                baselines.insert(
+                    program_name.clone(),
+                    serde_json::json!({
+                        "families": descriptor.families, "latest": release, "previous": previous,
+                        "knowledgeHash": knowledge.content_hash,
+                    }),
+                );
+            }
             let key = if platform == "windows" {
                 program_name
             } else {
@@ -111,5 +154,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::write(destination, serde_json::to_vec(&catalogs)?)?;
     std::fs::write(settings_destination, serde_json::to_vec(&settings)?)?;
+    std::fs::write(baselines_destination, serde_json::to_vec(&baselines)?)?;
     Ok(())
 }

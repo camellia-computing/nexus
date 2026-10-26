@@ -212,6 +212,7 @@ const assessmentMessages: Record<string, string> = {
   CORE_CONFIGURATION_FIELD_UNCONFIRMED: 'This program has not declared a configuration field. Remove it or choose a build that supports it.',
   CORE_CONFIGURATION_SCHEMA_UNCONFIRMED: 'This program could not provide usable field information. Retry or choose another build.',
   CONFIGURATION_VALUE_NOT_ALLOWED: 'A value is not supported by this program. Review Final configuration.',
+  CONFIGURATION_SETTING_UNSUPPORTED: 'This program version does not accept this setting. Remove it in Final configuration.',
   CONFIGURATION_REFERENCE_INVALID: 'Choose a valid target for this setting.',
   CONFIGURATION_REFERENCE_MISSING: 'The selected target no longer exists. Choose another target.',
   CONFIGURATION_REFERENCE_AMBIGUOUS: 'Several entries have this name. Give them distinct names before selecting a target.',

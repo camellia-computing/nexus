@@ -682,13 +682,15 @@ fn reference_fields_offer_only_unambiguous_targets_and_reject_missing_targets_at
         let profile = profile(ProgramKind::Xray, &release.version);
         let initial = state(
             &profile,
-            json!({"outbounds": [{"protocol": "freedom", "tag": "first", "proxySettings": {"tag": "local", "transportLayer": true}}, {"protocol": "freedom", "tag": "local"}, {"protocol": "freedom", "tag": "other"}], "inbounds": [{"protocol": "socks", "tag": "not-an-outbound"}]}),
+            json!({"outbounds": [{"protocol": "freedom", "tag": "first", "streamSettings": {"sockopt": {"dialerProxy": "local", "tcpFastOpen": true}}}, {"protocol": "freedom", "tag": "local"}, {"protocol": "freedom", "tag": "other"}], "inbounds": [{"protocol": "socks", "tag": "not-an-outbound"}]}),
         );
         let catalog = configuration_intent_catalog(&profile).unwrap();
         let node = catalog
             .nodes
             .iter()
-            .find(|node| node.pattern == ["outbounds", "*", "proxySettings", "tag"])
+            .find(|node| {
+                node.pattern == ["outbounds", "*", "streamSettings", "sockopt", "dialerProxy"]
+            })
             .unwrap();
         assert_eq!(node.disposition, IntentNodeDisposition::Guided);
         let context =
@@ -696,7 +698,7 @@ fn reference_fields_offer_only_unambiguous_targets_and_reject_missing_targets_at
         assert_eq!(context.values.len(), 1);
         assert_eq!(
             context.node.unwrap().control.unwrap().allowed_values,
-            vec!["first", "local", "other"]
+            vec!["", "first", "local", "other"]
         );
         let reference = context
             .values
@@ -733,9 +735,12 @@ fn reference_fields_offer_only_unambiguous_targets_and_reject_missing_targets_at
             .unwrap();
         assert!(prepared.plan.can_commit, "{:?}", prepared.plan.blockers);
         let after = prepared.state.upstream_document().unwrap();
-        assert_eq!(after["outbounds"][0]["proxySettings"]["tag"], "other");
         assert_eq!(
-            after["outbounds"][0]["proxySettings"]["transportLayer"],
+            after["outbounds"][0]["streamSettings"]["sockopt"]["dialerProxy"],
+            "other"
+        );
+        assert_eq!(
+            after["outbounds"][0]["streamSettings"]["sockopt"]["tcpFastOpen"],
             true
         );
         let payload = IntentHistoryPayload::between(&initial, &prepared.state)
@@ -772,7 +777,7 @@ fn reference_fields_offer_only_unambiguous_targets_and_reject_missing_targets_at
         );
         assert_eq!(restored.applied, initial.applied);
         assert_eq!(restored.last_known_good, initial.last_known_good);
-        let document = json!({"outbounds": [{"protocol": "freedom", "tag": "first", "proxySettings": {"tag": "local"}}, {"protocol": "freedom", "tag": "local"}, {"protocol": "freedom", "tag": "local"}]});
+        let document = json!({"outbounds": [{"protocol": "freedom", "tag": "first", "streamSettings": {"sockopt": {"dialerProxy": "local"}}}, {"protocol": "freedom", "tag": "local"}, {"protocol": "freedom", "tag": "local"}]});
         let ambiguous = state(&profile, document);
         let context =
             configuration_intent_context(&profile, &ambiguous, Some(&node.node_id)).unwrap();
@@ -942,13 +947,13 @@ fn reference_choices_do_not_expose_credentials_embedded_in_an_identity() {
     let private = "https://user:fixture-password@resolver.test";
     let state = state(
         &profile,
-        json!({"outbounds": [{"protocol": "freedom", "tag": "first", "proxySettings": {"tag": private}}, {"protocol": "freedom", "tag": private}]}),
+        json!({"outbounds": [{"protocol": "freedom", "tag": "first", "streamSettings": {"sockopt": {"dialerProxy": private}}}, {"protocol": "freedom", "tag": private}]}),
     );
     let catalog = configuration_intent_catalog(&profile).unwrap();
     let node = catalog
         .nodes
         .iter()
-        .find(|node| node.pattern == ["outbounds", "*", "proxySettings", "tag"])
+        .find(|node| node.pattern == ["outbounds", "*", "streamSettings", "sockopt", "dialerProxy"])
         .unwrap();
     let context = configuration_intent_context(&profile, &state, Some(&node.node_id)).unwrap();
     assert!(context.values[0].protected);

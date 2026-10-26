@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import coreBaselines from '../../src/testing/coreBaselines.json' with { type: 'json' };
 
 type Theme = 'cupertino' | 'material' | 'aurora';
 type Mode = 'light' | 'dark';
@@ -707,16 +708,17 @@ test('reviewed native enums use their allowed values rather than a free text edi
 test('native reference choices follow the candidate and preserve target names and sibling settings', async ({ page }) => {
   await openPreview(page, 'material', 'dark');
   await openProgramDetails(page, 'xray-primary');
-  const content = JSON.stringify({ inbounds: [{ protocol: 'socks', tag: 'not-an-outbound' }], outbounds: [{ protocol: 'freedom', tag: 'first', proxySettings: { tag: 'local', transportLayer: true } }, { protocol: 'freedom', tag: 'local' }, { protocol: 'freedom', tag: 'other' }] });
+  const content = JSON.stringify({ inbounds: [{ protocol: 'socks', tag: 'not-an-outbound' }], outbounds: [{ protocol: 'freedom', tag: 'first', streamSettings: { sockopt: { dialerProxy: 'local', tcpFastOpen: true } } }, { protocol: 'freedom', tag: 'local' }, { protocol: 'freedom', tag: 'other' }] });
   await page.evaluate((content) => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'xray-primary', content } })), content);
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await chooseIntentChapter(page, 'Outgoing connections');
-  await openNativeSetting(page, 'proxySettings');
-  await openNativeSetting(page, 'tag');
+  await openNativeSetting(page, 'streamSettings');
+  await openNativeSetting(page, 'sockopt');
+  await openNativeSetting(page, 'dialerProxy');
   const field = page.locator('#program-panel-intent .native-field');
-  const target = field.getByRole('combobox', { name: 'tag', exact: true });
+  const target = field.getByRole('combobox', { name: 'dialerProxy', exact: true });
   await expect(target).toHaveValue('"local"');
-  await expect(target.locator('option:not([disabled])')).toHaveText(['first', 'local', 'other']);
+  await expect(target.locator('option:not([disabled])')).toHaveText(['Use program default', 'first', 'local', 'other']);
   await target.selectOption('"other"');
   await expect(target).toHaveValue('"other"');
   await expect(field.getByRole('alert')).toHaveCount(0);
@@ -728,12 +730,13 @@ test('native reference choices follow the candidate and preserve target names an
   }))).toBe(true);
   await page.getByRole('tab', { name: 'Configuration', exact: true }).click();
   const document = JSON.parse(await page.getByRole('textbox', { name: 'Configuration editor' }).innerText());
-  expect(document.outbounds[0].proxySettings).toEqual({ tag: 'other', transportLayer: true });
+  expect(document.outbounds[0].streamSettings.sockopt).toEqual({ dialerProxy: 'other', tcpFastOpen: true });
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await page.getByRole('button', { name: 'Undo last change', exact: true }).click();
   await chooseIntentChapter(page, 'Outgoing connections');
-  await openNativeSetting(page, 'proxySettings');
-  await openNativeSetting(page, 'tag');
+  await openNativeSetting(page, 'streamSettings');
+  await openNativeSetting(page, 'sockopt');
+  await openNativeSetting(page, 'dialerProxy');
   await expect(target).toHaveValue('"local"');
   await expectAccessible(page, '#program-panel-intent');
 });
@@ -741,15 +744,16 @@ test('native reference choices follow the candidate and preserve target names an
 test('ambiguous native references show one recoverable issue and omit duplicate choices', async ({ page }) => {
   await openPreview(page, 'aurora', 'light');
   await openProgramDetails(page, 'xray-primary');
-  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'xray-primary', content: JSON.stringify({ outbounds: [{ protocol: 'freedom', tag: 'first', proxySettings: { tag: 'local' } }, { protocol: 'freedom', tag: 'local' }, { protocol: 'freedom', tag: 'local' }] }) } })));
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('camellia-ui-preview:automatic-config-update', { detail: { programId: 'xray-primary', content: JSON.stringify({ outbounds: [{ protocol: 'freedom', tag: 'first', streamSettings: { sockopt: { dialerProxy: 'local' } } }, { protocol: 'freedom', tag: 'local' }, { protocol: 'freedom', tag: 'local' }] }) } })));
   await page.getByRole('tab', { name: 'Intent', exact: true }).click();
   await chooseIntentChapter(page, 'Outgoing connections');
-  await openNativeSetting(page, 'proxySettings');
-  await openNativeSetting(page, 'tag');
+  await openNativeSetting(page, 'streamSettings');
+  await openNativeSetting(page, 'sockopt');
+  await openNativeSetting(page, 'dialerProxy');
   const field = page.locator('#program-panel-intent .native-field');
-  const target = field.getByRole('combobox', { name: 'tag', exact: true });
+  const target = field.getByRole('combobox', { name: 'dialerProxy', exact: true });
   await expect(field.locator('.field-issue')).toHaveText('Several entries have this name. Give them distinct names before selecting a target');
-  await expect(target.locator('option:not([disabled])')).toHaveText(['first']);
+  await expect(target.locator('option:not([disabled])')).toHaveText(['Use program default', 'first']);
   await target.selectOption('"first"');
   await expect(field.locator('.field-issue')).toHaveCount(0);
   await expect(field.getByRole('alert')).toHaveCount(0);
@@ -4085,22 +4089,22 @@ test('maintained releases show automatic identity without capability-count claim
     {
       query: '&__ui_core_target=release-xray',
       programId: 'xray-primary',
-      version: '26.3.27',
+      version: coreBaselines.xray.latest.version,
     },
     {
       query: '&__ui_core_target=release-mihomo',
       programId: 'mihomo-alpha',
-      version: '1.19.29',
+      version: coreBaselines.mihomo.latest.version,
     },
     {
       query: '&__ui_core_target=release-singbox',
       programId: 'sing-box-edge',
-      version: '1.13.18',
+      version: coreBaselines.singBox.previous.version,
     },
     {
       query: '&__ui_core_target=release-singbox-new',
       programId: 'sing-box-edge',
-      version: '1.14.0',
+      version: coreBaselines.singBox.latest.version,
     },
   ];
 
@@ -4284,7 +4288,7 @@ test('automatic compatibility has one action and cannot change a reference basel
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
   const panel = page.locator('#program-panel-compatibility');
-  await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText('26.3.27');
+  await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText(coreBaselines.xray.latest.version);
   await expect(panel.locator('select, input, datalist')).toHaveCount(0);
   await expect(panel.locator('.compatibility-status-card button')).toHaveCount(1);
   await expect(panel.getByRole('button', { name: 'Review Final configuration', exact: true })).toBeEnabled();
@@ -4294,7 +4298,7 @@ test('automatic compatibility has one action and cannot change a reference basel
   await expect(page.locator('.final-editor-workspace')).toBeVisible();
   await page.getByRole('tab', { name: 'Sources', exact: true }).click();
   await page.getByRole('tab', { name: 'Compatibility', exact: true }).click();
-  await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText('26.3.27');
+  await expect(panel.getByRole('region', { name: 'Detected program' })).toContainText(coreBaselines.xray.latest.version);
   await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
   await expectNoViewportOverflow(page);
   await expectAccessible(page, '#program-panel-compatibility');
@@ -4319,7 +4323,7 @@ test('unrecognized binaries keep configuration inspectable without a reference o
   await expect(panel).toBeVisible();
   await expect(panel.locator('.compatibility-advanced')).not.toHaveAttribute('open', '');
   await panel.getByText('About compatibility', { exact: true }).click();
-  await expect(panel).toContainText('26.3 · 26.2');
+  await expect(panel).toContainText(coreBaselines.xray.families.join(' · '));
   await expect(panel).not.toContainText('Accepted for this candidate');
   await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
   await expectNoViewportOverflow(page);

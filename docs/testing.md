@@ -50,6 +50,19 @@ baselines without treating a reported version as proof of official origin.
 显式重建使用 `--rebuild --write --cache <隔离目录>`，不会执行上游源码。
 完整边界见 [Core knowledge and admission](core-knowledge.md)。
 
+Regenerate browser Intent catalogs, setting descriptors and release baselines together from Core:
+
+```sh
+cargo run --locked -p camellia-nexus-core --example export-intent-fixtures -- \
+  ui/src/testing/intentCatalogs.json ui/src/testing/intentSettings.json ui/src/testing/coreBaselines.json
+```
+
+Browser checks bind these baselines to the reviewed knowledge digest, release families and exact
+commits. Do not independently edit preview versions or pretend an out-of-window binary is admitted.
+
+浏览器意图目录、设置描述符和版本基线由上述同一 Core 入口生成。前端单测核对知识库摘要、维护
+系列和精确提交；不要单独填写预览版本，也不要用预览数据冒充范围外程序已准入。
+
 Where reproducible binaries exist, native compatibility runs each exact target through streaming
 fingerprint, probe report, target/profile resolution, launch/help contract, representative native
 validation, schema generation when declared, and share translation. Evidence must prove that changing

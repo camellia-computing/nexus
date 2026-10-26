@@ -245,6 +245,9 @@ impl CoreCapabilityProfile {
                     BuildCondition::Satisfied => {}
                 }
                 let code = match &rule.constraint {
+                    KnowledgeValueConstraint::Rejected { allow_null } => (!(value.is_null()
+                        && *allow_null))
+                        .then_some("CONFIGURATION_SETTING_UNSUPPORTED"),
                     KnowledgeValueConstraint::Enum {
                         values,
                         allow_null,
@@ -653,6 +656,95 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn parser_rejections_are_patch_scoped_and_preserve_absent_and_null_values() {
+        let descriptor = embedded_core_knowledge()
+            .unwrap()
+            .program(ProgramKind::Xray)
+            .unwrap();
+        let mut rejected_patches = 0;
+        let mut accepted_patches = 0;
+        for release in &descriptor.releases {
+            let profile = platform_profile(ProgramKind::Xray, &release.version, "windows");
+            let candidate = json!({"outbounds":[
+                {"protocol":"freedom","tag":"first","proxySettings":{"tag":"direct","transportLayer":true}},
+                {"protocol":"freedom","tag":"direct"}
+            ]});
+            let rejects = descriptor.semantic_rules.iter().any(|variant| {
+                variant.rule.id == "xray.outbounds.proxy-settings"
+                    && variant.releases.contains(&release.tag)
+            });
+            let issues = profile.assess(&candidate).unwrap().issues;
+            if rejects {
+                rejected_patches += 1;
+                assert_eq!(issues.len(), 1, "{}", release.tag);
+                assert_eq!(issues[0].code, "CONFIGURATION_SETTING_UNSUPPORTED");
+                assert_eq!(issues[0].path, ["outbounds", "0", "proxySettings"]);
+            } else {
+                accepted_patches += 1;
+                assert!(issues.is_empty(), "{}", release.tag);
+            }
+            assert!(profile.assess(&json!({"outbounds":[{"protocol":"freedom","tag":"direct","proxySettings":null}],"reverse":null})).unwrap().issues.is_empty());
+            assert!(
+                profile
+                    .assess(&json!({"outbounds":[]}))
+                    .unwrap()
+                    .issues
+                    .is_empty()
+            );
+        }
+        assert!(rejected_patches > 0);
+        assert!(accepted_patches > 0);
+    }
+
+    #[test]
+    fn tun_dns_mode_uses_its_native_patch_enum_only_when_enabled() {
+        let descriptor = embedded_core_knowledge()
+            .unwrap()
+            .program(ProgramKind::Mihomo)
+            .unwrap();
+        let mut checked = 0;
+        for release in &descriptor.releases {
+            if !descriptor.semantic_rules.iter().any(|variant| {
+                variant.rule.id == "mihomo.tun.dns-mode" && variant.releases.contains(&release.tag)
+            }) {
+                continue;
+            }
+            checked += 1;
+            let profile = platform_profile(ProgramKind::Mihomo, &release.version, "windows");
+            for value in ["", "disabled", "native", "hijack"] {
+                assert!(
+                    profile
+                        .assess(&json!({"tun":{"enable":true,"dns-mode":value}}))
+                        .unwrap()
+                        .issues
+                        .is_empty()
+                );
+            }
+            assert!(
+                profile
+                    .assess(&json!({"tun":{"enable":true,"dns-mode":null}}))
+                    .unwrap()
+                    .issues
+                    .is_empty()
+            );
+            let issues = profile
+                .assess(&json!({"tun":{"enable":true,"dns-mode":"invalid-mode"}}))
+                .unwrap()
+                .issues;
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].code, "CONFIGURATION_VALUE_NOT_ALLOWED");
+            assert!(
+                profile
+                    .assess(&json!({"tun":{"enable":false,"dns-mode":"invalid-mode"}}))
+                    .unwrap()
+                    .issues
+                    .is_empty()
+            );
+        }
+        assert!(checked > 0);
     }
 
     fn profile() -> CoreCapabilityProfile {

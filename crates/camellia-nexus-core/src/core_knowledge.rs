@@ -183,6 +183,9 @@ pub struct KnowledgeDeclarationVariant {
     deny_unknown_fields
 )]
 pub enum KnowledgeValueConstraint {
+    Rejected {
+        allow_null: bool,
+    },
     Enum {
         values: Vec<String>,
         allow_null: bool,
@@ -792,6 +795,7 @@ impl CoreKnowledgeCatalog {
                     rule.evidence.iter().map(|evidence| &evidence.source),
                 )?;
                 let valid_constraint = match &rule.constraint {
+                    KnowledgeValueConstraint::Rejected { .. } => true,
                     KnowledgeValueConstraint::Enum { values, .. } => !values.is_empty(),
                     KnowledgeValueConstraint::Platform { condition, .. } => {
                         !condition.is_empty() && condition.len() <= 1024

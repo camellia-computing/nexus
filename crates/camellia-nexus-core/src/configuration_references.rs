@@ -827,9 +827,9 @@ mod tests {
     #[test]
     fn xray_proxy_target_and_routing_selectors_use_distinct_collections() {
         for profile in maintained(ProgramKind::Xray) {
-            let document = json!({"Inbounds": [{"Tag": "shared"}], "Outbounds": [{"Tag": "first", "ProxySettings": {"Tag": "shared"}}, {"Tag": "shared"}], "routing": {"rules": [{"inboundTag": ["unknown"]}]}});
+            let document = json!({"Inbounds": [{"Tag": "shared"}], "Outbounds": [{"Tag": "first", "StreamSettings": {"Sockopt": {"DialerProxy": "shared"}}}, {"Tag": "shared"}], "routing": {"rules": [{"inboundTag": ["unknown"]}]}});
             let index = ConfigurationReferenceIndex::new(&profile, &document).unwrap();
-            assert!(index.issues("xray.reference.proxy").next().is_none());
+            assert!(index.issues("xray.reference.dialer-proxy").next().is_none());
             assert!(
                 index
                     .issues("xray.reference.inbound-match")
@@ -837,14 +837,18 @@ mod tests {
                     .is_none()
             );
             assert_eq!(
-                index.uses["xray.reference.proxy"][0].target_paths,
+                index.uses["xray.reference.dialer-proxy"][0].target_paths,
                 vec![vec![String::from("Outbounds"), String::from("1")]]
             );
             let mut document = document;
-            document["Outbounds"][0]["ProxySettings"]["Tag"] = json!("missing");
+            document["Outbounds"][0]["StreamSettings"]["Sockopt"]["DialerProxy"] = json!("missing");
             let index = ConfigurationReferenceIndex::new(&profile, &document).unwrap();
             assert_eq!(
-                index.issues("xray.reference.proxy").next().unwrap().1,
+                index
+                    .issues("xray.reference.dialer-proxy")
+                    .next()
+                    .unwrap()
+                    .1,
                 "CONFIGURATION_REFERENCE_MISSING"
             );
         }

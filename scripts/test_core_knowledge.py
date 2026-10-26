@@ -15,6 +15,18 @@ def release(tag, *, prerelease=False, draft=False):
 
 
 class StableWindowTests(unittest.TestCase):
+    def test_read_discovery_retries_are_bounded_and_invalid_payloads_are_not_retried(self):
+        from core_knowledge import github
+        with patch("core_knowledge.run", side_effect=[RuntimeError("transport unavailable"), b'{"tag_name":"v1.0.0"}']) as api, patch("core_knowledge.time.sleep"):
+            self.assertEqual(github("repos/fixture/core/releases/latest")["tag_name"], "v1.0.0")
+            self.assertEqual(api.call_count, 2)
+        with patch("core_knowledge.run", side_effect=RuntimeError("transport unavailable")) as api, patch("core_knowledge.time.sleep"):
+            with self.assertRaises(RuntimeError): github("repos/fixture/core/releases/latest")
+            self.assertEqual(api.call_count, 3)
+        with patch("core_knowledge.run", return_value=b'{') as api:
+            with self.assertRaises(json.JSONDecodeError): github("repos/fixture/core/releases/latest")
+            self.assertEqual(api.call_count, 1)
+
     def test_latest_anchors_two_families_and_keeps_each_patch(self):
         latest = release("v1.14.0")
         releases = [release("v1.15.0-beta.1", prerelease=True), latest, release("v1.13.1"), release("v1.13.0"), release("v1.12.9")]
@@ -347,6 +359,30 @@ class SourceReviewTests(unittest.TestCase):
         ambiguous["constraint"]["values"] = ["b"]
         rule["evidenceVariants"].append(ambiguous)
         with self.assertRaises(ValueError): reviewed_rules("fixture", inventory, [rule])
+
+    def test_inapplicable_rule_still_requires_reviewed_shape_imports_and_behavior(self):
+        shape = {key: value for key, value in self.declaration()["fields"][0].items() if key not in {"name", "source"}}
+        parser = {"id": "option#Parse", "bodyHash": "reviewed", "buildConstraint": "", "imports": {"codec": "example.test/codec"}, "source": {"path": "option.go", "symbol": "Parse"}}
+        variant = {"constraint": {"kind": "rejected", "allowNull": True}, "applicable": False, "evidence": [{"function": parser["id"], "path": "option.go", "bodyHashes": ["reviewed"], "buildConstraints": [""], "imports": {"codec": "example.test/codec"}}]}
+        rule = {"id": "options", "program": "fixture", "declaration": "option#Options", "field": "Timeout", "fieldShapes": [shape], "evidenceVariants": [variant]}
+        inventory = {"declarations": [self.declaration()], "functions": [parser]}
+        self.assertEqual(reviewed_rules("fixture", inventory, [rule]), [])
+        variant["applicable"] = True
+        self.assertEqual(reviewed_rules("fixture", inventory, [rule])[0]["constraint"], variant["constraint"])
+        variant["applicable"] = False
+        for mutation in range(4):
+            invalid = deepcopy(inventory)
+            if mutation == 0: invalid["functions"][0]["bodyHash"] = "unreviewed"
+            elif mutation == 1: invalid["functions"][0]["imports"]["codec"] = "unreviewed"
+            elif mutation == 2: invalid["functions"][0]["buildConstraint"] = "unreviewed"
+            else: invalid["declarations"][0]["fields"][0]["type"] = "unreviewed"
+            with self.assertRaises(ValueError):
+                reviewed_rules("fixture", invalid, [rule])
+        contradictory = deepcopy(variant)
+        contradictory["applicable"] = True
+        rule["evidenceVariants"].append(contradictory)
+        with self.assertRaisesRegex(ValueError, "applicability is ambiguous"):
+            reviewed_rules("fixture", inventory, [rule])
 
     def test_type_reference_coverage_keeps_unresolved_dependencies_explicit(self):
         declarations = [{"id": "option#Options", "shape": {"kind": "structure"}, "fields": [
