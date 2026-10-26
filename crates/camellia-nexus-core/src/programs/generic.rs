@@ -16,7 +16,10 @@ impl ProgramAdapter for GenericAdapter {
     }
 
     fn verify_probe(&self, _outputs: &[CommandOutput]) -> Result<DetectedBinary> {
-        Ok(DetectedBinary { version: None })
+        Ok(DetectedBinary {
+            probe: None,
+            core_target: None,
+        })
     }
 
     fn launch_plan(&self, spec: &ProgramSpec, workspace: &Path) -> Result<LaunchPlan> {
@@ -70,7 +73,6 @@ mod tests {
     #[test]
     fn preserves_every_user_argument_for_external_programs() {
         let spec = ProgramSpec {
-            schema_version: crate::SCHEMA_VERSION,
             id: crate::ProgramId::parse("generic-test").expect("id"),
             name: "Generic".into(),
             executable: crate::ExecutableSpec::External {

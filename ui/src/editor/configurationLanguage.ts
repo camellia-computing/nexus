@@ -80,8 +80,8 @@ export type ConfigurationLanguageTaskResult =
 
 const JSON_PARSE_OPTIONS = {
   allowEmptyContent: false,
-  allowTrailingComma: false,
-  disallowComments: true,
+  allowTrailingComma: true,
+  disallowComments: false,
 } as const;
 
 export function analyzeConfiguration(

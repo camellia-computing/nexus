@@ -68,6 +68,30 @@ struct ProcessWatchdog {
     _liveness: OwnedFd,
 }
 
+struct ToolProcessGroup(Option<i32>);
+
+impl ToolProcessGroup {
+    fn terminate(&mut self) {
+        if let Some(pgid) = self.0.take() {
+            let _ = signal_group(pgid, libc::SIGKILL);
+        }
+    }
+}
+
+impl Drop for ToolProcessGroup {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+struct OutputTaskGuard(tokio::task::AbortHandle);
+
+impl Drop for OutputTaskGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[async_trait]
 impl ProcessDriver for NativeProcessDriver {
     async fn spawn(&self, plan: LaunchPlan) -> Result<Box<dyn ManagedProcess>> {
@@ -252,6 +276,7 @@ impl ToolRunner for NativeToolRunner {
         let pgid = child.id().ok_or_else(|| {
             CamelliaNexusError::new(ErrorCode::SpawnFailed, "Started tool has no pid")
         })? as i32;
+        let mut process_group = ToolProcessGroup(Some(pgid));
         let stdout = child.stdout.take().ok_or_else(|| {
             CamelliaNexusError::new(ErrorCode::Internal, "Tool stdout was not captured")
         })?;
@@ -266,12 +291,14 @@ impl ToolRunner for NativeToolRunner {
             total_output.clone(),
             violation_tx.clone(),
         ));
+        let _stdout_guard = OutputTaskGuard(stdout_task.abort_handle());
         let stderr_task = tokio::spawn(collect_limited(
             stderr,
             plan.max_output_bytes,
             total_output.clone(),
             violation_tx,
         ));
+        let _stderr_guard = OutputTaskGuard(stderr_task.abort_handle());
 
         enum Completion {
             Exited(std::process::ExitStatus),
@@ -283,10 +310,10 @@ impl ToolRunner for NativeToolRunner {
             Some(()) = violation_rx.recv() => Completion::Limit,
             _ = tokio::time::sleep(timeout) => Completion::Timeout,
         };
+        process_group.terminate();
         let status = match completion {
             Completion::Exited(status) => status,
             Completion::Limit => {
-                let _ = signal_group(pgid, libc::SIGKILL);
                 let _ = child.wait().await;
                 let _ = finish_collector(stdout_task).await;
                 let _ = finish_collector(stderr_task).await;
@@ -296,7 +323,6 @@ impl ToolRunner for NativeToolRunner {
                 ));
             }
             Completion::Timeout => {
-                let _ = signal_group(pgid, libc::SIGKILL);
                 let _ = child.wait().await;
                 let _ = finish_collector(stdout_task).await;
                 let _ = finish_collector(stderr_task).await;
@@ -306,7 +332,6 @@ impl ToolRunner for NativeToolRunner {
                 ));
             }
         };
-        let _ = signal_group(pgid, libc::SIGKILL);
         let stdout = finish_collector(stdout_task).await?;
         let stderr = finish_collector(stderr_task).await?;
         if total_output.load(Ordering::Acquire) > plan.max_output_bytes {
@@ -576,6 +601,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_output_guard_cancels_pending_collection() {
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct Release(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let task = {
+            let released = released.clone();
+            tokio::spawn(async move {
+                let _release = Release(released);
+                let _ = ready_tx.send(());
+                std::future::pending::<()>().await;
+            })
+        };
+        let guard = super::OutputTaskGuard(task.abort_handle());
+        ready_rx.await.unwrap();
+        drop(guard);
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(released.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[tokio::test]
     async fn tool_output_limit_applies_to_both_streams_combined() {
         let runner = NativeToolRunner::default();
         let mut plan = CommandPlan::tool(
@@ -590,6 +640,120 @@ mod tests {
             error.code,
             camellia_nexus_core::ErrorCode::OutputLimitExceeded
         );
+    }
+
+    #[tokio::test]
+    async fn tool_completion_paths_release_descendant_output_pipes() {
+        let runner = NativeToolRunner::default();
+        for (script, limit, expected_error) in [
+            ("sleep 30 & printf ready", 128, None),
+            (
+                "sleep 30 & printf ready; wait",
+                128,
+                Some(camellia_nexus_core::ErrorCode::Timeout),
+            ),
+            (
+                "sleep 30 & printf 123456789; wait",
+                4,
+                Some(camellia_nexus_core::ErrorCode::OutputLimitExceeded),
+            ),
+        ] {
+            let mut plan = CommandPlan::tool(
+                PathBuf::from("/bin/sh"),
+                vec!["-c".into(), script.into()],
+                PathBuf::from("/tmp"),
+            );
+            plan.timeout = std::time::Duration::from_millis(250);
+            plan.max_output_bytes = limit;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(3), runner.run(plan))
+                .await
+                .expect("descendants must not retain output pipes");
+            if let Some(code) = expected_error {
+                assert_eq!(result.unwrap_err().code, code);
+            } else {
+                assert_eq!(result.unwrap().stdout, "ready");
+            }
+            assert_eq!(runner.permits.available_permits(), 2);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cancelled_tool_releases_descendants_and_allows_the_next_check() {
+        let directory = tempfile::tempdir().expect("fixture");
+        let runner = NativeToolRunner {
+            permits: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+        };
+        let plan = CommandPlan::tool(
+            PathBuf::from("/bin/sh"),
+            vec![
+                "-c".into(),
+                "sleep 30 & child=$!; printf '%s %s' $$ $child > ready; wait".into(),
+            ],
+            directory.path().to_path_buf(),
+        );
+        let running = {
+            let runner = runner.clone();
+            tokio::spawn(async move { runner.run(plan).await })
+        };
+        let pids = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Ok(value) = tokio::fs::read_to_string(directory.path().join("ready")).await {
+                    let pids: Vec<i32> = value
+                        .split_whitespace()
+                        .filter_map(|v| v.parse().ok())
+                        .collect();
+                    if pids.len() == 2 {
+                        break pids;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("root and descendant ready");
+        struct FixtureCleanup(Option<i32>);
+        impl Drop for FixtureCleanup {
+            fn drop(&mut self) {
+                if let Some(pgid) = self.0 {
+                    unsafe {
+                        libc::kill(-pgid, libc::SIGKILL);
+                    }
+                }
+            }
+        }
+        let mut cleanup = FixtureCleanup(Some(pids[0]));
+        running.abort();
+        assert!(running.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let mut alive = false;
+                for pid in &pids {
+                    if let Ok(stat) = tokio::fs::read_to_string(format!("/proc/{pid}/stat")).await {
+                        alive |= stat.rsplit_once(')').is_none_or(|(_, fields)| {
+                            !matches!(fields.split_whitespace().next(), Some("Z" | "X"))
+                        });
+                    }
+                }
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled check must not leave a live descendant");
+        cleanup.0 = None;
+        let next = CommandPlan::tool(
+            PathBuf::from("/bin/sh"),
+            vec!["-c".into(), "printf recovered".into()],
+            directory.path().to_path_buf(),
+        );
+        let output = tokio::time::timeout(std::time::Duration::from_secs(2), runner.run(next))
+            .await
+            .expect("permit recovered")
+            .expect("next check");
+        assert_eq!(output.stdout, "recovered");
     }
 
     #[tokio::test]

@@ -209,8 +209,7 @@ audit_ignore_count="$(
 grep -q 'single-document' "$policy" || fail 'the dependency graph lockfile contract is undocumented'
 grep -q '@napi-rs/wasm-runtime' "$policy" || fail 'Rolldown WASI runtime override is undocumented'
 grep -q 'GHSA-5c6j-r48x-rmvq' "$policy" || fail 'serialize-javascript security override is undocumented'
-grep -q 'GHSA-mh99-v99m-4gvg' "$policy" || fail 'brace-expansion compatibility patch is undocumented'
-grep -q 'GHSA-rgw5-rvv9-x895' "$policy" || fail 'current brace-expansion security update is undocumented'
+grep -q 'GHSA-q2hr-2g5m-vwhr' "$policy" || fail 'brace-expansion module surface patch and security limits are undocumented'
 grep -q 'TypeScript 7' "$policy" || fail 'the unsupported TypeScript major is undocumented'
 grep -q 'workflow_run' "$policy" || fail 'the reviewed release merge trigger is undocumented'
 

@@ -27,7 +27,7 @@ export interface AppearanceStorage {
   removeItem(key: string): void;
 }
 
-export const APPEARANCE_STORAGE_KEY = 'camellia-nexus.appearance.v3';
+export const APPEARANCE_STORAGE_KEY = 'camellia-nexus.appearance';
 
 export const DEFAULT_APPEARANCE_PREFERENCES: Readonly<AppearancePreferences> = Object.freeze({
   version: 3,

@@ -9,9 +9,11 @@ import './styles.css';
 async function bootstrap() {
   if (import.meta.env.MODE === 'e2e') await import('@wdio/tauri-plugin');
 
-  const previewMode = import.meta.env.DEV && (
+  const nativeUiPreview = import.meta.env.MODE === 'e2e'
+    && import.meta.env.VITE_UI_PREVIEW === 'true';
+  const previewMode = nativeUiPreview || (import.meta.env.DEV && (
     new URLSearchParams(location.search).has('__ui_preview') || !isNativeHost()
-  );
+  ));
   if (previewMode) {
     const { installMockBackend } = await import('./testing/mockBackend');
     installMockBackend();

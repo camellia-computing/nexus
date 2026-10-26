@@ -41,3 +41,6 @@ rustls = { version = "0.23.41", default-features = false, features = ["ring", "s
 codegen-units = 1
 lto = "thin"
 strip = "symbols"
+
+[profile.dev.package.sha2]
+opt-level = 3

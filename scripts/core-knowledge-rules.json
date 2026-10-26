@@ -1,0 +1,3316 @@
+{
+  "flatDecoders": [
+    {
+      "program": "singBox",
+      "envelopeFields": [
+        {"name":"Type","type":"string","embedded":false,"tags":{"json":"type"}},
+        {"name":"Tag","type":"string","embedded":false,"tags":{"json":"tag,omitempty"}},
+        {"name":"Options","type":"any","embedded":false,"tags":{"json":"-"}}
+      ],
+      "roots": [
+        {"collection":"inbounds","envelope":"option#_Inbound","evidence":{
+          "function":"option#Inbound.UnmarshalJSONContext",
+          "imports":{"json":"github.com/sagernet/sing/common/json","badjson":"github.com/sagernet/sing/common/json/badjson","service":"github.com/sagernet/sing/service"},
+          "bodyHashes":["d285e7a96e32b208b2b3d90c037c76b722188d4546ca0e3f1edd176ad02c55f3","9e40aadf32e721c0f82e146f269ff171b7c181af7f19d8ffe49f70f17c8429d6"]}},
+        {"collection":"outbounds","envelope":"option#_Outbound","evidence":{
+          "function":"option#Outbound.UnmarshalJSONContext",
+          "imports":{"json":"github.com/sagernet/sing/common/json","badjson":"github.com/sagernet/sing/common/json/badjson","service":"github.com/sagernet/sing/service"},
+          "bodyHashes":["a97755ea88b04729aa894765ff7ffff00f99bda646c16e166172831e6352bea1","b0a767865bebb98a30242c5d40027a408b4448813fa0155fc6829465cd8e7633"]}}
+      ],
+      "evidence": [
+        {"function":"github.com/sagernet/sing/common/json#UnmarshalContext",
+         "imports":{"json":"github.com/sagernet/sing/common/json/internal/contextjson"},
+         "bodyHashes":["864b8e037841398f5b847a00e88087afe898ca412750b61d36436d0a628812fa"],
+         "unsupportedBodyHashes":["91fd9483bc12116ad68f12d12085dad2605c60e5a62a1efacd991c10f5fab919"],
+         "buildConstraints":["","(!without_contextjson)"]},
+        {"function":"github.com/sagernet/sing/common/json#UnmarshalContextDisallowUnknownFields",
+         "imports":{"json":"github.com/sagernet/sing/common/json/internal/contextjson"},
+         "bodyHashes":["efc42a8a8e6adb63d4cdb2de44b82f0d8a53ad6b76d2b4a917c0a7c64cdc48c4"],
+         "unsupportedBodyHashes":["98abe0cdfcb5a40592630dc53f8863d92da86caed253f019ba14cc7888176371"],
+         "buildConstraints":["","(!without_contextjson)"]},
+        {"function":"github.com/sagernet/sing/common/json/badjson#UnmarshallExcludedContext",
+         "imports":{"cJSON":"github.com/sagernet/sing/common/json/internal/contextjson","json":"github.com/sagernet/sing/common/json","reflect":"reflect"},
+         "bodyHashes":["436e9751b64befa50ca1d307478cb8420adbfe6ecdf6cabbddf3e2c4d0dff10b"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#ObjectKeys",
+         "imports":{"reflect":"reflect"},
+         "bodyHashes":["3e4083e53d20a599f5b13f5b28fab5c1c2b87e6620b6d18ee6597596f28c9b76","77a2e649f05872c98011711b039b618aed727e4fd45970c50a5f3a7a13207657"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#cachedTypeFields",
+         "bodyHashes":["05e01bd2fb3ac9e164ffff3c6c4918555f77dbcf421a85e4cd8f34c6328902c0"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#typeFields",
+         "bodyHashes":["89b1709bbb32aa560560c4a597d4e18370ece26155dbf41cee753d90c9db917b","5e8f1ee776a9b67207da2855175f2161408b58d56ea85690f32d8d003d29aa51"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#dominantField",
+         "bodyHashes":["31081d412c130e94c60a694ecbc6a28fb95445825d084b66c53b111e745e9de8"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#decodeState.object",
+         "bodyHashes":["1f79ab4234d12a318c7a462b28a72d9b241e6f1ecaf19d14741b8dc93349bb07","43ef4e697592699a9f2e1c6899fcd91ceb2ea6ce42df9996f6621f8f30631f9c","24a364a14b005f54a171580f41829942c9dac983d4160ef0c96aa341484a0816"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#UnmarshalContextDisallowUnknownFields",
+         "bodyHashes":["3f2053860072bafa76d9cfdef5fce9c06a6757adccd39894467cfe35b1ac70ae","438b3849c419155ca2bc6741aab0acd087d749aaaa0a16ad4442ecabd54451b8"]},
+        {"function":"github.com/sagernet/sing/common/json/badjson#JSONObject.decodeJSON",
+         "bodyHashes":["11fab83f569289f2283f176ff3f72efa41f947664bdb77f44ea444e46611eb97"]},
+        {"function":"github.com/sagernet/sing/common/x/linkedhashmap#Map.Put",
+         "bodyHashes":["09c785d145120e86596bad91237dad992e86d1e6ee325a81ca4d15a0b6f5ebb4"]},
+        {"function":"github.com/sagernet/sing/common/x/linkedhashmap#Map.Remove",
+         "bodyHashes":["8e7b89815ede45129f80408b974101b26a9e4353a59d28d34d7536cb55708d39"]}
+      ]
+    }
+  ],
+  "valueDecoders": [
+    {
+      "program": "singBox",
+      "declaration": "option#UDPOverTCPOptions",
+      "method": "UnmarshalJSON",
+      "objectDeclaration": "option#_UDPOverTCPOptions",
+      "encoding": "json",
+      "scalarForms": ["boolean", "null"],
+      "keyComparison": "asciiCaseInsensitive",
+      "objectFieldVariants": [[
+        {"name":"Enabled","type":"bool","embedded":false,"tags":{"json":"enabled,omitempty"}},
+        {"name":"Version","type":"uint8","embedded":false,"tags":{"json":"version,omitempty"}}
+      ]],
+      "layoutEvidence": [
+        "github.com/sagernet/sing/common/json/internal/contextjson#cachedTypeFields",
+        "github.com/sagernet/sing/common/json/internal/contextjson#typeFields",
+        "github.com/sagernet/sing/common/json/internal/contextjson#dominantField",
+        "github.com/sagernet/sing/common/json/internal/contextjson#decodeState.object"
+      ],
+      "evidence": [
+        {"function":"option#UDPOverTCPOptions.UnmarshalJSON",
+         "imports":{"json":"github.com/sagernet/sing/common/json"},
+         "bodyHashes":["586942662237ef0edcfbd3bcbee4d106416a08f02b8351e85b1b5f31b12bdb5f"]},
+        {"function":"github.com/sagernet/sing/common/json#Unmarshal", "branches":[
+          {"supported":true,"bodyHashes":["a62409a602e8d26ca88564e0d01482a1aa5ed61ef7fc4b666efbdefda3221acc"],
+           "buildConstraints":["","(!without_contextjson)","(go1.20 && !without_contextjson)"],
+           "imports":{"json":"github.com/sagernet/sing/common/json/internal/contextjson"}},
+          {"supported":false,"bodyHashes":["a62409a602e8d26ca88564e0d01482a1aa5ed61ef7fc4b666efbdefda3221acc"],
+           "buildConstraints":["(without_contextjson)","(!go1.20 || without_contextjson)"],
+           "imports":{"json":"encoding/json"}}
+        ]},
+        {"function":"github.com/sagernet/sing/common/json#UnmarshalDisallowUnknownFields", "branches":[
+          {"supported":true,"bodyHashes":["d2caa36d6febd36859ba89d4b03f392da91d3f99da0df45c9c3003f0920bcc1d"],
+           "buildConstraints":["","(!without_contextjson)","(go1.20 && !without_contextjson)"],
+           "imports":{"json":"github.com/sagernet/sing/common/json/internal/contextjson"}},
+          {"supported":false,"bodyHashes":["d71d045dccc7e2a15e117c042f143611d5124a9e1e6a53900bd594ae801c3aca"],
+           "buildConstraints":["(without_contextjson)","(!go1.20 || without_contextjson)"],
+           "imports":{"bytes":"bytes"}}
+        ]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#Unmarshal",
+         "bodyHashes":["da5b7e63508404c16f2fde472ca42a56270986b26259eee3c992658a3ab7a5bf"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#UnmarshalContext",
+         "bodyHashes":["e6c1d3c7163dc20cae65ce7e7cc6bcd9b911022972f3db544f22a1f86598f39f","9c34b1f0808ac7f680af4bdac04d02ffcbfd2ad590b90ee76830115e952ad9b4"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#UnmarshalDisallowUnknownFields",
+         "bodyHashes":["add7c113bf611f8d34d4656a150f2103c3a82c3ea72da97c531c20c8381ab57d","56543b6213c48b746a29593c980e9e8210ebd6d08c25742a7f0c8d55bd44a234"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#decodeState.literalStore",
+         "bodyHashes":["416b6362fae11d027f7bbbea339a7934d056043326c0f835230e9ea4a849c90d","083fd55321f8f5bcfaa52080e4448d1e666170fd21bc87c06d00c94263cccc49","ad22c2e44b232937bb195514b655a7ad355f9aa1c500d53f867c774777b43cbc"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#decodeState.unmarshal",
+         "bodyHashes":["0269655f70fdda019734c484fdab992946bbc396d0033b5c2f5be5a2e0c42751"]},
+        {"function":"github.com/sagernet/sing/common/json/internal/contextjson#decodeState.value",
+         "bodyHashes":["26c5f7578c6987885cf7fe1529a0143be5867631791d09e48b4e672eaa0a4e31"]}
+      ]
+    },
+    {
+      "program": "singBox",
+      "declaration": "option#DNSOptions",
+      "method": "UnmarshalJSONContext",
+      "objectDeclaration": "option#DNSOptions",
+      "encoding": "json",
+      "scalarForms": [],
+      "keyComparison": "asciiCaseInsensitive",
+      "objectFieldVariants": [
+        [{"name":"RawDNSOptions","type":"RawDNSOptions","embedded":true,"tags":{}}],
+        [{"name":"RawDNSOptions","type":"RawDNSOptions","embedded":true,"tags":{}},
+         {"name":"LegacyDNSOptions","type":"LegacyDNSOptions","embedded":true,"tags":{}}]
+      ],
+      "layoutEvidence": [
+        "github.com/sagernet/sing/common/json#UnmarshalContext",
+        "github.com/sagernet/sing/common/json/badjson#UnmarshallExcludedContext",
+        "github.com/sagernet/sing/common/json/internal/contextjson#ObjectKeys",
+        "github.com/sagernet/sing/common/json/internal/contextjson#cachedTypeFields",
+        "github.com/sagernet/sing/common/json/internal/contextjson#typeFields",
+        "github.com/sagernet/sing/common/json/internal/contextjson#dominantField",
+        "github.com/sagernet/sing/common/json/internal/contextjson#decodeState.object"
+      ],
+      "evidence": [{
+        "function":"option#DNSOptions.UnmarshalJSONContext",
+        "imports":{"json":"github.com/sagernet/sing/common/json","badjson":"github.com/sagernet/sing/common/json/badjson"},
+        "bodyHashes":["d7616b5f211471e88367cc39b86ce0a4fae1874ba385037dc49852ba4b6ded9e","6864168641fd9eb368e21f3144d7e03dcb7bcf0b47ec3f9dead2b472fec31d5d"]
+      }]
+    }
+  ],
+  "rules": [
+    {
+      "id": "singBox.reference.route-final",
+      "program": "singBox",
+      "path": [
+        "route",
+        "final"
+      ],
+      "declaration": "option#RouteOptions",
+      "field": "Final",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "outbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {
+            "reference": "outbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "adapter/outbound#Manager.Start",
+          "path": "adapter/outbound/manager.go",
+          "bodyHashes": [
+            "ce27f8c12797e1f6d6084c1c6f0fd624d95f0c39aa9391e167487872b91f06d2",
+            "d2a3a1244eae7261bd0e8f251561d0765d0604dcc53da52359caee817734872e",
+            "63996717aa0078afd9b4a9d9ab1e6b9dfc6c17f8dc846b61016a5968bc66563e",
+            "dfbfc061473c908bd53fae370e695f14045bc68a70aea8d9a87a9239c3ecdfcd",
+            "f0dd5d99538445da695826ce554a0ac11a2b72b8c559da8c611714458da5bc43"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-final",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "final"
+      ],
+      "declaration": "option#RawDNSOptions",
+      "field": "Final",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "final,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "dns#TransportManager.Start",
+          "path": "dns/transport_manager.go",
+          "bodyHashes": [
+            "3d486e274c59a7e11c39dbaa5fcf03bdbf2ec2209659c3ebc806119b892ee0ed",
+            "e33fd8c16fab22b5d3567b5c509787df124bd34fd6f585b4a4a62bca812459f0",
+            "efaa4a27207fd5f26c35a2329e8a822e3cadd85189f28fae2ff1efee5cdb5d12"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.route-inbound",
+      "program": "singBox",
+      "path": [
+        "route",
+        "rules",
+        "*",
+        "inbound"
+      ],
+      "declaration": "option#RawDefaultRule",
+      "field": "Inbound",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true,
+        "recursiveCollection": "rules"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {
+            "reference": "inbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#LogicalRule.IsValid",
+          "path": "option/rule.go",
+          "bodyHashes": [
+            "eee11bfbaff7e42d26f1c9df7753fbc132394cd6a11d02f8a9dfe10c3cf0d0fa"
+          ],
+          "buildConstraints": [""]
+        },
+        {
+          "function": "route/rule#NewInboundRule",
+          "path": "route/rule/rule_item_inbound.go",
+          "bodyHashes": [
+            "3c5539756b08f751377b6c28b6175fc9d4696156fcc27d7ac4408fbab17335f2"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-inbound",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "rules",
+        "*",
+        "inbound"
+      ],
+      "declaration": "option#RawDefaultDNSRule",
+      "field": "Inbound",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true,
+        "recursiveCollection": "rules"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "badoption.Listable[string]",
+          "embedded": false,
+          "tags": {
+            "json": "inbound,omitempty"
+          },
+          "annotations": {
+            "reference": "inbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#LogicalDNSRule.IsValid",
+          "path": "option/rule_dns.go",
+          "bodyHashes": [
+            "ead4b0b8a721c7e35ea1a591989d7010f8cc1ad352c66b0100812ca15710220c"
+          ],
+          "buildConstraints": [""]
+        },
+        {
+          "function": "route/rule#NewInboundRule",
+          "path": "route/rule/rule_item_inbound.go",
+          "bodyHashes": [
+            "3c5539756b08f751377b6c28b6175fc9d4696156fcc27d7ac4408fbab17335f2"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.inbound-detour",
+      "program": "singBox",
+      "path": [
+        "inbounds",
+        "*",
+        "detour"
+      ],
+      "declaration": "option#ListenOptions",
+      "field": "Detour",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "endpoints"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "detour,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "detour,omitempty"
+          },
+          "annotations": {
+            "reference": "inbound"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "common/listener#Listener.loopTCPIn",
+          "path": "common/listener/listener_tcp.go",
+          "bodyHashes": [
+            "20786dcb9f7a466254a1fa3ce95f878953156bc463d4a3080073c87f161c626d",
+            "ed3c06cab9482867d4f23228c07f8cc4bb790cbc1cc7fff7c89aeed4b1326822",
+            "384e8ba9ddafa47a4a00b0ce534c539c6635ed4765d21bc24456efb689d662ad",
+            "0ed766ab7793fa70f712daba130b4e0542bc189f069ea6efe3494842df61c500"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-route",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "rules",
+        "*",
+        "server"
+      ],
+      "declaration": "option#DNSRouteActionOptions",
+      "field": "Server",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "action",
+          "values": [
+            "",
+            "route"
+          ],
+          "allowMissing": true
+        }
+      ],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "route/rule#NewDNSRuleAction",
+          "path": "route/rule/rule_action.go",
+          "bodyHashes": [
+            "51b3d4ad02775c7ca328a95fffe3a4cca4e153818bd79322551c52c2b003fb15",
+            "9319510d8e2ca163c3ee9ad8aecd9b42f3e2113396cbf588c0fe993e48c4c2ec"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.route-resolver",
+      "program": "singBox",
+      "path": [
+        "route",
+        "rules",
+        "*",
+        "server"
+      ],
+      "declaration": "option#RouteActionResolve",
+      "field": "Server",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "action",
+          "values": [
+            "resolve"
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "route/rule#NewRuleAction",
+          "path": "route/rule/rule_action.go",
+          "bodyHashes": [
+            "7fe3e9a9ac71e64e3f40beff9eec306d3b96b8d4b81f68cdffe405368d0b68bd",
+            "dea20772df2f9ffbd87a97389bbf5e4d6c6998213875d405f418d03acf7800ea",
+            "58bdd441b3bd9cc0831bcd865d05399202c49711284a9e75ffa15e0feb508738"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.default-resolver",
+      "program": "singBox",
+      "path": [
+        "route",
+        "default_domain_resolver"
+      ],
+      "declaration": "option#RouteOptions",
+      "field": "DefaultDomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "default_domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.reference.proxy",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "proxySettings",
+        "tag"
+      ],
+      "declarationCandidates": ["infra/conf#ProxyConfig"],
+      "allowAbsentDeclaration": true,
+      "field": "Tag",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "outbounds"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": false,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "tag"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "infra/conf#ProxyConfig.Build",
+          "path": "infra/conf/transport_internet.go",
+          "bodyHashes": [
+            "f37294b28fdbe6e4864f10488bd896e8d0497169718acea24bbf302fddb0e13e"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.reference.inbound-match",
+      "program": "xray",
+      "path": [
+        "routing",
+        "rules",
+        "*",
+        "inboundTag"
+      ],
+      "declaration": "infra/conf#parseFieldRule.RawFieldRule",
+      "field": "InboundTag",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "inbounds"
+            ],
+            "identity": "tag"
+          },
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*StringList",
+          "embedded": false,
+          "tags": {
+            "json": "inboundTag"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "infra/conf#parseFieldRule",
+          "path": "infra/conf/router.go",
+          "bodyHashes": [
+            "a7549a7010b72a2561d5b3ebf6f120d9854d7cf6aa5b774730cf6bd8cf3027a9",
+            "f5014dd137a372a6612d72694d839a0167a5326eea19301990f05c5fc8c6eb9e",
+            "95e774c5720e14cc345a5c32d511e4250f47c024b290d6077aa8b372158e41c3"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.reference.outbound-resolver",
+      "program": "singBox",
+      "path": [
+        "outbounds",
+        "*",
+        "domain_resolver"
+      ],
+      "field": "DomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DialerOptions",
+        "option#AbstractDialerOptions"
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-resolver",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "servers",
+        "*",
+        "domain_resolver"
+      ],
+      "field": "DomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DialerOptions",
+        "option#AbstractDialerOptions"
+      ]
+    },
+    {
+      "id": "singBox.reference.endpoint-resolver",
+      "program": "singBox",
+      "path": [
+        "endpoints",
+        "*",
+        "domain_resolver"
+      ],
+      "field": "DomainResolver",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalarOrObject",
+          "field": "server"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "*DomainResolveOptions",
+          "embedded": false,
+          "tags": {
+            "json": "domain_resolver,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "option#DomainResolveOptions.UnmarshalJSON",
+          "path": "option/outbound.go",
+          "bodyHashes": [
+            "f1d25a9f344ba7215a2136567c1c155152d8454f83278c96f3cb712e40b77ac4"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DialerOptions",
+        "option#AbstractDialerOptions"
+      ]
+    },
+    {
+      "id": "singBox.reference.dns-evaluate",
+      "program": "singBox",
+      "path": [
+        "dns",
+        "rules",
+        "*",
+        "server"
+      ],
+      "field": "Server",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "dns",
+              "servers"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "action",
+          "values": [
+            "evaluate"
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "server,omitempty"
+          },
+          "annotations": {
+            "reference": "dns_server"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "route/rule#NewDNSRuleAction",
+          "path": "route/rule/rule_action.go",
+          "bodyHashes": [
+            "51b3d4ad02775c7ca328a95fffe3a4cca4e153818bd79322551c52c2b003fb15",
+            "9319510d8e2ca163c3ee9ad8aecd9b42f3e2113396cbf588c0fe993e48c4c2ec"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "declarationCandidates": [
+        "option#DNSEvaluateActionOptions"
+      ],
+      "allowAbsentDeclaration": true
+    },
+    {
+      "id": "mihomo.reference.group-proxies",
+      "program": "mihomo",
+      "path": [
+        "proxy-groups",
+        "*",
+        "proxies"
+      ],
+      "declaration": "adapter/outboundgroup#GroupCommonOption",
+      "field": "Proxies",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "proxies"
+            ],
+            "identity": "name"
+          },
+          {
+            "path": [
+              "proxy-groups"
+            ],
+            "identity": "name"
+          }
+        ],
+        "form": {
+          "kind": "listable"
+        },
+        "builtinValues": [
+          "DIRECT",
+          "REJECT",
+          "REJECT-DROP",
+          "COMPATIBLE",
+          "PASS"
+        ],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "[]string",
+          "embedded": false,
+          "tags": {
+            "group": "proxies,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [],
+      "evidenceVariants": [
+        {
+          "constraint": {
+            "kind": "reference",
+            "targets": [
+              {
+                "path": [
+                  "proxies"
+                ],
+                "identity": "name"
+              },
+              {
+                "path": [
+                  "proxy-groups"
+                ],
+                "identity": "name"
+              }
+            ],
+            "form": {
+              "kind": "listable"
+            },
+            "builtinValues": [
+              "DIRECT",
+              "REJECT",
+              "REJECT-DROP",
+              "COMPATIBLE",
+              "PASS"
+            ],
+            "allowEmpty": true,
+            "allowUnresolved": false
+          },
+          "evidence": [
+            {
+              "function": "adapter/outboundgroup#getProxies",
+              "path": "adapter/outboundgroup/parser.go",
+              "bodyHashes": [
+                "7c73cdfcd324901a28553231a47707be48ea6945b569996a6e2e1cfd52ddf5fc"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            },
+            {
+              "function": "config#parseProxies",
+              "path": "config/config.go",
+              "bodyHashes": [
+                "c6f8eabf36d792513b5e41f8619952768283361e938f4e51f239bbed8b9feaec",
+                "923d4824679688e7af7557d65f2623010b46e5e932a53bf44ac7f8d0aa85d747",
+                "1fefa6896407fc5354dff1298268a6445be085948be4ce4653dc7152f0c93633",
+                "dd762812f4ad39fa6e0207721efaddc4eddbf5cc71dc64c24509011bbfcdf20f",
+                "262da639b121ded1d52d81f12b2fbbbc2af106538268d895a8c9fcf2d690e389",
+                "e864eef493631f1ab6f44925554818551bd37fc50d2d0ad6cfe0a2c279ad48a3",
+                "ec9a32491bbcf9a921defd04cb0184592ce0b87059efb2865e8645d474c03337",
+                "587f236bbd79f19403f8c229dc908eb0ed332c2c47dd869bc6ea16359f82cb0f",
+                "770c686ec8b7c243802dfd681106b9eb044cfce27a89a0f89194b9599df785d0"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "constraint": {
+            "kind": "reference",
+            "targets": [
+              {
+                "path": [
+                  "proxies"
+                ],
+                "identity": "name"
+              },
+              {
+                "path": [
+                  "proxy-groups"
+                ],
+                "identity": "name"
+              }
+            ],
+            "form": {
+              "kind": "listable"
+            },
+            "builtinValues": [
+              "DIRECT",
+              "REJECT",
+              "REJECT-DROP",
+              "COMPATIBLE",
+              "PASS",
+              "PASS-RULE"
+            ],
+            "allowEmpty": true,
+            "allowUnresolved": false
+          },
+          "evidence": [
+            {
+              "function": "adapter/outboundgroup#getProxies",
+              "path": "adapter/outboundgroup/parser.go",
+              "bodyHashes": [
+                "7c73cdfcd324901a28553231a47707be48ea6945b569996a6e2e1cfd52ddf5fc"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            },
+            {
+              "function": "config#parseProxies",
+              "path": "config/config.go",
+              "bodyHashes": [
+                "2a4a4079066575cdab9daf7c30ce369b55a7cbe8f0cad796e67e92f0f76d0915",
+                "9ecec7f198ee186e221b42cdb7b8da39c0b39019019f55454f1ed0ed8bb96888"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.logging.level",
+      "program": "singBox",
+      "path": ["log", "level"],
+      "declaration": "option#LogOptions",
+      "field": "Level",
+      "constraint": {"kind":"enum","values":["","trace","debug","info","warn","warning","error","fatal","panic"],"allowNull":true},
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+      "fieldShapes": [
+        {"type":"string","embedded":false,"tags":{"json":"level,omitempty"},"annotations":{}},
+        {"type":"string","embedded":false,"tags":{"json":"level,omitempty"},"annotations":{"enum":"trace,debug,info,warn,warning,error,fatal,panic"}}
+      ],
+      "evidence": [{"function":"log#ParseLevel","path":"log/level.go","bodyHashes":["9a3cba78d599f7b38dd9d0a8129a2cca8b4d72d387b9e75be948feae7f83ca0d"],"buildConstraints":[""]}]
+    },
+    {
+      "id": "mihomo.logging.level",
+      "program": "mihomo",
+      "path": ["log-level"],
+      "declaration": "config#RawConfig",
+      "field": "LogLevel",
+      "constraint": {"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true},
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+      "fieldShapes": [{"type":"log.LogLevel","embedded":false,"tags":{"json":"log-level","yaml":"log-level"},"annotations":{}}],
+      "evidenceVariants": [
+        {"constraint":{"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true,"caseInsensitive":false},"evidence":[
+          {"function":"log#LogLevel.String","path":"log/level.go","bodyHashes":["b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalJSON","path":"log/level.go","bodyHashes":["8b66dea3a855daf92a1c74f8a813e6dbb5b55e8f5e9a1872104625f054058cd5"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalYAML","path":"log/level.go","bodyHashes":["26ca440174ed343cb5b79f288117ae20497a4e37ab9c2ce676b5bf614a56d242"],"buildConstraints":[""]}
+        ]},
+        {"constraint":{"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true,"caseInsensitive":true},"evidence":[
+          {"function":"log#LogLevel.String","path":"log/level.go","bodyHashes":["b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalJSON","path":"log/level.go","bodyHashes":["716731e04cf988debac91267ab284ad181804f829dcd5f8f6593516e7427c485","249dc65bf691ccd940b60cc7f5939b6d842655969a030a4d52b923f372cfc246"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalYAML","path":"log/level.go","bodyHashes":["fdae817e437c90a8261d696ab9b041f6381b498c44be584cd3c6fb359eb2f0dc","c19009b3aaaa56f119b42159b03c02c39a29cc0914ab2f05523ddd03586ced3f"],"buildConstraints":[""]}
+        ]},
+        {"constraint":{"kind":"enum","values":["debug","info","warning","error","silent"],"allowNull":true,"caseInsensitive":true},"evidence":[
+          {"function":"log#LogLevel.String","path":"log/level.go","bodyHashes":["b0d593216dad7f60d9c19f208c05b6ff084dcd1e3b4239e131c16f601fbc1c23"],"buildConstraints":[""]},
+          {"function":"log#LogLevel.UnmarshalText","path":"log/level.go","bodyHashes":["e8e610dbf03aadc81d7ef7eb0fe35f40ca8f606dda39dcff4f6eedbb2ca26756","2991f88cc9d369e859b2dbd2dbaa8b1546758b66ef8fd3cc0757c372e8940e65"],"buildConstraints":[""]}
+        ]}
+      ]
+    },
+    {
+      "id": "xray.mux.udp443-policy",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "mux",
+        "xudpProxyUDP443"
+      ],
+      "declaration": "infra/conf#MuxConfig",
+      "field": "XudpProxyUDP443",
+      "constraint": {
+        "kind": "enum",
+        "values": [
+          "",
+          "reject",
+          "allow",
+          "skip"
+        ],
+        "allowNull": true
+      },
+      "defaultValue": "reject",
+      "defaultWhen": [
+        "missing",
+        "null",
+        "emptyString"
+      ],
+      "evidence": [
+        {
+          "function": "infra/conf#MuxConfig.Build",
+          "bodyHashes": [
+            "68711bbad7391008839f4e597ef9ead9e9f8fa60ba689e93d2d52db749af10c4"
+          ],
+          "path": "infra/conf/xray.go",
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ],
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "xudpProxyUDP443"
+          },
+          "annotations": {}
+        }
+      ],
+      "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+      "when": [],
+      "buildConstraint": ""
+    },
+    {
+      "id": "singBox.tun.auto-redirect.platform",
+      "program": "singBox",
+      "path": [
+        "inbounds",
+        "*",
+        "auto_redirect"
+      ],
+      "declaration": "option#TunInboundOptions",
+      "field": "AutoRedirect",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "enabled"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "type",
+          "values": [
+            "tun"
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "bool",
+          "embedded": false,
+          "tags": {
+            "json": "auto_redirect,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "protocol/tun#NewInbound",
+          "path": "protocol/tun/inbound.go",
+          "bodyHashes": [
+            "1ec7201e8db50bc88971753bc748ab34fc5e53504e3624feae8b9febf43305c5",
+            "3e2608ef94a31d0ef9dd3bb705f55f56e66873682eae3cc16dc9460124edf8f5",
+            "a97b6c93cf3f4c0936f4cf3ee6c7bc47600a19d8a15a3602c46a6f50726e351a",
+            "edb21f9d7f27ad2dcce949d35a2aaba84a73243197ec3e61b7009e2d433f78fa",
+            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7",
+            "186fc9432c05ec3d1230e6a3eb5ffcbab97122cb14cacb40d629e5113dddd591",
+            "6314b3483c9e8a57c3dcb7d16c96009c23db129ba54099dc993a45faf4f730a3"
+          ],
+          "buildConstraints": [
+            ""
+          ],
+          "imports": {
+            "sing-tun": "github.com/sagernet/sing-tun",
+            "C": "github.com/sagernet/sing-box/constant"
+          }
+        },
+        {
+          "function": "github.com/sagernet/sing-tun#NewAutoRedirect",
+          "path": "redirect_stub.go",
+          "bodyHashes": [
+            "c6853c59a652e6ec6f3f95f406d11aa40f9410ea1fef95704b5fdffcd7fb0251"
+          ],
+          "buildConstraints": [
+            "(!linux)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "singBox.tun.auto-redirect.route",
+      "program": "singBox",
+      "path": [
+        "inbounds",
+        "*",
+        "auto_redirect"
+      ],
+      "declaration": "option#TunInboundOptions",
+      "field": "AutoRedirect",
+      "constraint": {
+        "kind": "requires",
+        "whenValue": true,
+        "sibling": "auto_route",
+        "value": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "linux",
+      "when": [
+        {
+          "sibling": "type",
+          "values": [
+            "tun"
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_AUTO_ROUTE_REQUIRED",
+      "fieldShapes": [
+        {
+          "type": "bool",
+          "embedded": false,
+          "tags": {
+            "json": "auto_redirect,omitempty"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "protocol/tun#NewInbound",
+          "path": "protocol/tun/inbound.go",
+          "bodyHashes": [
+            "1ec7201e8db50bc88971753bc748ab34fc5e53504e3624feae8b9febf43305c5",
+            "3e2608ef94a31d0ef9dd3bb705f55f56e66873682eae3cc16dc9460124edf8f5",
+            "a97b6c93cf3f4c0936f4cf3ee6c7bc47600a19d8a15a3602c46a6f50726e351a",
+            "edb21f9d7f27ad2dcce949d35a2aaba84a73243197ec3e61b7009e2d433f78fa",
+            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7",
+            "186fc9432c05ec3d1230e6a3eb5ffcbab97122cb14cacb40d629e5113dddd591",
+            "6314b3483c9e8a57c3dcb7d16c96009c23db129ba54099dc993a45faf4f730a3"
+          ],
+          "buildConstraints": [
+            ""
+          ],
+          "imports": {
+            "sing-tun": "github.com/sagernet/sing-tun",
+            "C": "github.com/sagernet/sing-box/constant"
+          }
+        }
+      ]
+    },
+    {
+      "id": "singBox.tun.netns.platform",
+      "program": "singBox",
+      "path": [
+        "inbounds",
+        "*",
+        "netns"
+      ],
+      "declaration": "option#TunInboundOptions",
+      "field": "NetNs",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "nonEmpty"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "type",
+          "values": [
+            "tun"
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "netns,omitempty"
+          },
+          "annotations": {
+            "reference": "network_namespace"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "function": "protocol/tun#NewInbound",
+          "path": "protocol/tun/inbound.go",
+          "bodyHashes": [
+            "1ec7201e8db50bc88971753bc748ab34fc5e53504e3624feae8b9febf43305c5",
+            "3e2608ef94a31d0ef9dd3bb705f55f56e66873682eae3cc16dc9460124edf8f5",
+            "a97b6c93cf3f4c0936f4cf3ee6c7bc47600a19d8a15a3602c46a6f50726e351a",
+            "edb21f9d7f27ad2dcce949d35a2aaba84a73243197ec3e61b7009e2d433f78fa",
+            "fea78bc3414fa94780ecc88a930cf9ca91bcafd39a501e7d65a3d19dc317eaf7",
+            "186fc9432c05ec3d1230e6a3eb5ffcbab97122cb14cacb40d629e5113dddd591",
+            "6314b3483c9e8a57c3dcb7d16c96009c23db129ba54099dc993a45faf4f730a3"
+          ],
+          "buildConstraints": [
+            ""
+          ],
+          "imports": {
+            "sing-tun": "github.com/sagernet/sing-tun",
+            "C": "github.com/sagernet/sing-box/constant"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mihomo.tun.auto-redirect.platform",
+      "program": "mihomo",
+      "path": [
+        "tun",
+        "auto-redirect"
+      ],
+      "declaration": "config#RawTun",
+      "field": "AutoRedirect",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "enabled"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [
+        {
+          "sibling": "enable",
+          "values": [
+            true
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "bool",
+          "embedded": false,
+          "tags": {
+            "json": "auto-redirect,omitempty",
+            "yaml": "auto-redirect"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "bool",
+          "embedded": false,
+          "tags": {
+            "json": "auto_redirect,omitempty",
+            "yaml": "auto-redirect"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "listener/sing_tun#New",
+          "path": "listener/sing_tun/server.go",
+          "bodyHashes": [
+            "2a3869255d2f6ff6e92f0bbf5419370db7f52a8b6b22e374969286a3c0fce983",
+            "05f552b951abcd4c8834e380ed8ee6864ce7fdfc3da3d2a6f6fc42706b52cd81",
+            "108a45bf3d4c4faef5364f05304dfd06ffdd79ccfe189bce484efd46f362b7a9",
+            "18c8e6166adfd1452766842c6428d942fc2ee3ecc8a267112329ce6f4f81541e",
+            "1d9d41bc877e4fcb4bf74d7994817896464a644b9eb0b192a8c83a6211d8ef95",
+            "37bf686119da1c65007bfb597f46d0e4a9da015b3cacc390ce3a895128d0019d",
+            "3be27410ea2ab675287ec6589c104eb786a20de9e3edaaaf7b62638164205f86",
+            "40684e343d7cef303f708a85767bf387f65222df6cb1e24552a4fe9486ed1c34",
+            "432244335aede61169be13919f02d4dda9fbed5a2af1cd85a81fafe9d6702302",
+            "5fd504274153ef901813b546e6d85b4fe2c789950b6ac033e65587ee21ddf904",
+            "645aa2bdc06110e250b65172c1fe732e6766b65243e7f9314243e34b55752177",
+            "67df572e24db2f16c80090b0ed9dc82ad8693728275b3347fedd4ba2996b1fd2",
+            "6a500f7c38e073389fc5b0fd002478f3b735afa99c2c478117e9d06a7331607f",
+            "6a732463777e955d56bf07c85e17abddb0bd9384adc7dc93268d78c75414185e",
+            "6b3aa102d2f9dace438aa03e1a58e7ad09357659dd1c9e69ea163af464e08bbc",
+            "8e987855e4925fd0b8a31f0af8880e34483aa0d59a46d2a5ef8c662bb1fd534e",
+            "9768e4ee2db40c634083ae298b08f38702d222640e51789c495d876fe8356656",
+            "9ff3807a30664675ea8326c0b32d337f73116aae0934761325d4222085e8c25b",
+            "af5ca3bc600586c831d84362d49269f24a4db07280cad5b3b829347e16327041",
+            "bc5ead0af6df7ac5d0ecc5bc75f6364b40b5924d2becbc35dfaf0ffb49292e2a",
+            "cec0493f755bb425a99da4c94ca27d6a7cf3d08fc6da48582ba223d7bedd8b5c",
+            "e0ce41cfdf021c7687130cd5aadc1732bf2d8dc6c21eb4f276b8f62c808bfa16",
+            "efafbe60ab0ace76f88c1d063a065894999c6af41eecccb531e01181594716de",
+            "47ca4208ec482d315a15421ca3a0ed84b92c0acaf2c2d44b8efe0f002e73592b"
+          ],
+          "buildConstraints": [
+            ""
+          ],
+          "imports": {
+            "tun": "github.com/metacubex/sing-tun"
+          }
+        },
+        {
+          "function": "listener/sing_tun#supportRedirect",
+          "path": "listener/sing_tun/redirect_linux.go",
+          "bodyHashes": [
+            "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+          ],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "listener/sing_tun#supportRedirect",
+          "path": "listener/sing_tun/redirect_stub.go",
+          "bodyHashes": [
+            "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa"
+          ],
+          "buildConstraints": [
+            "(!linux)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mihomo.tun.auto-redirect.route",
+      "program": "mihomo",
+      "path": [
+        "tun",
+        "auto-redirect"
+      ],
+      "declaration": "config#RawTun",
+      "field": "AutoRedirect",
+      "constraint": {
+        "kind": "requires",
+        "whenValue": true,
+        "sibling": "auto-route",
+        "value": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "linux",
+      "when": [
+        {
+          "sibling": "enable",
+          "values": [
+            true
+          ],
+          "allowMissing": false
+        }
+      ],
+      "messageKey": "CONFIGURATION_AUTO_ROUTE_REQUIRED",
+      "fieldShapes": [
+        {
+          "type": "bool",
+          "embedded": false,
+          "tags": {
+            "json": "auto-redirect,omitempty",
+            "yaml": "auto-redirect"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "bool",
+          "embedded": false,
+          "tags": {
+            "json": "auto_redirect,omitempty",
+            "yaml": "auto-redirect"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "listener/sing_tun#New",
+          "path": "listener/sing_tun/server.go",
+          "bodyHashes": [
+            "2a3869255d2f6ff6e92f0bbf5419370db7f52a8b6b22e374969286a3c0fce983",
+            "05f552b951abcd4c8834e380ed8ee6864ce7fdfc3da3d2a6f6fc42706b52cd81",
+            "108a45bf3d4c4faef5364f05304dfd06ffdd79ccfe189bce484efd46f362b7a9",
+            "18c8e6166adfd1452766842c6428d942fc2ee3ecc8a267112329ce6f4f81541e",
+            "1d9d41bc877e4fcb4bf74d7994817896464a644b9eb0b192a8c83a6211d8ef95",
+            "37bf686119da1c65007bfb597f46d0e4a9da015b3cacc390ce3a895128d0019d",
+            "3be27410ea2ab675287ec6589c104eb786a20de9e3edaaaf7b62638164205f86",
+            "40684e343d7cef303f708a85767bf387f65222df6cb1e24552a4fe9486ed1c34",
+            "432244335aede61169be13919f02d4dda9fbed5a2af1cd85a81fafe9d6702302",
+            "5fd504274153ef901813b546e6d85b4fe2c789950b6ac033e65587ee21ddf904",
+            "645aa2bdc06110e250b65172c1fe732e6766b65243e7f9314243e34b55752177",
+            "67df572e24db2f16c80090b0ed9dc82ad8693728275b3347fedd4ba2996b1fd2",
+            "6a500f7c38e073389fc5b0fd002478f3b735afa99c2c478117e9d06a7331607f",
+            "6a732463777e955d56bf07c85e17abddb0bd9384adc7dc93268d78c75414185e",
+            "6b3aa102d2f9dace438aa03e1a58e7ad09357659dd1c9e69ea163af464e08bbc",
+            "8e987855e4925fd0b8a31f0af8880e34483aa0d59a46d2a5ef8c662bb1fd534e",
+            "9768e4ee2db40c634083ae298b08f38702d222640e51789c495d876fe8356656",
+            "9ff3807a30664675ea8326c0b32d337f73116aae0934761325d4222085e8c25b",
+            "af5ca3bc600586c831d84362d49269f24a4db07280cad5b3b829347e16327041",
+            "bc5ead0af6df7ac5d0ecc5bc75f6364b40b5924d2becbc35dfaf0ffb49292e2a",
+            "cec0493f755bb425a99da4c94ca27d6a7cf3d08fc6da48582ba223d7bedd8b5c",
+            "e0ce41cfdf021c7687130cd5aadc1732bf2d8dc6c21eb4f276b8f62c808bfa16",
+            "efafbe60ab0ace76f88c1d063a065894999c6af41eecccb531e01181594716de",
+            "47ca4208ec482d315a15421ca3a0ed84b92c0acaf2c2d44b8efe0f002e73592b"
+          ],
+          "buildConstraints": [
+            ""
+          ],
+          "imports": {
+            "tun": "github.com/metacubex/sing-tun"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mihomo.tproxy.platform",
+      "program": "mihomo",
+      "path": [
+        "tproxy-port"
+      ],
+      "declaration": "config#RawConfig",
+      "field": "TProxyPort",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "positive"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int",
+          "embedded": false,
+          "tags": {
+            "json": "tproxy-port",
+            "yaml": "tproxy-port"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "listener/tproxy#setsockopt",
+          "path": "listener/tproxy/setsockopt_other.go",
+          "bodyHashes": [
+            "3755817cb3292f26a64495008a13c02669dc3489fbb12119b2dbb7844fb75253"
+          ],
+          "buildConstraints": [
+            "(!linux)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.inbounds.sockopt.mark.platform",
+      "program": "xray",
+      "path": [
+        "inbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "mark"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "Mark",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux || freebsd",
+        "activation": "nonZero"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "mark"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.inbounds.sockopt.tcpCongestion.platform",
+      "program": "xray",
+      "path": [
+        "inbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpCongestion"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPCongestion",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "nonEmpty"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "tcpCongestion"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.inbounds.sockopt.tcpUserTimeout.platform",
+      "program": "xray",
+      "path": [
+        "inbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpUserTimeout"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPUserTimeout",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "positive"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "tcpUserTimeout"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.inbounds.sockopt.tcpMaxSeg.platform",
+      "program": "xray",
+      "path": [
+        "inbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpMaxSeg"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPMaxSeg",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "positive"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "tcpMaxSeg"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.outbounds.sockopt.mark.platform",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "mark"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "Mark",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux || freebsd",
+        "activation": "nonZero"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "mark"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.outbounds.sockopt.tcpCongestion.platform",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpCongestion"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPCongestion",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "nonEmpty"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "tcpCongestion"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.outbounds.sockopt.tcpUserTimeout.platform",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpUserTimeout"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPUserTimeout",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "positive"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "tcpUserTimeout"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.outbounds.sockopt.tcpMaxSeg.platform",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpMaxSeg"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPMaxSeg",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "positive"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "tcpMaxSeg"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.inbounds.sockopt.tcpWindowClamp.platform",
+      "program": "xray",
+      "path": [
+        "inbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpWindowClamp"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPWindowClamp",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "positive"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "tcpWindowClamp"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.outbounds.sockopt.tcpWindowClamp.platform",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "tcpWindowClamp"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "TCPWindowClamp",
+      "constraint": {
+        "kind": "platform",
+        "condition": "linux",
+        "activation": "positive"
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_PLATFORM_UNSUPPORTED",
+      "fieldShapes": [
+        {
+          "type": "int32",
+          "embedded": false,
+          "tags": {
+            "json": "tcpWindowClamp"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "1c9f6487563b8fa476a055bfcb33a364788a88e64590743d1b0bc1685708a5b4","5079ea3d1bfdba1aafde0a8d235ec3548bf7e4573df6c5d3190ca88ca0ca9318"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "435f48b8259d3a9478eede08cdb7a48035818a1774a0bcdeec4db617fabce162"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "6a52b1193a956365946e07e77631136df0492e6148483033b68543591d0d2600","138421eec4fe938dd562ffafdd6f7cbb054784bcabf88852a15e59d5f72bed74"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "9c543a923bef5d9d3d3c6db1cc603b470ccaebceb9e09a657d4d1b42218266a4","68d16116c5240b0e4197fe191bb3c17bfc01380020283cec12369d1d406dd538"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyInboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_linux.go",
+          "bodyHashes": [
+            "0056cbd16aa30f307328c88a397ccf2196740c46b1ecc641e236b5500300e557","7e4359b9a5cdc234713b6c17571e5ad98bcce9b22b8a379635b4103467de7267"],
+          "buildConstraints": [
+            "linux"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_freebsd.go",
+          "bodyHashes": [
+            "6e0a5ef83988c6b0466d63cab7a8d31db089be30f15c2ba1bed2195d2e3ccbd8"
+          ],
+          "buildConstraints": [
+            "freebsd"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_darwin.go",
+          "bodyHashes": [
+            "275fa80bd838bf3dfddad8e1d00c575c4a267230258786b89a4645047b1c9f70","bd5fca9bb702612a06ad87474bce6f176f05f9d22ea3fbea3d0eeb0a28b7b375"],
+          "buildConstraints": [
+            "darwin"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_windows.go",
+          "bodyHashes": [
+            "379d490b95cc13e2bd3f2883814a09b58ca98ef0ce5470ac231c7cd25d7c3f2b","7fd9b4a8a8fd0845c7c950d4db46b6b349c6c8f16b5d74cd25032fd34d949abd"],
+          "buildConstraints": [
+            "windows"
+          ]
+        },
+        {
+          "function": "transport/internet#applyOutboundSocketOptions",
+          "path": "transport/internet/sockopt_other.go",
+          "bodyHashes": [
+            "642a44ec6070ee42bffd1bd5bc6a1ad21dfeb58519d2b75d80f241a7133228d2"
+          ],
+          "buildConstraints": [
+            "(js || netbsd || openbsd || solaris)", "(js || netbsd || solaris)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.outbounds.proxy-settings",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "proxySettings"
+      ],
+      "declaration": "infra/conf#OutboundDetourConfig",
+      "field": "ProxySettings",
+      "fieldShapes": [
+        {
+          "type": "*ProxyConfig",
+          "embedded": false,
+          "tags": {
+            "json": "proxySettings"
+          },
+          "annotations": {}
+        },
+        {
+          "type": "*json.RawMessage",
+          "embedded": false,
+          "tags": {
+            "json": "proxySettings"
+          },
+          "annotations": {}
+        }
+      ],
+      "constraint": {
+        "kind": "rejected",
+        "allowNull": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_SETTING_UNSUPPORTED",
+      "evidenceVariants": [
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": false,
+          "evidence": [
+            {
+              "function": "infra/conf#OutboundDetourConfig.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "cb51b2557adbc9440a6360194cd212f1400d1040c912cdf07efaec4c2f71bf59"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": true,
+          "evidence": [
+            {
+              "function": "infra/conf#OutboundDetourConfig.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "7e9e6a31db28640a4d4b64618dd1f1a613487d26f56e1b3b943422a06bbc3a06"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "xray.reverse",
+      "program": "xray",
+      "path": [
+        "reverse"
+      ],
+      "declaration": "infra/conf#Config",
+      "field": "Reverse",
+      "fieldShapes": [
+        {
+          "type": "*ReverseConfig",
+          "embedded": false,
+          "tags": {
+            "json": "reverse"
+          },
+          "annotations": {}
+        }
+      ],
+      "constraint": {
+        "kind": "rejected",
+        "allowNull": true
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_SETTING_UNSUPPORTED",
+      "evidenceVariants": [
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": false,
+          "evidence": [
+            {
+              "function": "infra/conf#Config.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "794944d10d7b687925df2e6975be205f57a041f8460c8868743e6058c233f07f"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        },
+        {
+          "constraint": {
+            "kind": "rejected",
+            "allowNull": true
+          },
+          "applicable": true,
+          "evidence": [
+            {
+              "function": "infra/conf#Config.Build",
+              "path": "infra/conf/xray.go",
+              "bodyHashes": [
+                "caff17e2180cabfa2bd2277341e94381ac5fd7389086a04615f67733124c5e50"
+              ],
+              "buildConstraints": [
+                ""
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mihomo.tun.dns-mode",
+      "program": "mihomo",
+      "path": ["tun", "dns-mode"],
+      "declaration": "listener/config#Tun",
+      "field": "DNSMode",
+      "constraint": {"kind": "enum", "values": ["", "disabled", "native", "hijack"], "allowNull": true},
+      "defaultValue": "",
+      "defaultWhen": ["missing"],
+      "buildConstraint": "",
+      "when": [{"sibling": "enable", "values": [true], "allowMissing": false}],
+      "messageKey": "CONFIGURATION_VALUE_NOT_ALLOWED",
+      "fieldShapes": [{"type": "string", "embedded": false, "tags": {"json": "dns-mode", "yaml": "dns-mode"}, "annotations": {}}],
+      "evidence": [{"function": "listener/sing_tun#New", "path": "listener/sing_tun/server.go", "bodyHashes": ["47ca4208ec482d315a15421ca3a0ed84b92c0acaf2c2d44b8efe0f002e73592b"], "buildConstraints": [""]}]
+    },
+    {
+      "id": "xray.reference.dialer-proxy",
+      "program": "xray",
+      "path": [
+        "outbounds",
+        "*",
+        "streamSettings",
+        "sockopt",
+        "dialerProxy"
+      ],
+      "declaration": "infra/conf#SocketConfig",
+      "field": "DialerProxy",
+      "constraint": {
+        "kind": "reference",
+        "targets": [
+          {
+            "path": [
+              "outbounds"
+            ],
+            "identity": "tag"
+          }
+        ],
+        "form": {
+          "kind": "scalar"
+        },
+        "builtinValues": [],
+        "allowEmpty": true,
+        "allowUnresolved": false
+      },
+      "defaultValue": null,
+      "defaultWhen": [],
+      "buildConstraint": "",
+      "when": [],
+      "messageKey": "CONFIGURATION_REFERENCE_MISSING",
+      "fieldShapes": [
+        {
+          "type": "string",
+          "embedded": false,
+          "tags": {
+            "json": "dialerProxy"
+          },
+          "annotations": {}
+        }
+      ],
+      "evidence": [
+        {
+          "function": "transport/internet#DialSystem",
+          "path": "transport/internet/dialer.go",
+          "bodyHashes": [
+            "ba42464b74c17eb79eee5baf21b8dc0a2121632eb82a9fa5d7057bbfd53861f7",
+            "f5da8706f146c4468d326c21632483a24610e0c153b375d551c27c6870ed0c89"
+          ],
+          "buildConstraints": [
+            ""
+          ]
+        }
+      ]
+    }
+  ]
+}

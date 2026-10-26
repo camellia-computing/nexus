@@ -46,6 +46,19 @@ impl OsSecureStore {
         }
     }
 
+    pub fn for_configuration_history(namespace: &str) -> Result<Self> {
+        if namespace.len() != 64
+            || !namespace
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(LicensingError::SecureStoreBackend);
+        }
+        Ok(Self {
+            service_name: Cow::Owned(format!("{SERVICE_NAME}.configuration-history.{namespace}")),
+        })
+    }
+
     /// Creates a credential namespace that cannot overlap with the production store.
     /// This constructor is available only to test-support builds.
     #[cfg(feature = "test-support")]
@@ -85,6 +98,7 @@ pub enum SecretKey {
     ConfigSourceCredentials,
     ConfigSourceCredentialJournal,
     ConfigSourceCredentialBackup,
+    IntentHistoryPayload,
 }
 
 impl SecretKey {
@@ -103,6 +117,7 @@ impl SecretKey {
             Self::ConfigSourceCredentials => "config-source-credentials",
             Self::ConfigSourceCredentialJournal => "config-source-credential-journal",
             Self::ConfigSourceCredentialBackup => "config-source-credential-backup",
+            Self::IntentHistoryPayload => "intent-history-payload",
         }
     }
 }
@@ -180,7 +195,11 @@ impl SecureStore for OsSecureStore {
             .map_err(|_| LicensingError::SecureStoreUnavailable)?;
         collection
             .create_item(
-                "Camellia Nexus membership credential",
+                if key == SecretKey::IntentHistoryPayload {
+                    "Camellia Nexus protected configuration history"
+                } else {
+                    "Camellia Nexus membership credential"
+                },
                 self.attributes(key),
                 value,
                 true,
