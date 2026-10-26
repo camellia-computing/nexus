@@ -84,6 +84,10 @@ algorithm: it adds an ESM default alias, restores the callable CommonJS export w
 named properties, and aligns the generated declarations. It must not change expansion behavior,
 security limits, dependency metadata, or the package's supported Node.js range.
 
+The 5.0.12 release also fixes [GHSA-q2hr-2g5m-vwhr](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr)
+by bounding rewrite iterations with `maxRewrites`. The module-export patch leaves that limit and
+the expansion algorithm unchanged; consumer tests exercise the patched exports and bounded expansion.
+
 Treat any new `brace-expansion`, `minimatch`, WebdriverIO or Tauri WebdriverIO release as a removal
 review, not as a reason to carry the patch forward automatically. A maintainer must compare
 `pnpm why brace-expansion` and `pnpm why minimatch` before and after the update. If every reachable
