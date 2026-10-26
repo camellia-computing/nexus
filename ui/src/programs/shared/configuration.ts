@@ -6,7 +6,8 @@ export function configurationReviewBlocker(
   contentIsCurrent: boolean,
 ): ConfigurationGateBlocker | undefined {
   return contentIsCurrent
-    ? blockers.find((blocker) => blocker.blocks.includes('apply') && blocker.recoveryAction === 'reviewCandidate')
+    ? blockers.find((blocker) => blocker.blocks.includes('validate') && blocker.blocks.includes('apply')
+      && blocker.recoveryAction === 'reviewCandidate')
     : undefined;
 }
 

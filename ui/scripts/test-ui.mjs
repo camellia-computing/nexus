@@ -603,6 +603,7 @@ for (const code of ['CONFIGURATION_PLATFORM_UNSUPPORTED', 'CONFIGURATION_SETTING
   assert.equal(configurationReviewBlocker([blocker], true), blocker);
   assert.equal(configurationReviewBlocker([blocker], false), undefined, 'New input must not retain an old blocker');
   assert.equal(configurationReviewBlocker([{ ...blocker, recoveryAction: 'validateCandidate' }], true), undefined, 'The single Apply action performs validation');
+  assert.equal(configurationReviewBlocker([{ ...blocker, blocks: ['apply'] }], true), undefined, 'A previous native rejection must be rechecked after editing');
 }
 const { hasChineseTranslation } = await import('../src/i18n.ts');
 assert.equal(intentErrorNeedsFinalEditor({ messageKey: 'INTENT_RULE_SHADOWED' }), true);
